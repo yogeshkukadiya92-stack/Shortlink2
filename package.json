@@ -3,7 +3,17 @@
   "version": "1.0.0",
   "private": true,
   "description": "AnyLink short URL dashboard and redirect app",
+  "dependencies": {
+    "@prisma/client": "^6.7.0"
+  },
+  "devDependencies": {
+    "prisma": "^6.7.0"
+  },
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "db:generate": "prisma generate",
+    "db:migrate": "prisma migrate dev",
+    "db:deploy": "prisma migrate deploy",
+    "db:studio": "prisma studio"
   }
 }
