@@ -8,6 +8,7 @@ const searchInput = document.getElementById("searchInput");
 const logoutButton = document.getElementById("logoutButton");
 const profileName = document.querySelector(".profile-name");
 const avatar = document.querySelector(".avatar");
+const adminNavItem = document.getElementById("adminNavItem");
 
 let currentPage = getCurrentPage();
 let currentUser = null;
@@ -17,6 +18,15 @@ let settingsCache = {
   workspaceName: "AnyLink Workspace",
   defaultDomain: window.location.host,
   domains: [window.location.host],
+};
+let billingCache = {
+  subscriptionStatus: "trialing",
+  trialStartedAt: 0,
+  trialEndsAt: 0,
+  trialRemainingMs: 0,
+  subscriptionStartedAt: 0,
+  subscriptionExpiresAt: 0,
+  hasAccess: true,
 };
 const authQuery = new URLSearchParams(window.location.search);
 
@@ -28,8 +38,10 @@ const pageMeta = {
   pages: { eyebrow: "Microsites", title: "Pages" },
   analytics: { eyebrow: "Performance", title: "Analytics" },
   campaigns: { eyebrow: "UTM Studio", title: "Campaigns" },
+  admin: { eyebrow: "Control Center", title: "Admin Panel" },
   "custom-domains": { eyebrow: "Branding", title: "Custom domains" },
   settings: { eyebrow: "Account", title: "Settings" },
+  billing: { eyebrow: "Billing", title: "Subscription" },
 };
 
 sidebarToggle.addEventListener("click", () => {
@@ -58,29 +70,54 @@ initialize();
 
 async function initialize() {
   currentPage = getCurrentPage();
-  await loadCurrentUser();
+  try {
+    await loadCurrentUser();
 
-  if (!currentUser && currentPage !== "auth") {
-    window.location.replace("/auth");
-    return;
-  }
-
-  if (currentUser && currentPage === "auth") {
-    window.location.replace("/home");
-    return;
-  }
-
-  applyShellMode();
-
-  if (currentUser) {
-    await loadSettings();
-    if (["home", "links", "analytics", "qr-codes"].includes(currentPage)) {
-      await loadLinks();
+    if (!currentUser && currentPage !== "auth") {
+      window.location.replace("/auth");
+      return;
     }
-  }
 
-  updateHeaderMeta();
-  renderPage();
+    if (currentUser && currentPage === "auth") {
+      window.location.replace("/home");
+      return;
+    }
+
+    applyShellMode();
+
+    if (currentUser) {
+      const canLoadWorkspace = billingCache.hasAccess || currentUser.isAdmin;
+
+      if (canLoadWorkspace) {
+        await loadSettings();
+        if (["home", "links", "analytics", "qr-codes"].includes(currentPage)) {
+          await loadLinks();
+        }
+      } else {
+        settingsCache = normalizeSettings({
+          workspaceName: "AnyLink Workspace",
+          defaultDomain: window.location.host,
+          domains: [window.location.host],
+        });
+      }
+    }
+
+    updateHeaderMeta();
+    renderPage();
+  } catch (error) {
+    updateHeaderMeta();
+    if (currentUser && !billingCache.hasAccess && !currentUser.isAdmin) {
+      renderBillingPage();
+      return;
+    }
+
+    mainContent.innerHTML = `
+      <section class="surface-card">
+        <h2>Workspace error</h2>
+        <p>${escapeHtml(error.message || "Something went wrong while loading your dashboard.")}</p>
+      </section>
+    `;
+  }
 }
 
 function getCurrentPage() {
@@ -93,6 +130,7 @@ async function loadCurrentUser() {
     const response = await fetch("/api/auth/me");
     const payload = await response.json();
     currentUser = payload.user || null;
+    billingCache = payload.billing || billingCache;
   } catch {
     currentUser = null;
   }
@@ -102,6 +140,7 @@ function applyShellMode() {
   const authMode = !currentUser || currentPage === "auth";
   body.classList.toggle("auth-screen", authMode);
   logoutButton.classList.toggle("hidden", !currentUser);
+  adminNavItem.classList.toggle("hidden", !(currentUser && currentUser.isAdmin));
 
   if (currentUser) {
     profileName.textContent = currentUser.name;
@@ -132,6 +171,17 @@ async function loadSettings() {
   }
 
   settingsCache = normalizeSettings(payload.settings || settingsCache);
+}
+
+async function loadBilling() {
+  const response = await fetch("/api/billing/status");
+  const payload = await response.json();
+
+  if (!response.ok) {
+    throw new Error(payload.error || "Unable to load billing");
+  }
+
+  billingCache = payload.billing || billingCache;
 }
 
 async function saveSettings(nextSettings) {
@@ -177,16 +227,189 @@ async function loadLinks() {
 
 function renderPage() {
   if (!currentUser || currentPage === "auth") return renderAuthPage();
+  if (!billingCache.hasAccess && currentPage !== "admin" && !currentUser.isAdmin) return renderBillingPage();
   if (currentPage === "home") return renderHomePage();
   if (currentPage === "links") return renderLinksPage(linksCache, searchInput.value.trim().toLowerCase());
   if (currentPage === "qr-codes") return renderQrPage();
   if (currentPage === "pages") return renderPagesBuilder();
   if (currentPage === "analytics") return renderAnalyticsPage();
   if (currentPage === "campaigns") return renderCampaignsPage();
+  if (currentPage === "admin") return renderAdminPage();
   if (currentPage === "custom-domains") return renderDomainsPage();
   if (currentPage === "settings") return renderSettingsPage();
 
   mainContent.innerHTML = `<section class="surface-card"><h2>Page not found</h2><p>This dashboard page is not available.</p></section>`;
+}
+
+function renderBillingPage() {
+  const daysLeft = Math.max(0, Math.ceil((billingCache.trialRemainingMs || 0) / (1000 * 60 * 60 * 24)));
+  currentPage = "billing";
+  updateHeaderMeta();
+  mainContent.innerHTML = `
+    <section class="auth-shell">
+      <div class="auth-card auth-copy-card">
+        <p class="eyebrow">Subscription Required</p>
+        <h1>Your trial has ended.</h1>
+        <p class="auth-copy">You had a 3-day free trial. Subscribe to continue creating links, QR codes, domains, and private workspace access.</p>
+        <div class="auth-feature-list">
+          <div class="auth-feature"><span class="task-check filled"></span><span>Unlimited private short links</span></div>
+          <div class="auth-feature"><span class="task-check filled"></span><span>Unlimited custom domains</span></div>
+          <div class="auth-feature"><span class="task-check filled"></span><span>QR codes, analytics, and secure account access</span></div>
+        </div>
+      </div>
+      <div class="auth-card auth-form-card">
+        <div class="billing-card">
+          <p class="eyebrow">Plan</p>
+          <h2>Pro Subscription</h2>
+          <p class="billing-copy">Trial remaining: <strong>${daysLeft}</strong> day${daysLeft === 1 ? "" : "s"}.</p>
+          <button class="primary-action auth-submit" id="subscribeButton" type="button">Continue to payment</button>
+          <div class="result-banner hidden" id="billingBanner" aria-live="polite"></div>
+        </div>
+      </div>
+    </section>
+  `;
+
+  document.getElementById("subscribeButton").addEventListener("click", async () => {
+    const banner = document.getElementById("billingBanner");
+    setInlineBanner(banner, "Preparing payment...", false);
+    try {
+      const response = await fetch("/api/billing/subscribe", { method: "POST" });
+      const payload = await response.json();
+      if (!response.ok) {
+        setInlineBanner(banner, payload.error || "Payment setup is not ready yet.", true);
+        return;
+      }
+      window.location.href = payload.paymentUrl;
+    } catch (error) {
+      setInlineBanner(banner, error.message, true);
+    }
+  });
+}
+
+async function renderAdminPage() {
+  if (!currentUser.isAdmin) {
+    mainContent.innerHTML = `<section class="surface-card"><h2>Admin access required</h2><p>Your account does not have permission to view this page.</p></section>`;
+    return;
+  }
+
+  mainContent.innerHTML = `<section class="surface-card"><p>Loading admin dashboard...</p></section>`;
+
+  try {
+    const response = await fetch("/api/admin/overview");
+    const payload = await response.json();
+
+    if (!response.ok) {
+      throw new Error(payload.error || "Could not load admin dashboard.");
+    }
+
+    mainContent.innerHTML = `
+      <section class="stat-grid">
+        <article class="stat-card"><span>Total users</span><strong>${payload.summary.totalUsers}</strong></article>
+        <article class="stat-card"><span>Active subscriptions</span><strong>${payload.summary.activeSubscriptions}</strong></article>
+        <article class="stat-card"><span>Expired users</span><strong>${payload.summary.expiredUsers}</strong></article>
+      </section>
+      <section class="surface-card">
+        <div class="surface-header">
+          <div>
+            <h2>User management</h2>
+            <p>Manage verification, trial access, subscriptions, and private user accounts.</p>
+          </div>
+        </div>
+        <div class="admin-table">
+          ${payload.users.map((user) => `
+            <div class="admin-row">
+              <div class="admin-main">
+                <strong>${escapeHtml(user.name)}</strong>
+                <span>${escapeHtml(user.email)}</span>
+                <span>${user.emailVerified ? "Verified" : "Not verified"} • ${escapeHtml(user.billing.subscriptionStatus)}</span>
+                <span>${user.totalLinks} links • ${user.activeSessions} sessions</span>
+              </div>
+              <div class="admin-actions">
+                <button class="link-button" data-admin-subscribe="${escapeHtml(user.id)}">Grant 30d</button>
+                <button class="link-button secondary" data-admin-trial="${escapeHtml(user.id)}">Extend trial</button>
+                ${user.emailVerified ? "" : `<button class="link-button secondary" data-admin-verify="${escapeHtml(user.id)}">Verify</button>`}
+              </div>
+            </div>
+          `).join("")}
+        </div>
+      </section>
+      <section class="surface-card">
+        <div class="surface-header">
+          <div>
+            <h2>Active sessions</h2>
+            <p>Review and revoke active user sessions when needed.</p>
+          </div>
+        </div>
+        <div class="admin-table">
+          ${payload.sessions.length
+            ? payload.sessions.map((session) => `
+              <div class="admin-row">
+                <div class="admin-main">
+                  <strong>${escapeHtml(session.userName)}</strong>
+                  <span>${escapeHtml(session.email)}</span>
+                  <span>Created: ${escapeHtml(new Date(session.createdAt).toLocaleString())}</span>
+                  <span>Expires: ${escapeHtml(new Date(session.expiresAt).toLocaleString())}</span>
+                </div>
+                <div class="admin-actions">
+                  <button class="link-button danger" data-admin-revoke="${escapeHtml(session.token)}">Revoke</button>
+                </div>
+              </div>
+            `).join("")
+            : '<div class="empty-state">No active sessions right now.</div>'}
+        </div>
+      </section>
+    `;
+
+    bindAdminActions();
+  } catch (error) {
+    mainContent.innerHTML = `<section class="surface-card"><h2>Admin error</h2><p>${escapeHtml(error.message)}</p></section>`;
+  }
+}
+
+function bindAdminActions() {
+  document.querySelectorAll("[data-admin-subscribe]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      await runAdminAction(`/api/admin/users/${button.getAttribute("data-admin-subscribe")}/subscription`, { days: 30 }, "Subscription granted.");
+    });
+  });
+
+  document.querySelectorAll("[data-admin-trial]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      await runAdminAction(`/api/admin/users/${button.getAttribute("data-admin-trial")}/trial`, { days: 3 }, "Trial extended.");
+    });
+  });
+
+  document.querySelectorAll("[data-admin-verify]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      await runAdminAction(`/api/admin/users/${button.getAttribute("data-admin-verify")}/verify`, {}, "User verified.");
+    });
+  });
+
+  document.querySelectorAll("[data-admin-revoke]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      await runAdminAction(`/api/admin/sessions/${button.getAttribute("data-admin-revoke")}/revoke`, {}, "Session revoked.");
+    });
+  });
+}
+
+async function runAdminAction(url, body, successMessage) {
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const payload = await response.json();
+
+    if (!response.ok) {
+      throw new Error(payload.error || "Admin action failed.");
+    }
+
+    showGlobalMessage(successMessage, false);
+    await renderAdminPage();
+  } catch (error) {
+    showGlobalMessage(error.message, true);
+  }
 }
 
 function renderAuthPage() {
@@ -384,6 +607,7 @@ async function submitAuth(url, payload, banner) {
 
     currentUser = data.user;
     settingsCache = normalizeSettings(data.settings || settingsCache);
+    billingCache = data.billing || billingCache;
     if (data.verificationUrl) {
       setInlineBanner(banner, `Account created. Verify your email: ${data.verificationUrl}`, false);
       return;
@@ -443,6 +667,7 @@ function bindVerificationAction() {
 
 function renderHomePage() {
   const activeDomain = escapeHtml(settingsCache.defaultDomain);
+  const trialDaysLeft = Math.max(0, Math.ceil((billingCache.trialRemainingMs || 0) / (1000 * 60 * 60 * 24)));
   mainContent.innerHTML = `
     <div class="creation-tabs">
       <button class="creation-tab active"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9.5 14.5 7 17a4 4 0 1 1-5.7-5.6l3.3-3.4A4 4 0 0 1 10.3 9" /><path d="m14.5 9.5 2.5-2.5a4 4 0 1 1 5.7 5.6l-3.3 3.4A4 4 0 0 1 13.7 15" /><path d="m8.5 15.5 7-7" /></svg><span>Short link</span></button>
@@ -463,7 +688,7 @@ function renderHomePage() {
           <div class="inline-note">Your short link will look like:<strong id="shortBaseLabel">${escapeHtml(buildShortPreview("your-slug"))}</strong></div>
         </div>
         <label class="checkbox-row"><input type="checkbox" id="qrToggle"><span>Also create a QR-ready entry for this link</span></label>
-        <div class="promo-strip"><span>${settingsCache.domains.length} domain${settingsCache.domains.length === 1 ? "" : "s"} connected to your private workspace</span><a href="/custom-domains">Manage domains</a></div>
+        <div class="promo-strip"><span>${settingsCache.domains.length} domain${settingsCache.domains.length === 1 ? "" : "s"} connected to your private workspace. Trial: ${trialDaysLeft} day${trialDaysLeft === 1 ? "" : "s"} left.</span><a href="/custom-domains">Manage domains</a></div>
         <div class="result-banner hidden" id="resultBanner" aria-live="polite"></div>
         ${currentUser.emailVerified ? "" : '<div class="result-banner" id="verificationNotice">Email not verified yet. <button class="auth-inline-link" type="button" id="sendVerificationButton">Generate verification link</button></div>'}
       </div>
