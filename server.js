@@ -167,6 +167,11 @@ const server = http.createServer(async (req, res) => {
       return withAppAccess(req, res, (user) => handleSaveSettings(body, req, res, user));
     }
 
+    if (req.method === "GET" && pathname.startsWith("/api/domains/verify/")) {
+      const domain = decodeURIComponent(pathname.split("/").pop());
+      return withAppAccess(req, res, (user) => handleVerifyDomain(domain, req, res, user));
+    }
+
     if (req.method === "GET" && appRoutes.has(pathname)) {
       return serveFile(path.join(rootDir, "index.html"), res);
     }
@@ -993,6 +998,28 @@ function handleSaveSettings(body, req, res, user) {
   store.push(nextSettings);
   writeSettingsStore(store);
   return sendJson(res, 200, { settings: nextSettings });
+}
+
+function handleVerifyDomain(domain, req, res, user) {
+  const settings = readSettingsForUser(user.id, req);
+  const sanitizedDomain = sanitizeDomainInput(domain, req);
+
+  if (!sanitizedDomain) {
+    return sendJson(res, 400, { error: "Invalid domain." });
+  }
+
+  if (!settings.domains.includes(sanitizedDomain)) {
+    return sendJson(res, 404, { error: "Domain not found in your workspace." });
+  }
+
+  return sendJson(res, 200, {
+    domain: sanitizedDomain,
+    verified: false,
+    message: `Automatic DNS verification is not enabled in this version yet. Add a CNAME for ${sanitizedDomain} that points to ${publicAppDomain}, wait for DNS propagation, then open the domain in your browser to confirm it resolves to your app.`,
+    dnsTarget: publicAppDomain,
+    recordType: "CNAME",
+    hostHint: sanitizedDomain.split(".")[0] || sanitizedDomain,
+  });
 }
 
 function ensureUserSettings(userId, req) {

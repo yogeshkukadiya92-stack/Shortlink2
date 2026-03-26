@@ -885,10 +885,64 @@ function renderCampaignsPage() {
 }
 
 function renderDomainsPage() {
-  mainContent.innerHTML = `<section class="surface-card two-column"><div><div class="surface-header"><div><h2>Custom domains</h2><p>Your app always stays on <strong>${escapeHtml(publicShortDomain)}</strong>. Users can optionally create short links from their own connected domain.</p></div><span class="chip-link">${settingsCache.domains.length} saved</span></div><div class="managed-domain-list">${settingsCache.domains.map((domain) => `<div class="managed-domain ${domain === settingsCache.defaultDomain ? "active" : ""}"><div class="managed-domain-copy"><strong>${escapeHtml(domain)}</strong><span>${escapeHtml(buildDomainPreview(domain))}</span></div><div class="managed-domain-actions">${domain === publicShortDomain ? '<span class="domain-status">App Default</span>' : ""}${domain === settingsCache.defaultDomain ? '<span class="domain-status">Active</span>' : `<button class="link-button" data-activate-domain="${escapeHtml(domain)}">Set active</button>`}${domain !== publicShortDomain ? `<button class="link-button danger" data-remove-domain="${escapeHtml(domain)}">Remove</button>` : ""}</div></div>`).join("")}</div></div><div class="stack-card-group"><div class="form-card"><label class="field-label" for="domainName">Add a new custom domain</label><input id="domainName" class="url-input" type="text" placeholder="go.yourbrand.com"><button class="primary-action inline-action" id="addDomainButton">Add domain</button><p class="helper-copy">If no custom domain is active, new short links automatically use ${escapeHtml(publicShortDomain)}.</p></div><div class="form-card"><h3>DNS setup</h3><p class="helper-copy">At your registrar, create a <strong>CNAME</strong> record for your custom subdomain and point it to <strong>${escapeHtml(publicShortDomain)}</strong>. Example: <code>go.clientdomain.com -> ${escapeHtml(publicShortDomain)}</code>.</p><p class="helper-copy">After DNS is connected, set that domain active here and new short links will use it.</p></div></div></section>`;
+  const managedDomainsMarkup = settingsCache.domains.map((domain) => {
+    const isDefaultAppDomain = domain === publicShortDomain;
+    const isActive = domain === settingsCache.defaultDomain;
+    const hostHint = domain.split(".")[0] || domain;
+    return `
+      <div class="managed-domain ${isActive ? "active" : ""}">
+        <div class="managed-domain-copy">
+          <strong>${escapeHtml(domain)}</strong>
+          <span>${escapeHtml(buildDomainPreview(domain))}</span>
+          ${!isDefaultAppDomain ? `<div class="dns-helper-grid"><span><strong>Type</strong>CNAME</span><span><strong>Host</strong>${escapeHtml(hostHint)}</span><span><strong>Value</strong>${escapeHtml(publicShortDomain)}</span></div>` : ""}
+        </div>
+        <div class="managed-domain-actions">
+          ${isDefaultAppDomain ? '<span class="domain-status">App Default</span>' : ""}
+          ${isActive ? '<span class="domain-status">Active</span>' : `<button class="link-button" data-activate-domain="${escapeHtml(domain)}">Set active</button>`}
+          ${!isDefaultAppDomain ? `<button class="link-button secondary" data-copy-dns="${escapeHtml(domain)}">Copy DNS</button>` : ""}
+          ${!isDefaultAppDomain ? `<button class="link-button secondary" data-verify-domain="${escapeHtml(domain)}">Verify</button>` : ""}
+          ${!isDefaultAppDomain ? `<button class="link-button danger" data-remove-domain="${escapeHtml(domain)}">Remove</button>` : ""}
+        </div>
+      </div>
+    `;
+  }).join("");
+
+  mainContent.innerHTML = `
+    <section class="surface-card two-column">
+      <div>
+        <div class="surface-header">
+          <div>
+            <h2>Custom domains</h2>
+            <p>Your app always stays on <strong>${escapeHtml(publicShortDomain)}</strong>. Users can optionally create short links from their own connected domain.</p>
+          </div>
+          <span class="chip-link">${settingsCache.domains.length} saved</span>
+        </div>
+        <div class="managed-domain-list">${managedDomainsMarkup}</div>
+      </div>
+      <div class="stack-card-group">
+        <div class="form-card">
+          <label class="field-label" for="domainName">Add a new custom domain</label>
+          <input id="domainName" class="url-input" type="text" placeholder="go.yourbrand.com">
+          <button class="primary-action inline-action" id="addDomainButton">Add domain</button>
+          <p class="helper-copy">If no custom domain is active, new short links automatically use ${escapeHtml(publicShortDomain)}.</p>
+        </div>
+        <div class="form-card">
+          <h3>DNS setup</h3>
+          <p class="helper-copy">Create a <strong>CNAME</strong> record for your custom subdomain and point it to <strong>${escapeHtml(publicShortDomain)}</strong>.</p>
+          <div class="dns-helper-grid">
+            <span><strong>Type</strong>CNAME</span>
+            <span><strong>Host</strong>go</span>
+            <span><strong>Value</strong>${escapeHtml(publicShortDomain)}</span>
+          </div>
+          <p class="helper-copy">Example: <code>go.clientdomain.com -> ${escapeHtml(publicShortDomain)}</code></p>
+          <p class="helper-copy">After DNS is connected, click <strong>Verify</strong>, test the domain in your browser, and then set it active here.</p>
+        </div>
+      </div>
+    </section>
+  `;
 
   document.getElementById("addDomainButton").addEventListener("click", async () => {
-    const domain = sanitizeDomain(document.getElementById("domainName").value.trim());
+      const domain = sanitizeDomain(document.getElementById("domainName").value.trim());
     if (!domain) return showGlobalMessage("Enter a valid domain or host.", true);
     if (settingsCache.domains.includes(domain)) return showGlobalMessage("That domain is already added.", true);
     await persistDomains([...settingsCache.domains, domain], settingsCache.defaultDomain, `Domain added: ${domain}`);
@@ -899,11 +953,26 @@ function renderDomainsPage() {
     await persistDomains(settingsCache.domains, domain, `Active domain changed to ${domain}`);
   }));
 
-  document.querySelectorAll("[data-remove-domain]").forEach((button) => button.addEventListener("click", async () => {
-    const domain = button.getAttribute("data-remove-domain");
-    const domains = settingsCache.domains.filter((item) => item !== domain);
-    const nextDefault = settingsCache.defaultDomain === domain ? domains[0] : settingsCache.defaultDomain;
-    await persistDomains(domains, nextDefault, `Removed domain: ${domain}`);
+    document.querySelectorAll("[data-remove-domain]").forEach((button) => button.addEventListener("click", async () => {
+      const domain = button.getAttribute("data-remove-domain");
+      const domains = settingsCache.domains.filter((item) => item !== domain);
+      const nextDefault = settingsCache.defaultDomain === domain ? domains[0] : settingsCache.defaultDomain;
+      await persistDomains(domains, nextDefault, `Removed domain: ${domain}`);
+    }));
+
+  document.querySelectorAll("[data-copy-dns]").forEach((button) => button.addEventListener("click", async () => {
+    const domain = button.getAttribute("data-copy-dns");
+    try {
+      await navigator.clipboard.writeText(publicShortDomain);
+      showGlobalMessage(`DNS target copied for ${domain}: ${publicShortDomain}`, false);
+    } catch {
+      showGlobalMessage(`Copy failed. Use this DNS target manually: ${publicShortDomain}`, true);
+    }
+  }));
+
+  document.querySelectorAll("[data-verify-domain]").forEach((button) => button.addEventListener("click", async () => {
+    const domain = button.getAttribute("data-verify-domain");
+    await verifyDomain(domain);
   }));
 }
 
@@ -912,6 +981,18 @@ async function persistDomains(domains, defaultDomain, successMessage) {
     await saveSettings({ workspaceName: settingsCache.workspaceName, domains, defaultDomain });
     renderDomainsPage();
     showGlobalMessage(successMessage, false);
+  } catch (error) {
+    showGlobalMessage(error.message, true);
+  }
+}
+
+async function verifyDomain(domain) {
+  try {
+    const response = await fetch(`/api/domains/verify/${encodeURIComponent(domain)}`);
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || "Unable to verify domain.");
+    const hostHint = payload.hostHint || domain.split(".")[0] || domain;
+    showGlobalMessage(`${payload.message} DNS record: ${payload.recordType || "CNAME"} ${hostHint} -> ${payload.dnsTarget || publicShortDomain}`, false);
   } catch (error) {
     showGlobalMessage(error.message, true);
   }
