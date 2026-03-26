@@ -1,0 +1,264 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum SubscriptionStatus {
+  TRIALING
+  ACTIVE
+  INACTIVE
+  LIFETIME
+  CANCELED
+  PAST_DUE
+}
+
+enum DomainStatus {
+  PENDING
+  VERIFIED
+  ACTIVE
+  FAILED
+}
+
+enum AuditActorType {
+  USER
+  ADMIN
+  SYSTEM
+}
+
+enum FormFieldType {
+  TEXT
+  EMAIL
+  TEL
+  TEXTAREA
+}
+
+model User {
+  id                    String               @id @default(cuid())
+  name                  String
+  email                 String               @unique
+  passwordHash          String
+  emailVerified         Boolean              @default(false)
+  isAdmin               Boolean              @default(false)
+  subscriptionStatus    SubscriptionStatus   @default(TRIALING)
+  trialStartedAt        DateTime?
+  trialEndsAt           DateTime?
+  subscriptionStartedAt DateTime?
+  subscriptionExpiresAt DateTime?
+  stripeCustomerId      String?              @unique
+  createdAt             DateTime             @default(now())
+  updatedAt             DateTime             @updatedAt
+
+  sessions              Session[]
+  authTokens            AuthToken[]
+  settings              WorkspaceSettings?
+  links                 Link[]
+  customDomains         CustomDomain[]
+  pages                 Page[]
+  clickEvents           ClickEvent[]
+  billingSubscriptions  BillingSubscription[]
+  auditLogs             AuditLog[]
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  token     String   @unique
+  userId    String
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model AuthToken {
+  id        String   @id @default(cuid())
+  userId    String
+  type      String
+  token     String   @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, type])
+  @@index([expiresAt])
+}
+
+model WorkspaceSettings {
+  id            String   @id @default(cuid())
+  userId        String   @unique
+  workspaceName String   @default("AnyLink Workspace")
+  defaultDomain String
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Link {
+  id           String    @id @default(cuid())
+  userId       String
+  slug         String    @unique
+  destination  String
+  shortUrl     String
+  includeQr    Boolean   @default(false)
+  clickCount   Int       @default(0)
+  lastClickedAt DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  clickEvents ClickEvent[]
+
+  @@index([userId, createdAt])
+  @@index([userId, slug])
+}
+
+model CustomDomain {
+  id         String       @id @default(cuid())
+  userId      String
+  host        String       @unique
+  status      DomainStatus @default(PENDING)
+  isActive    Boolean      @default(false)
+  dnsTarget   String?
+  verifiedAt  DateTime?
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, status])
+  @@index([userId, isActive])
+}
+
+model Page {
+  id            String           @id @default(cuid())
+  userId         String
+  title          String
+  slug           String           @unique
+  headline       String
+  description    String?
+  submitLabel    String           @default("Submit")
+  thanksMessage  String           @default("Thanks, your response has been received.")
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+
+  user           User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  fields         PageField[]
+  submissions    FormSubmission[]
+
+  @@index([userId, createdAt])
+  @@index([userId, slug])
+}
+
+model PageField {
+  id         String        @id @default(cuid())
+  pageId      String
+  key         String
+  label       String
+  type        FormFieldType
+  required    Boolean      @default(false)
+  sortOrder   Int          @default(0)
+  enabled     Boolean      @default(true)
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  page Page @relation(fields: [pageId], references: [id], onDelete: Cascade)
+
+  @@unique([pageId, key])
+  @@index([pageId, sortOrder])
+}
+
+model FormSubmission {
+  id          String            @id @default(cuid())
+  pageId       String
+  ipAddress    String?
+  country      String?
+  city         String?
+  browser      String?
+  platform     String?
+  device       String?
+  createdAt    DateTime         @default(now())
+
+  page    Page                    @relation(fields: [pageId], references: [id], onDelete: Cascade)
+  answers FormSubmissionAnswer[]
+
+  @@index([pageId, createdAt])
+}
+
+model FormSubmissionAnswer {
+  id            String          @id @default(cuid())
+  submissionId   String
+  fieldKey       String
+  fieldLabel     String
+  value          String?
+
+  submission FormSubmission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+
+  @@index([submissionId])
+}
+
+model ClickEvent {
+  id         String   @id @default(cuid())
+  userId      String
+  linkId      String
+  ipAddress   String?
+  country     String?
+  city        String?
+  browser     String?
+  platform    String?
+  device      String?
+  referrer    String?
+  createdAt   DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  link Link @relation(fields: [linkId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([linkId, createdAt])
+}
+
+model BillingSubscription {
+  id                   String             @id @default(cuid())
+  userId                String
+  provider              String             @default("stripe")
+  providerCustomerId    String?
+  providerSubscriptionId String?           @unique
+  planCode              String
+  status                SubscriptionStatus @default(TRIALING)
+  amount                Int?
+  currency              String?            @db.VarChar(10)
+  currentPeriodStart    DateTime?
+  currentPeriodEnd      DateTime?
+  cancelAtPeriodEnd     Boolean            @default(false)
+  createdAt             DateTime           @default(now())
+  updatedAt             DateTime           @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, status])
+}
+
+model AuditLog {
+  id          String         @id @default(cuid())
+  userId       String?
+  actorType    AuditActorType @default(USER)
+  action       String
+  targetType   String?
+  targetId     String?
+  metadata     Json?
+  createdAt    DateTime       @default(now())
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([userId, createdAt])
+  @@index([action, createdAt])
+}
