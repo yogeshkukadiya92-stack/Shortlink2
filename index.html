@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>AnyLink Dashboard</title>
-  <link rel="stylesheet" href="/styles.css?v=27">
+  <link rel="stylesheet" href="/styles.css?v=28">
 </head>
 <body>
   <div class="app-shell">
@@ -167,10 +167,16 @@
 
         <div class="topbar-actions">
           <button class="upgrade-button">Upgrade</button>
-          <button class="link-button hidden" id="logoutButton" type="button">Log out</button>
-          <div class="profile-chip">
-            <div class="avatar">L</div>
-            <span class="profile-name">Luv Patel</span>
+          <div class="profile-menu" id="profileMenu">
+            <button class="profile-chip profile-trigger" id="profileMenuButton" type="button" aria-haspopup="menu" aria-expanded="false">
+              <div class="avatar">L</div>
+              <span class="profile-name">Luv Patel</span>
+            </button>
+            <div class="profile-dropdown hidden" id="profileDropdown" role="menu">
+              <a class="profile-dropdown-item" href="/settings" role="menuitem">Settings</a>
+              <a class="profile-dropdown-item hidden" href="/admin" role="menuitem" id="profileAdminLink">Admin Panel</a>
+              <button class="profile-dropdown-item danger" id="logoutButton" type="button" role="menuitem">Log out</button>
+            </div>
           </div>
         </div>
       </header>
@@ -179,6 +185,6 @@
     </main>
   </div>
 
-  <script src="/script.js?v=25"></script>
+  <script src="/script.js?v=26"></script>
 </body>
 </html>

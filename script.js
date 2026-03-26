@@ -8,6 +8,10 @@ const searchInput = document.getElementById("searchInput");
 const logoutButton = document.getElementById("logoutButton");
 const profileName = document.querySelector(".profile-name");
 const avatar = document.querySelector(".avatar");
+const profileMenu = document.getElementById("profileMenu");
+const profileMenuButton = document.getElementById("profileMenuButton");
+const profileDropdown = document.getElementById("profileDropdown");
+const profileAdminLink = document.getElementById("profileAdminLink");
 const adminNavItem = document.getElementById("adminNavItem");
 const publicShortDomain = "go.shortlinks.in";
 
@@ -56,6 +60,12 @@ logoutButton.addEventListener("click", async () => {
   window.location.href = "/auth";
 });
 
+profileMenuButton.addEventListener("click", () => {
+  const isOpen = !profileDropdown.classList.contains("hidden");
+  profileDropdown.classList.toggle("hidden", isOpen);
+  profileMenuButton.setAttribute("aria-expanded", String(!isOpen));
+});
+
 searchInput.addEventListener("input", () => {
   if (currentPage === "links" && currentUser) {
     renderLinksPage(linksCache, searchInput.value.trim().toLowerCase());
@@ -66,6 +76,11 @@ document.addEventListener("click", (event) => {
   const qrLink = event.target.closest("[data-open-qr]");
   if (qrLink) {
     selectedQrSlug = qrLink.getAttribute("data-open-qr");
+  }
+
+  if (profileMenu && !profileMenu.contains(event.target)) {
+    profileDropdown.classList.add("hidden");
+    profileMenuButton.setAttribute("aria-expanded", "false");
   }
 });
 
@@ -177,8 +192,8 @@ async function changePassword(payload) {
 function applyShellMode() {
   const authMode = !currentUser || currentPage === "auth";
   body.classList.toggle("auth-screen", authMode);
-  logoutButton.classList.toggle("hidden", !currentUser);
   adminNavItem.classList.toggle("hidden", !(currentUser && currentUser.isAdmin));
+  profileAdminLink.classList.toggle("hidden", !(currentUser && currentUser.isAdmin));
 
   if (currentUser) {
     profileName.textContent = currentUser.name;
@@ -191,6 +206,11 @@ function applyShellMode() {
   document.querySelectorAll(".nav-item[data-page]").forEach((item) => {
     item.classList.toggle("active", item.dataset.page === currentPage);
   });
+
+  if (!currentUser) {
+    profileDropdown.classList.add("hidden");
+    profileMenuButton.setAttribute("aria-expanded", "false");
+  }
 }
 
 function updateHeaderMeta() {

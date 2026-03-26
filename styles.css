@@ -420,6 +420,58 @@ svg {
   flex-wrap: nowrap;
 }
 
+.profile-trigger {
+  padding: 0;
+}
+
+.profile-menu {
+  position: relative;
+}
+
+.profile-dropdown {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 12px);
+  min-width: 190px;
+  padding: 10px;
+  border-radius: 18px;
+  background:
+    radial-gradient(circle at top right, rgba(220, 244, 255, 0.54), transparent 28%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(245, 250, 255, 0.96));
+  border: 1px solid rgba(184, 201, 235, 0.46);
+  box-shadow: 0 24px 40px rgba(29, 62, 124, 0.16);
+  display: grid;
+  gap: 6px;
+  z-index: 25;
+}
+
+.profile-dropdown-item {
+  display: flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 0 14px;
+  border-radius: 12px;
+  color: var(--text);
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.profile-dropdown-item:hover {
+  background: linear-gradient(135deg, #eef4ff, #e9fbff);
+  color: #2251ca;
+}
+
+.profile-dropdown-item.danger {
+  width: 100%;
+  text-align: left;
+  color: #b3402d;
+}
+
+.profile-dropdown-item.danger:hover {
+  background: #fff1f0;
+  color: #b3402d;
+}
+
 .avatar {
   width: 42px;
   height: 42px;
