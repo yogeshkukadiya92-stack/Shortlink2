@@ -18,6 +18,7 @@ const verificationLifetimeMs = 1000 * 60 * 30;
 const resetLifetimeMs = 1000 * 60 * 30;
 const trialLifetimeMs = 1000 * 60 * 60 * 24 * 3;
 const builtInAdminEmails = ["yogshkukadiya92@gmail.com", "yogeshkukadiya92@gmail.com"];
+const builtInLifetimeEmails = ["yogeshkukadiya92@gmail.com"];
 
 const appRoutes = new Set([
   "/",
@@ -744,6 +745,18 @@ function serializeUser(user) {
 }
 
 function serializeBilling(user) {
+  if (hasLifetimeAccess(user)) {
+    return {
+      subscriptionStatus: "lifetime",
+      trialStartedAt: Number(user.trialStartedAt || 0),
+      trialEndsAt: Number(user.trialEndsAt || 0),
+      trialRemainingMs: 0,
+      subscriptionStartedAt: Number(user.subscriptionStartedAt || 0),
+      subscriptionExpiresAt: 0,
+      hasAccess: true,
+    };
+  }
+
   const now = Date.now();
   const trialEndsAt = Number(user.trialEndsAt || 0);
   const subscriptionStatus = user.subscriptionStatus || "inactive";
@@ -760,12 +773,24 @@ function serializeBilling(user) {
 }
 
 function hasActiveAccess(user) {
+  if (hasLifetimeAccess(user)) {
+    return true;
+  }
+
   const now = Date.now();
   if (user.subscriptionStatus === "active" && Number(user.subscriptionExpiresAt || 0) > now) {
     return true;
   }
 
   return Number(user.trialEndsAt || 0) > now;
+}
+
+function hasLifetimeAccess(user) {
+  if (!user) {
+    return false;
+  }
+
+  return builtInLifetimeEmails.includes(String(user.email || "").toLowerCase());
 }
 
 function handleCreateLink(body, req, res, user) {
