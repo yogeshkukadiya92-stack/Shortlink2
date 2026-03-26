@@ -308,7 +308,8 @@ function renderLinksPage(links, query = "") {
 
 function renderQrPage() {
   const sample = getSelectedQrLink();
-  const qrImageUrl = sample ? buildQrImageUrl(sample.shortUrl) : "";
+  const qrTargetUrl = sample ? buildLiveLinkUrl(sample.slug) : "";
+  const qrImageUrl = sample ? buildQrImageUrl(qrTargetUrl) : "";
 
   mainContent.innerHTML = `
     <section class="surface-card two-column">
@@ -322,11 +323,11 @@ function renderQrPage() {
         <div class="qr-panel">
           <div class="qr-box">
             ${sample
-              ? `<img class="qr-image" src="${escapeHtml(qrImageUrl)}" alt="QR code for ${escapeHtml(sample.shortUrl)}">`
+              ? `<img class="qr-image" src="${escapeHtml(qrImageUrl)}" alt="QR code for ${escapeHtml(qrTargetUrl)}">`
               : `<div class="qr-grid"></div>`}
           </div>
           <div class="qr-copy">
-            <strong>${sample ? escapeHtml(sample.shortUrl) : "Create a link first"}</strong>
+            <strong>${sample ? escapeHtml(qrTargetUrl) : "Create a link first"}</strong>
             <p>${sample ? "Use this QR in posters, packaging, menus, business cards, or flyers." : "Once you create a link on Home, it can appear here as a QR-ready item."}</p>
             <div class="qr-action-row">
               ${sample ? `<a class="primary-action inline-action" href="${escapeHtml(qrImageUrl)}" target="_blank" rel="noreferrer">Open QR</a>` : `<a class="primary-action inline-action" href="/home">Create link</a>`}
@@ -721,14 +722,14 @@ function renderLinkItems(links, includeDelete) {
       return `
         <div class="link-item">
           <div class="link-copy">
-            <a href="${escapeHtml(link.shortUrl)}" target="_blank" rel="noreferrer">${escapeHtml(link.shortUrl)}</a>
+            <a href="${escapeHtml(buildLiveLinkUrl(link.slug))}" target="_blank" rel="noreferrer">${escapeHtml(buildLiveLinkUrl(link.slug))}</a>
             <strong>${escapeHtml(link.slug)}</strong>
             <p>${escapeHtml(link.destination)}</p>
             <p>Created: ${escapeHtml(createdAt)}</p>
           </div>
           <div class="link-actions">
-            <button class="link-button" data-copy="${escapeHtml(link.shortUrl)}">Copy</button>
-            <a class="link-button secondary" href="${escapeHtml(link.shortUrl)}" target="_blank" rel="noreferrer">Open</a>
+            <button class="link-button" data-copy="${escapeHtml(buildLiveLinkUrl(link.slug))}">Copy</button>
+            <a class="link-button secondary" href="${escapeHtml(buildLiveLinkUrl(link.slug))}" target="_blank" rel="noreferrer">Open</a>
             <a class="link-button secondary" href="/qr-codes" data-open-qr="${escapeHtml(link.slug)}">QR</a>
             ${includeDelete ? `<button class="link-button danger" data-delete="${escapeHtml(link.slug)}">Delete</button>` : ""}
           </div>
@@ -740,6 +741,10 @@ function renderLinkItems(links, includeDelete) {
 
 function buildShortPreview(slug) {
   return buildDomainPreview(settingsCache.defaultDomain, slug);
+}
+
+function buildLiveLinkUrl(slug) {
+  return `${window.location.origin}/${slug}`;
 }
 
 function buildQrImageUrl(targetUrl) {
@@ -766,7 +771,7 @@ function renderQrLinkItems() {
   return linksCache.slice(0, 6).map((link) => `
     <button class="qr-link-item ${link.slug === (getSelectedQrLink()?.slug || "") ? "active" : ""}" data-select-qr="${escapeHtml(link.slug)}">
       <strong>${escapeHtml(link.slug)}</strong>
-      <span>${escapeHtml(link.shortUrl)}</span>
+      <span>${escapeHtml(buildLiveLinkUrl(link.slug))}</span>
     </button>
   `).join("");
 }
