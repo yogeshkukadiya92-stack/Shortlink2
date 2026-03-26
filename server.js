@@ -8,6 +8,8 @@ const { createSession: createDbSession, deleteSessionByToken: deleteDbSessionByT
 const { getWorkspaceSettings: getDbWorkspaceSettings, upsertWorkspaceSettings } = require("./repositories/settingsRepository");
 const { listLinksByUser, createLink: createDbLink, deleteLinkBySlug, findLinkBySlug } = require("./repositories/linksRepository");
 const { listDomainsByUser, upsertDomain, removeDomainsNotIn } = require("./repositories/domainsRepository");
+const { listPagesByUser, findPageById, findPageBySlug, savePage: saveDbPage, deletePageById, createSubmission } = require("./repositories/pagesRepository");
+const { recordClickEvent: recordDbClickEvent, listAnalyticsByUser } = require("./repositories/analyticsRepository");
 
 const host = "0.0.0.0";
 const port = process.env.PORT || 3000;
@@ -151,36 +153,36 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === "GET" && pathname === "/api/analytics") {
-      return withAppAccess(req, res, (user) => sendJson(res, 200, { analytics: buildAnalyticsReport(user.id) }));
+      return await withAppAccess(req, res, async (user) => sendJson(res, 200, { analytics: await buildAnalyticsReport(user.id) }));
     }
 
     if (req.method === "GET" && pathname === "/api/analytics/export") {
-      return withAppAccess(req, res, (user) => handleAnalyticsExport(req, res, user));
+      return await withAppAccess(req, res, (user) => handleAnalyticsExport(req, res, user));
     }
 
     if (req.method === "GET" && pathname === "/api/pages") {
-      return withAppAccess(req, res, (user) => sendJson(res, 200, { pages: readPagesForUser(user.id, req) }));
+      return await withAppAccess(req, res, async (user) => sendJson(res, 200, { pages: await readPagesForUserAsync(user.id, req) }));
     }
 
     if (req.method === "GET" && pathname.startsWith("/api/pages/") && pathname.endsWith("/export")) {
       const pageId = pathname.split("/")[3];
-      return withAppAccess(req, res, (user) => handlePageExport(pageId, req, res, user));
+      return await withAppAccess(req, res, (user) => handlePageExport(pageId, req, res, user));
     }
 
     if (req.method === "POST" && pathname === "/api/pages") {
       const body = await readRequestBody(req);
-      return withAppAccess(req, res, (user) => handleSavePage(body, req, res, user));
+      return await withAppAccess(req, res, (user) => handleSavePage(body, req, res, user));
     }
 
     if (req.method === "DELETE" && pathname.startsWith("/api/pages/")) {
       const pageId = pathname.split("/").pop();
-      return withAppAccess(req, res, (user) => handleDeletePage(pageId, res, user));
+      return await withAppAccess(req, res, (user) => handleDeletePage(pageId, res, user));
     }
 
     if (req.method === "POST" && pathname.startsWith("/api/forms/") && pathname.endsWith("/submit")) {
       const body = await readRequestBody(req);
       const slug = pathname.split("/")[3];
-      return handlePublicFormSubmit(slug, body, req, res);
+      return await handlePublicFormSubmit(slug, body, req, res);
     }
 
     if (req.method === "POST" && pathname === "/api/links") {
@@ -209,7 +211,7 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "GET" && pathname.startsWith("/forms/")) {
       const slug = pathname.split("/")[2];
-      return handlePublicFormPage(slug, req, res);
+      return await handlePublicFormPage(slug, req, res);
     }
 
     if (req.method === "GET" && appRoutes.has(pathname)) {
@@ -224,16 +226,7 @@ const server = http.createServer(async (req, res) => {
       const slug = pathname.replace(/^\/+/, "");
 
       if (slug) {
-        const links = readLinks();
-        const match = links.find((item) => item.slug === slug);
-
-        if (match) {
-          recordLinkVisit(match, req);
-          writeLinks(links);
-          res.writeHead(302, { Location: match.destination });
-          res.end();
-          return;
-        }
+        return await handleRedirect(slug, req, res);
       }
     }
 
@@ -295,6 +288,47 @@ function readPagesForUser(userId, req) {
   return readPages()
     .filter((item) => item.userId === userId)
     .map((item) => normalizePage(item, req));
+}
+
+async function readPagesForUserAsync(userId, req) {
+  try {
+    const pages = await listPagesByUser(userId);
+    if (Array.isArray(pages) && pages.length) {
+      return pages.map((page) => mapDbPageRecord(page, req));
+    }
+  } catch {
+    // Keep JSON fallback while migration is in progress.
+  }
+
+  return readPagesForUser(userId, req);
+}
+
+async function findNormalizedPageByIdAsync(pageId, userId, req) {
+  try {
+    const page = await findPageById(pageId, userId);
+    if (page) {
+      return mapDbPageRecord(page, req);
+    }
+  } catch {
+    // Keep JSON fallback while migration is in progress.
+  }
+
+  const stored = readPages().find((item) => item.id === pageId && item.userId === userId);
+  return stored ? normalizePage(stored, req) : null;
+}
+
+async function findNormalizedPageBySlugAsync(slug, req) {
+  try {
+    const page = await findPageBySlug(slug);
+    if (page) {
+      return mapDbPageRecord(page, req);
+    }
+  } catch {
+    // Keep JSON fallback while migration is in progress.
+  }
+
+  const stored = readPages().find((item) => item.slug === slug);
+  return stored ? normalizePage(stored, req) : null;
 }
 
 function readLinksForUser(userId) {
@@ -1155,7 +1189,7 @@ async function handleCreateLink(body, req, res, user) {
   sendJson(res, 201, { link: nextLink });
 }
 
-function handleSavePage(body, req, res, user) {
+async function handleSavePage(body, req, res, user) {
   const title = String(body.title || "").trim();
   const headline = String(body.headline || "").trim();
   const description = String(body.description || "").trim();
@@ -1180,6 +1214,15 @@ function handleSavePage(body, req, res, user) {
 
   if (conflictingSlug) {
     return sendJson(res, 409, { error: "That form slug is already in use." });
+  }
+
+  try {
+    const conflictingDbPage = await findPageBySlug(slug);
+    if (conflictingDbPage && conflictingDbPage.id !== body.id) {
+      return sendJson(res, 409, { error: "That form slug is already in use." });
+    }
+  } catch {
+    // Keep JSON fallback while migration is in progress.
   }
 
   if (existingIndex >= 0) {
@@ -1214,30 +1257,55 @@ function handleSavePage(body, req, res, user) {
 
   writePages(pages);
   const saved = pages.find((item) => item.slug === slug && item.userId === user.id);
-  return sendJson(res, existingIndex >= 0 ? 200 : 201, { page: normalizePage(saved, req) });
+
+  try {
+    const dbSaved = await saveDbPage(user.id, body.id || "", {
+      title,
+      slug,
+      headline: headline || title,
+      description,
+      submitLabel,
+      thanksMessage,
+    }, serializeDbFormFields(fields));
+    return sendJson(res, existingIndex >= 0 ? 200 : 201, { page: mapDbPageRecord(dbSaved, req) });
+  } catch {
+    return sendJson(res, existingIndex >= 0 ? 200 : 201, { page: normalizePage(saved, req) });
+  }
 }
 
-function handleDeletePage(pageId, res, user) {
+async function handleDeletePage(pageId, res, user) {
   const pages = readPages();
   const nextPages = pages.filter((item) => !(item.id === pageId && item.userId === user.id));
 
   if (nextPages.length === pages.length) {
-    return sendJson(res, 404, { error: "Form not found." });
+    try {
+      const result = await deletePageById(pageId, user.id);
+      if (!result.count) {
+        return sendJson(res, 404, { error: "Form not found." });
+      }
+      return sendJson(res, 200, { success: true });
+    } catch {
+      return sendJson(res, 404, { error: "Form not found." });
+    }
   }
 
   writePages(nextPages);
+  try {
+    await deletePageById(pageId, user.id);
+  } catch {
+    // JSON remains fallback during DB migration.
+  }
   return sendJson(res, 200, { success: true });
 }
 
-function handlePageExport(pageId, req, res, user) {
-  const page = readPages().find((item) => item.id === pageId && item.userId === user.id);
+async function handlePageExport(pageId, req, res, user) {
+  const page = await findNormalizedPageByIdAsync(pageId, user.id, req);
 
   if (!page) {
     return sendJson(res, 404, { error: "Form not found." });
   }
 
-  const normalizedPage = normalizePage(page, req);
-  const enabledFields = getEnabledFormFields(normalizedPage.fields);
+  const enabledFields = getEnabledFormFields(page.fields);
   const headers = [
     "Submitted At",
     "IP Address",
@@ -1249,7 +1317,7 @@ function handlePageExport(pageId, req, res, user) {
     ...enabledFields.map((field) => field.label),
   ];
 
-  const rows = normalizedPage.submissions.map((submission) => [
+  const rows = page.submissions.map((submission) => [
     submission.submittedAt || "",
     submission.meta?.ip || "",
     submission.meta?.country || "",
@@ -1260,19 +1328,17 @@ function handlePageExport(pageId, req, res, user) {
     ...enabledFields.map((field) => submission.answers?.[field.key] || ""),
   ]);
 
-  return sendCsv(res, `${normalizedPage.slug}-responses.csv`, headers, rows);
+  return sendCsv(res, page.slug + "-responses.csv", headers, rows);
 }
 
-function handlePublicFormPage(slug, req, res) {
-  const page = readPages().find((item) => item.slug === slug);
+async function handlePublicFormPage(slug, req, res) {
+  const normalizedPage = await findNormalizedPageBySlugAsync(slug, req);
 
-  if (!page) {
+  if (!normalizedPage) {
     res.writeHead(404, { "Content-Type": "text/html; charset=utf-8" });
     res.end("<!DOCTYPE html><html><body style=\"font-family:Arial,sans-serif;padding:40px;\"><h1>Form not found</h1><p>This form link is not available.</p></body></html>");
     return;
   }
-
-  const normalizedPage = normalizePage(page, req);
   const fieldMarkup = getEnabledFormFields(normalizedPage.fields).map((field) => `
     <label style="display:grid;gap:8px;">
       <span style="font-weight:600;color:#1f356c;">${escapeHtml(field.label)}</span>
@@ -1347,43 +1413,65 @@ function handlePublicFormPage(slug, req, res) {
   res.end(html);
 }
 
-function handlePublicFormSubmit(slug, body, req, res) {
+async function handlePublicFormSubmit(slug, body, req, res) {
+  const normalizedPage = await findNormalizedPageBySlugAsync(slug, req);
   const pages = readPages();
   const page = pages.find((item) => item.slug === slug);
 
-  if (!page) {
+  if (!normalizedPage) {
     return sendJson(res, 404, { error: "Form not found." });
   }
 
-  const normalizedPage = normalizePage(page, req);
   const answers = {};
+  const dbAnswers = [];
 
   for (const field of getEnabledFormFields(normalizedPage.fields)) {
     const value = String(body[field.key] || "").trim();
     if (field.required && !value) {
-      return sendJson(res, 400, { error: `${field.label} is required.` });
+      return sendJson(res, 400, { error: field.label + " is required." });
     }
     answers[field.key] = value;
+    dbAnswers.push({ fieldKey: field.key, fieldLabel: field.label, value });
   }
 
   const geo = getGeoDetails(req);
   const agent = parseUserAgent(req.headers["user-agent"] || "");
-  page.submissions = Array.isArray(page.submissions) ? page.submissions : [];
-  page.submissions.unshift({
-    id: crypto.randomUUID(),
-    submittedAt: new Date().toISOString(),
-    answers,
-    meta: {
-      ip: getClientIp(req),
-      country: geo.country,
-      city: geo.city,
-      browser: agent.browser,
-      platform: agent.platform,
-      device: agent.deviceType,
-    },
-  });
-  page.updatedAt = new Date().toISOString();
-  writePages(pages);
+
+  if (page) {
+    page.submissions = Array.isArray(page.submissions) ? page.submissions : [];
+    page.submissions.unshift({
+      id: crypto.randomUUID(),
+      submittedAt: new Date().toISOString(),
+      answers,
+      meta: {
+        ip: getClientIp(req),
+        country: geo.country,
+        city: geo.city,
+        browser: agent.browser,
+        platform: agent.platform,
+        device: agent.deviceType,
+      },
+    });
+    page.updatedAt = new Date().toISOString();
+    writePages(pages);
+  }
+
+  try {
+    const dbPage = await findPageBySlug(slug);
+    if (dbPage) {
+      await createSubmission(dbPage.id, {
+        ipAddress: getClientIp(req),
+        country: geo.country,
+        city: geo.city,
+        browser: agent.browser,
+        platform: agent.platform,
+        device: agent.deviceType,
+      }, dbAnswers);
+    }
+  } catch {
+    // JSON remains fallback during DB migration.
+  }
+
   return sendJson(res, 201, { success: true, message: normalizedPage.thanksMessage });
 }
 
@@ -1412,7 +1500,65 @@ async function handleDeleteLink(slug, res, user) {
   return sendJson(res, 200, { success: true });
 }
 
-function buildAnalyticsReport(userId) {
+async function buildAnalyticsReport(userId) {
+  try {
+    const links = await listAnalyticsByUser(userId);
+    if (Array.isArray(links) && links.length) {
+      const normalizedLinks = links.map((link) => {
+        const clicks = (link.clickEvents || []).map((click) => ({
+          id: click.id,
+          clickedAt: click.createdAt instanceof Date ? click.createdAt.toISOString() : click.createdAt,
+          ip: click.ipAddress || "Unknown",
+          country: click.country || "Unknown",
+          city: click.city || "Unknown",
+          cityLabel: click.city && click.country !== "Unknown" ? (click.city + ", " + click.country) : (click.city || click.country || "Unknown"),
+          platform: click.platform || "Unknown",
+          deviceType: click.device || "Web",
+          browser: click.browser || "Unknown",
+          referrer: click.referrer || "",
+          slug: link.slug,
+          shortUrl: link.shortUrl,
+        }));
+
+        return {
+          id: link.id,
+          slug: link.slug,
+          shortUrl: link.shortUrl,
+          destination: link.destination,
+          totalClicks: Number(link.clickCount || clicks.length || 0),
+          lastClickedAt: link.lastClickedAt instanceof Date ? link.lastClickedAt.toISOString() : (link.lastClickedAt || ""),
+          topCountries: summarizeClicks(clicks, "country"),
+          topCities: summarizeClicks(clicks, "cityLabel"),
+          topDevices: summarizeClicks(clicks, "deviceType"),
+          topPlatforms: summarizeClicks(clicks, "platform"),
+          topBrowsers: summarizeClicks(clicks, "browser"),
+          recentClicks: clicks.slice(0, 8),
+          createdAt: link.createdAt instanceof Date ? link.createdAt.toISOString() : link.createdAt,
+        };
+      });
+
+      const allClicks = normalizedLinks.flatMap((link) => link.recentClicks.map((click) => ({
+        ...click,
+        slug: link.slug,
+        shortUrl: link.shortUrl,
+      })));
+
+      return {
+        totalLinks: normalizedLinks.length,
+        totalClicks: normalizedLinks.reduce((sum, link) => sum + Number(link.totalClicks || 0), 0),
+        topCountries: summarizeClicks(allClicks, "country"),
+        topCities: summarizeClicks(allClicks, "cityLabel"),
+        topDevices: summarizeClicks(allClicks, "deviceType"),
+        topPlatforms: summarizeClicks(allClicks, "platform"),
+        topBrowsers: summarizeClicks(allClicks, "browser"),
+        recentClicks: allClicks.slice().sort((left, right) => new Date(right.clickedAt).getTime() - new Date(left.clickedAt).getTime()).slice(0, 12),
+        links: normalizedLinks.sort((left, right) => right.totalClicks - left.totalClicks || new Date(right.createdAt || 0).getTime() - new Date(left.createdAt || 0).getTime()),
+      };
+    }
+  } catch {
+    // Keep JSON fallback while migration is in progress.
+  }
+
   const links = readLinksForUser(userId);
   const totalClicks = links.reduce((sum, link) => sum + Number(link.analytics?.totalClicks || 0), 0);
   const allClicks = links.flatMap((link) => (Array.isArray(link.analytics?.clicks) ? link.analytics.clicks : []).map((click) => ({
@@ -1442,16 +1588,14 @@ function buildAnalyticsReport(userId) {
       topDevices: summarizeClicks(link.analytics?.clicks || [], "deviceType"),
       topPlatforms: summarizeClicks(link.analytics?.clicks || [], "platform"),
       topBrowsers: summarizeClicks(link.analytics?.clicks || [], "browser"),
-      recentClicks: (link.analytics?.clicks || [])
-        .slice()
-        .sort((left, right) => new Date(right.clickedAt).getTime() - new Date(left.clickedAt).getTime())
-        .slice(0, 8),
-    })).sort((left, right) => right.totalClicks - left.totalClicks || right.id - left.id),
+      recentClicks: (link.analytics?.clicks || []).slice().sort((left, right) => new Date(right.clickedAt).getTime() - new Date(left.clickedAt).getTime()).slice(0, 8),
+      createdAt: link.createdAt || "",
+    })).sort((left, right) => right.totalClicks - left.totalClicks || new Date(right.createdAt || 0).getTime() - new Date(left.createdAt || 0).getTime()),
   };
 }
 
-function handleAnalyticsExport(req, res, user) {
-  const analytics = buildAnalyticsReport(user.id);
+async function handleAnalyticsExport(req, res, user) {
+  const analytics = await buildAnalyticsReport(user.id);
   const headers = [
     "Slug",
     "Short URL",
@@ -1574,6 +1718,69 @@ function normalizeFormFields(fields) {
   };
 }
 
+function mapInputTypeToDb(type) {
+  const normalized = String(type || "text").toLowerCase();
+  if (normalized === "email") return "EMAIL";
+  if (normalized === "tel") return "TEL";
+  if (normalized === "textarea") return "TEXTAREA";
+  return "TEXT";
+}
+
+function serializeDbFormFields(fields) {
+  return getEnabledFormFields(fields).map((field) => ({
+    key: field.key,
+    label: field.label,
+    type: mapInputTypeToDb(field.type),
+    required: Boolean(field.required),
+    enabled: true,
+  }));
+}
+
+function mapDbPageRecord(page, req) {
+  const fieldState = {
+    name: false,
+    email: false,
+    phone: false,
+    company: false,
+    message: false,
+  };
+
+  for (const field of page.fields || []) {
+    if (Object.prototype.hasOwnProperty.call(fieldState, field.key)) {
+      fieldState[field.key] = field.enabled !== false;
+    }
+  }
+
+  const submissions = (page.submissions || []).map((submission) => ({
+    id: submission.id,
+    submittedAt: submission.createdAt instanceof Date ? submission.createdAt.toISOString() : submission.createdAt,
+    answers: Object.fromEntries((submission.answers || []).map((answer) => [answer.fieldKey, answer.value || ""])),
+    meta: {
+      ip: submission.ipAddress || "",
+      country: submission.country || "Unknown",
+      city: submission.city || "Unknown",
+      browser: submission.browser || "Unknown",
+      platform: submission.platform || "Unknown",
+      device: submission.device || "Web",
+    },
+  }));
+
+  return normalizePage({
+    id: page.id,
+    userId: page.userId,
+    title: page.title,
+    headline: page.headline,
+    description: page.description || "",
+    submitLabel: page.submitLabel,
+    thanksMessage: page.thanksMessage,
+    slug: page.slug,
+    fields: fieldState,
+    submissions,
+    createdAt: page.createdAt instanceof Date ? page.createdAt.toISOString() : page.createdAt,
+    updatedAt: page.updatedAt instanceof Date ? page.updatedAt.toISOString() : page.updatedAt,
+  }, req);
+}
+
 function getEnabledFormFields(fields) {
   const normalized = normalizeFormFields(fields);
   const allFields = [
@@ -1642,6 +1849,23 @@ function createEmptyAnalytics() {
   };
 }
 
+function buildClickEvent(req) {
+  const geo = getGeoDetails(req);
+  const client = parseUserAgent(req.headers["user-agent"] || "");
+  return {
+    id: crypto.randomUUID(),
+    clickedAt: new Date().toISOString(),
+    ip: getClientIp(req),
+    country: geo.country,
+    city: geo.city,
+    cityLabel: geo.city && geo.country !== "Unknown" ? (geo.city + ", " + geo.country) : (geo.city || geo.country),
+    platform: client.platform,
+    deviceType: client.deviceType,
+    browser: client.browser,
+    referrer: String(req.headers.referer || req.headers.referrer || "").trim(),
+  };
+}
+
 function recordLinkVisit(link, req) {
   if (!link.analytics || typeof link.analytics !== "object") {
     link.analytics = createEmptyAnalytics();
@@ -1651,25 +1875,49 @@ function recordLinkVisit(link, req) {
     link.analytics.clicks = [];
   }
 
-  const geo = getGeoDetails(req);
-  const client = parseUserAgent(req.headers["user-agent"] || "");
-  const click = {
-    id: crypto.randomUUID(),
-    clickedAt: new Date().toISOString(),
-    ip: getClientIp(req),
-    country: geo.country,
-    city: geo.city,
-    cityLabel: geo.city && geo.country !== "Unknown" ? `${geo.city}, ${geo.country}` : (geo.city || geo.country),
-    platform: client.platform,
-    deviceType: client.deviceType,
-    browser: client.browser,
-    referrer: String(req.headers.referer || req.headers.referrer || "").trim(),
-  };
-
+  const click = buildClickEvent(req);
   link.analytics.totalClicks = Number(link.analytics.totalClicks || 0) + 1;
   link.analytics.lastClickedAt = click.clickedAt;
   link.analytics.clicks.unshift(click);
   link.analytics.clicks = link.analytics.clicks.slice(0, 500);
+  return click;
+}
+
+async function recordLinkVisitAsync(link, req) {
+  const click = buildClickEvent(req);
+  await recordDbClickEvent(link.id, link.userId, click);
+  return click;
+}
+
+async function handleRedirect(slug, req, res) {
+  try {
+    const dbMatch = await findLinkBySlug(slug);
+    if (dbMatch) {
+      try {
+        await recordLinkVisitAsync(dbMatch, req);
+      } catch {
+        // Redirect should still work even if analytics write fails.
+      }
+      res.writeHead(302, { Location: dbMatch.destination });
+      res.end();
+      return;
+    }
+  } catch {
+    // Keep JSON fallback while migration is in progress.
+  }
+
+  const links = readLinks();
+  const match = links.find((item) => item.slug === slug);
+
+  if (match) {
+    recordLinkVisit(match, req);
+    writeLinks(links);
+    res.writeHead(302, { Location: match.destination });
+    res.end();
+    return;
+  }
+
+  sendJson(res, 404, { error: "Not found" });
 }
 
 function normalizeUrl(input) {
@@ -1983,3 +2231,8 @@ function sendJson(res, statusCode, payload) {
   res.writeHead(statusCode, { "Content-Type": "application/json; charset=utf-8" });
   res.end(JSON.stringify(payload));
 }
+
+
+
+
+
