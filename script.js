@@ -153,6 +153,21 @@ async function saveProfile(nextProfile) {
   return currentUser;
 }
 
+async function changePassword(payload) {
+  const response = await fetch("/api/auth/change-password", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const data = await response.json();
+
+  if (!response.ok) {
+    throw new Error(data.error || "Unable to change password");
+  }
+
+  return data;
+}
+
 function applyShellMode() {
   const authMode = !currentUser || currentPage === "auth";
   body.classList.toggle("auth-screen", authMode);
@@ -342,8 +357,14 @@ async function renderAdminPage() {
                 <span>${user.totalLinks} links • ${user.activeSessions} sessions</span>
               </div>
               <div class="admin-actions">
-                <button class="link-button" data-admin-subscribe="${escapeHtml(user.id)}">Grant 30d</button>
-                <button class="link-button secondary" data-admin-trial="${escapeHtml(user.id)}">Extend trial</button>
+                <select class="admin-select" data-admin-mode="${escapeHtml(user.id)}">
+                  <option value="active" ${user.billing.subscriptionStatus === "active" ? "selected" : ""}>Active</option>
+                  <option value="trial" ${user.billing.subscriptionStatus === "trialing" ? "selected" : ""}>Trial</option>
+                  <option value="inactive" ${user.billing.subscriptionStatus === "inactive" ? "selected" : ""}>Inactive</option>
+                  <option value="lifetime" ${user.billing.subscriptionStatus === "lifetime" ? "selected" : ""}>Lifetime</option>
+                </select>
+                <input class="admin-days-input" data-admin-days="${escapeHtml(user.id)}" type="number" min="1" value="${user.billing.subscriptionStatus === "trialing" ? 3 : 30}" />
+                <button class="link-button" data-admin-apply="${escapeHtml(user.id)}">Apply</button>
                 ${user.emailVerified ? "" : `<button class="link-button secondary" data-admin-verify="${escapeHtml(user.id)}">Verify</button>`}
               </div>
             </div>
@@ -384,15 +405,16 @@ async function renderAdminPage() {
 }
 
 function bindAdminActions() {
-  document.querySelectorAll("[data-admin-subscribe]").forEach((button) => {
+  document.querySelectorAll("[data-admin-apply]").forEach((button) => {
     button.addEventListener("click", async () => {
-      await runAdminAction(`/api/admin/users/${button.getAttribute("data-admin-subscribe")}/subscription`, { days: 30 }, "Subscription granted.");
-    });
-  });
-
-  document.querySelectorAll("[data-admin-trial]").forEach((button) => {
-    button.addEventListener("click", async () => {
-      await runAdminAction(`/api/admin/users/${button.getAttribute("data-admin-trial")}/trial`, { days: 3 }, "Trial extended.");
+      const userId = button.getAttribute("data-admin-apply");
+      const mode = document.querySelector(`[data-admin-mode="${userId}"]`)?.value || "active";
+      const daysValue = Number(document.querySelector(`[data-admin-days="${userId}"]`)?.value || 30);
+      await runAdminAction(
+        `/api/admin/users/${userId}/subscription`,
+        { mode, days: daysValue },
+        `Subscription updated to ${mode}.`
+      );
     });
   });
 
@@ -734,7 +756,7 @@ function renderLinksPage(links, query = "") {
 
 function renderQrPage() {
   const sample = getSelectedQrLink();
-  const qrTargetUrl = sample ? buildLiveLinkUrl(sample.slug) : "";
+  const qrTargetUrl = sample ? getLinkUrl(sample) : "";
   const qrImageUrl = sample ? buildQrImageUrl(qrTargetUrl) : "";
 
   mainContent.innerHTML = `
@@ -835,6 +857,16 @@ function renderSettingsPage() {
             <button class="primary-action inline-action" id="saveProfileButton">Save profile</button>
           </div>
           <div class="form-card">
+            <h3>Change password</h3>
+            <label class="field-label" for="currentPasswordInput">Current password</label>
+            <input id="currentPasswordInput" class="url-input" type="password" placeholder="Enter current password">
+            <label class="field-label" for="newPasswordInput">New password</label>
+            <input id="newPasswordInput" class="url-input" type="password" placeholder="Minimum 6 characters">
+            <label class="field-label" for="confirmPasswordInput">Confirm new password</label>
+            <input id="confirmPasswordInput" class="url-input" type="password" placeholder="Re-enter new password">
+            <button class="primary-action inline-action" id="changePasswordButton">Update password</button>
+          </div>
+          <div class="form-card">
             <h3>Workspace</h3>
             <label class="field-label" for="workspaceName">Workspace name</label>
             <input id="workspaceName" class="url-input" type="text" value="${escapeHtml(settingsCache.workspaceName)}">
@@ -869,6 +901,22 @@ function renderSettingsPage() {
       });
       renderSettingsPage();
       showGlobalMessage("Profile updated successfully.", false);
+    } catch (error) {
+      showGlobalMessage(error.message, true);
+    }
+  });
+
+  document.getElementById("changePasswordButton").addEventListener("click", async () => {
+    try {
+      await changePassword({
+        currentPassword: document.getElementById("currentPasswordInput").value,
+        newPassword: document.getElementById("newPasswordInput").value,
+        confirmPassword: document.getElementById("confirmPasswordInput").value,
+      });
+      document.getElementById("currentPasswordInput").value = "";
+      document.getElementById("newPasswordInput").value = "";
+      document.getElementById("confirmPasswordInput").value = "";
+      showGlobalMessage("Password updated successfully.", false);
     } catch (error) {
       showGlobalMessage(error.message, true);
     }
@@ -917,7 +965,7 @@ function wireCreateForm() {
 
       linksCache.unshift(payload.link);
       if (qrToggle.checked) selectedQrSlug = payload.link.slug;
-      setInlineBanner(resultBanner, `AnyLink created: ${buildLiveLinkUrl(payload.link.slug)}`, false);
+      setInlineBanner(resultBanner, `AnyLink created: ${getLinkUrl(payload.link)}`, false);
       destinationInput.value = "";
       slugInput.value = "";
       qrToggle.checked = false;
@@ -967,7 +1015,7 @@ function renderLinkItems(links, includeDelete) {
 
   return links.map((link) => {
     const createdAt = new Date(link.createdAt).toLocaleString();
-    const liveUrl = buildLiveLinkUrl(link.slug);
+    const liveUrl = getLinkUrl(link);
     return `<div class="link-item"><div class="link-copy"><a href="${escapeHtml(liveUrl)}" target="_blank" rel="noreferrer">${escapeHtml(liveUrl)}</a><strong>${escapeHtml(link.slug)}</strong><p>${escapeHtml(link.destination)}</p><p>Created: ${escapeHtml(createdAt)}</p></div><div class="link-actions"><button class="link-button" data-copy="${escapeHtml(liveUrl)}">Copy</button><a class="link-button secondary" href="${escapeHtml(liveUrl)}" target="_blank" rel="noreferrer">Open</a><a class="link-button secondary" href="/qr-codes" data-open-qr="${escapeHtml(link.slug)}">QR</a>${includeDelete ? `<button class="link-button danger" data-delete="${escapeHtml(link.slug)}">Delete</button>` : ""}</div></div>`;
   }).join("");
 }
@@ -977,7 +1025,15 @@ function buildShortPreview(slug) {
 }
 
 function buildLiveLinkUrl(slug) {
-  return `${window.location.origin}/${slug}`;
+  return buildDomainPreview(settingsCache.defaultDomain, slug);
+}
+
+function getLinkUrl(link) {
+  if (link && link.shortUrl) {
+    return link.shortUrl;
+  }
+
+  return buildLiveLinkUrl(link?.slug || "");
 }
 
 function buildQrImageUrl(targetUrl) {
@@ -995,7 +1051,7 @@ function getSelectedQrLink() {
 function renderQrLinkItems() {
   if (!linksCache.length) return '<div class="empty-state">No links available yet. Create one from Home first.</div>';
 
-  return linksCache.slice(0, 6).map((link) => `<button class="qr-link-item ${link.slug === (getSelectedQrLink()?.slug || "") ? "active" : ""}" data-select-qr="${escapeHtml(link.slug)}"><strong>${escapeHtml(link.slug)}</strong><span>${escapeHtml(buildLiveLinkUrl(link.slug))}</span></button>`).join("");
+  return linksCache.slice(0, 6).map((link) => `<button class="qr-link-item ${link.slug === (getSelectedQrLink()?.slug || "") ? "active" : ""}" data-select-qr="${escapeHtml(link.slug)}"><strong>${escapeHtml(link.slug)}</strong><span>${escapeHtml(getLinkUrl(link))}</span></button>`).join("");
 }
 
 function buildDomainPreview(domain, slug = "sample-link") {
