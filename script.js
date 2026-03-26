@@ -728,40 +728,43 @@ function renderHomePage() {
   const activeDomain = escapeHtml(settingsCache.defaultDomain);
   const trialDaysLeft = Math.max(0, Math.ceil((billingCache.trialRemainingMs || 0) / (1000 * 60 * 60 * 24)));
   mainContent.innerHTML = `
-    <div class="creation-tabs">
-      <button class="creation-tab active"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9.5 14.5 7 17a4 4 0 1 1-5.7-5.6l3.3-3.4A4 4 0 0 1 10.3 9" /><path d="m14.5 9.5 2.5-2.5a4 4 0 1 1 5.7 5.6l-3.3 3.4A4 4 0 0 1 13.7 15" /><path d="m8.5 15.5 7-7" /></svg><span>Short link</span></button>
-      <a class="creation-tab" href="/qr-codes"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4z" /><path d="M16 14h2M14 17h6M14 20h6M19 15v5" /></svg><span>QR Code</span></a>
-    </div>
-    <section class="hero-card">
-      <div class="hero-main">
-        <div class="hero-heading">
-          <div><h1>Quick create: Short link</h1><p class="meta-line">Active domain: <strong>${activeDomain}</strong></p></div>
-          <p class="limit-copy">Signed in as <strong>${escapeHtml(currentUser.name)}</strong>. Your links stay private to your account.</p>
+    <section class="clean-home-shell">
+      <article class="surface-card clean-create-card">
+        <div class="clean-create-head">
+          <div>
+            <h2>New short link</h2>
+            <p>Active domain: <strong>${activeDomain}</strong></p>
+          </div>
+          <div class="clean-home-badges">
+            <span class="chip-link">${settingsCache.domains.length} domain${settingsCache.domains.length === 1 ? "" : "s"}</span>
+            <span class="chip-link">${trialDaysLeft} day${trialDaysLeft === 1 ? "" : "s"} left</span>
+          </div>
         </div>
-        <div class="input-row">
-          <div class="input-stack"><label for="destination" class="field-label">Enter your destination URL</label><input id="destination" class="url-input" type="url" placeholder="https://example.com/my-long-url"></div>
-          <button class="primary-action" id="createLinkButton">Create your AnyLink</button>
+        <div class="clean-create-grid">
+          <div class="input-stack full-span"><label for="destination" class="field-label">Destination URL</label><input id="destination" class="url-input" type="url" placeholder="https://example.com/my-long-url"></div>
+          <div class="input-stack"><label for="slug" class="field-label">Custom slug</label><input id="slug" class="url-input" type="text" placeholder="offer-2026"></div>
+          <div class="inline-note clean-preview-note">Preview:<strong id="shortBaseLabel">${escapeHtml(buildShortPreview("your-slug"))}</strong></div>
+          <label class="checkbox-row clean-checkbox"><input type="checkbox" id="qrToggle"><span>Generate QR-ready link</span></label>
+          <button class="primary-action clean-create-button" id="createLinkButton">Create link</button>
         </div>
-        <div class="input-row secondary-row">
-          <div class="input-stack"><label for="slug" class="field-label">Custom back-half (optional)</label><input id="slug" class="url-input" type="text" placeholder="offer-2026"></div>
-          <div class="inline-note">Your short link will look like:<strong id="shortBaseLabel">${escapeHtml(buildShortPreview("your-slug"))}</strong></div>
-        </div>
-        <label class="checkbox-row"><input type="checkbox" id="qrToggle"><span>Also create a QR-ready entry for this link</span></label>
-        <div class="promo-strip"><span>${settingsCache.domains.length} domain${settingsCache.domains.length === 1 ? "" : "s"} connected to your private workspace. Trial: ${trialDaysLeft} day${trialDaysLeft === 1 ? "" : "s"} left.</span><a href="/custom-domains">Manage domains</a></div>
         <div class="result-banner hidden" id="resultBanner" aria-live="polite"></div>
-        ${currentUser.emailVerified ? "" : '<div class="result-banner" id="verificationNotice">Email not verified yet. <button class="auth-inline-link" type="button" id="sendVerificationButton">Generate verification link</button></div>'}
-      </div>
-      <aside class="hero-aside">
-        <h2>Your personal link vault</h2>
-        <p>Everything in this dashboard is scoped to your account only. Other users will see only their own links, settings, and QR workspace.</p>
-        <a class="aside-pill" href="/links">View all AnyLinks</a>
-        <a class="aside-pill" href="/custom-domains">Manage custom domains</a>
-        <a class="aside-upgrade" href="/analytics">Track performance</a>
-      </aside>
-    </section>
-    <section class="bottom-grid">
-      <article class="mini-card"><div class="mini-card-header"><h3>Your recent links</h3><a href="/links">Open library</a></div><div class="links-list" id="homeLinksList">${renderLinkItems(linksCache.slice(0, 3), true)}</div></article>
-      <article class="mini-card"><div class="mini-card-header"><h3>Workspace overview</h3><div class="progress-ring">${settingsCache.domains.length}</div></div><div class="domain-stack">${settingsCache.domains.slice(0, 4).map((domain) => `<div class="domain-pill ${domain === settingsCache.defaultDomain ? "active" : ""}"><strong>${escapeHtml(domain)}</strong><span>${domain === settingsCache.defaultDomain ? "Active" : "Ready"}</span></div>`).join("")}</div></article>
+        ${currentUser.emailVerified ? "" : '<div class="result-banner" id="verificationNotice">Email not verified. <button class="auth-inline-link" type="button" id="sendVerificationButton">Generate verification link</button></div>'}
+      </article>
+      <article class="mini-card clean-recent-card">
+        <div class="mini-card-header"><h3>Recent links</h3><a href="/links">Open library</a></div>
+        <div class="links-list" id="homeLinksList">${renderLinkItems(linksCache.slice(0, 3), true)}</div>
+      </article>
+      <details class="surface-card clean-more-card">
+        <summary>More details</summary>
+        <div class="clean-more-grid">
+          <div class="domain-stack">${settingsCache.domains.slice(0, 4).map((domain) => `<div class="domain-pill ${domain === settingsCache.defaultDomain ? "active" : ""}"><strong>${escapeHtml(domain)}</strong><span>${domain === settingsCache.defaultDomain ? "Active" : "Ready"}</span></div>`).join("")}</div>
+          <div class="clean-quick-links">
+            <a class="aside-pill" href="/custom-domains">Manage domains</a>
+            <a class="aside-pill" href="/links">All links</a>
+            <a class="aside-pill" href="/analytics">Analytics</a>
+          </div>
+        </div>
+      </details>
     </section>
   `;
   wireCreateForm();
