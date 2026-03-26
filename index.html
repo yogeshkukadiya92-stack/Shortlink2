@@ -4,19 +4,38 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>AnyLink Dashboard</title>
-  <link rel="stylesheet" href="/styles.css?v=26">
+  <link rel="stylesheet" href="/styles.css?v=27">
 </head>
 <body>
   <div class="app-shell">
     <aside class="sidebar" id="sidebar">
       <div class="brand-row">
         <a class="brand-link" href="/home" aria-label="AnyLink home">
-          <div class="brand-mark" aria-label="AnyLink logo">
-            <span>a</span>
+          <div class="brand-logo" aria-label="ShortLink logo">
+            <svg class="brand-logo-art" viewBox="0 0 280 72" role="img" aria-hidden="true">
+              <defs>
+                <linearGradient id="chainBlue" x1="0%" y1="0%" x2="100%" y2="100%">
+                  <stop offset="0%" stop-color="#1ed1ff" />
+                  <stop offset="55%" stop-color="#2463e6" />
+                  <stop offset="100%" stop-color="#183cae" />
+                </linearGradient>
+                <linearGradient id="arrowGreen" x1="0%" y1="0%" x2="100%" y2="100%">
+                  <stop offset="0%" stop-color="#d8ff3c" />
+                  <stop offset="60%" stop-color="#5fe000" />
+                  <stop offset="100%" stop-color="#24a100" />
+                </linearGradient>
+              </defs>
+              <g transform="translate(4 7)">
+                <path d="M44 41c-9 0-16-7-16-16 0-4 1-8 4-11l18-18c6-6 14-9 22-9 13 0 24 7 29 18l-15 6c-3-6-8-9-15-9-4 0-8 2-11 5L42 25c-1 2-2 4-2 6 0 5 4 9 9 9 2 0 4-1 6-2l8-8 13 6-9 9c-6 5-14 8-23 8Z" fill="url(#chainBlue)"/>
+                <path d="M74 48c-13 0-24-7-29-18l15-6c3 6 8 9 15 9 4 0 8-2 11-5l18-18c1-2 2-4 2-6 0-5-4-9-9-9-2 0-4 1-6 2l-8 8-13-6 9-9c6-5 14-8 23-8 9 0 16 7 16 16 0 4-1 8-4 11L96 39c-6 6-14 9-22 9Z" fill="url(#chainBlue)"/>
+                <path d="M82 18 119 2l-7 37-10-9-19 18-11-5 21-20-11-5Z" fill="url(#arrowGreen)"/>
+              </g>
+              <text x="126" y="48" fill="#2147c0" font-size="34" font-weight="800" font-family="Segoe UI, Arial, sans-serif" letter-spacing="-1">Short</text>
+              <text x="208" y="48" fill="#4caf10" font-size="34" font-weight="800" font-family="Segoe UI, Arial, sans-serif" letter-spacing="-1">Link</text>
+            </svg>
           </div>
-          <div class="brand-copy">
-            <strong>AnyLink</strong>
-            <span>Link OS</span>
+          <div class="brand-copy brand-copy-tagline">
+            <span>Smart Link OS</span>
           </div>
         </a>
       </div>
