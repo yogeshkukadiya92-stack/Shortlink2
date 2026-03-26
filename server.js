@@ -149,8 +149,17 @@ const server = http.createServer(async (req, res) => {
       return withAppAccess(req, res, (user) => sendJson(res, 200, { analytics: buildAnalyticsReport(user.id) }));
     }
 
+    if (req.method === "GET" && pathname === "/api/analytics/export") {
+      return withAppAccess(req, res, (user) => handleAnalyticsExport(req, res, user));
+    }
+
     if (req.method === "GET" && pathname === "/api/pages") {
       return withAppAccess(req, res, (user) => sendJson(res, 200, { pages: readPagesForUser(user.id, req) }));
+    }
+
+    if (req.method === "GET" && pathname.startsWith("/api/pages/") && pathname.endsWith("/export")) {
+      const pageId = pathname.split("/")[3];
+      return withAppAccess(req, res, (user) => handlePageExport(pageId, req, res, user));
     }
 
     if (req.method === "POST" && pathname === "/api/pages") {
@@ -1033,6 +1042,40 @@ function handleDeletePage(pageId, res, user) {
   return sendJson(res, 200, { success: true });
 }
 
+function handlePageExport(pageId, req, res, user) {
+  const page = readPages().find((item) => item.id === pageId && item.userId === user.id);
+
+  if (!page) {
+    return sendJson(res, 404, { error: "Form not found." });
+  }
+
+  const normalizedPage = normalizePage(page, req);
+  const enabledFields = getEnabledFormFields(normalizedPage.fields);
+  const headers = [
+    "Submitted At",
+    "IP Address",
+    "Country",
+    "City",
+    "Device",
+    "Platform",
+    "Browser",
+    ...enabledFields.map((field) => field.label),
+  ];
+
+  const rows = normalizedPage.submissions.map((submission) => [
+    submission.submittedAt || "",
+    submission.meta?.ip || "",
+    submission.meta?.country || "",
+    submission.meta?.city || "",
+    submission.meta?.device || "",
+    submission.meta?.platform || "",
+    submission.meta?.browser || "",
+    ...enabledFields.map((field) => submission.answers?.[field.key] || ""),
+  ]);
+
+  return sendCsv(res, `${normalizedPage.slug}-responses.csv`, headers, rows);
+}
+
 function handlePublicFormPage(slug, req, res) {
   const page = readPages().find((item) => item.slug === slug);
 
@@ -1207,6 +1250,37 @@ function buildAnalyticsReport(userId) {
   };
 }
 
+function handleAnalyticsExport(req, res, user) {
+  const analytics = buildAnalyticsReport(user.id);
+  const headers = [
+    "Slug",
+    "Short URL",
+    "Destination",
+    "Total Clicks",
+    "Last Clicked At",
+    "Top Countries",
+    "Top Cities",
+    "Top Devices",
+    "Top Browsers",
+    "Top Platforms",
+  ];
+
+  const rows = analytics.links.map((link) => [
+    link.slug || "",
+    link.shortUrl || "",
+    link.destination || "",
+    String(link.totalClicks || 0),
+    link.lastClickedAt || "",
+    formatAnalyticsExportList(link.topCountries),
+    formatAnalyticsExportList(link.topCities),
+    formatAnalyticsExportList(link.topDevices),
+    formatAnalyticsExportList(link.topBrowsers),
+    formatAnalyticsExportList(link.topPlatforms),
+  ]);
+
+  return sendCsv(res, "anylink-analytics.csv", headers, rows);
+}
+
 function handleSaveSettings(body, req, res, user) {
   const currentSettings = readSettingsForUser(user.id, req);
   const workspaceName = String(body.workspaceName || currentSettings.workspaceName || "").trim();
@@ -1321,6 +1395,12 @@ function buildPublicFormUrl(slug, req) {
   const protocol = getRequestProtocol(req, hostHeader);
   const localHost = /^(localhost|127\.0\.0\.1)(:\d+)?$/i.test(hostHeader) ? hostHeader : publicAppDomain;
   return `${protocol}://${localHost}/forms/${slug}`;
+}
+
+function formatAnalyticsExportList(items) {
+  return Array.isArray(items)
+    ? items.map((item) => `${item.label} (${item.count})`).join("; ")
+    : "";
 }
 
 function ensureUserSettings(userId, req) {
@@ -1631,6 +1711,25 @@ function escapeHtml(value) {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#39;");
+}
+
+function toCsvValue(value) {
+  const text = String(value ?? "");
+  return `"${text.replaceAll('"', '""')}"`;
+}
+
+function sendCsv(res, fileName, headers, rows) {
+  const csvLines = [
+    headers.map(toCsvValue).join(","),
+    ...rows.map((row) => row.map(toCsvValue).join(",")),
+  ];
+
+  res.writeHead(200, {
+    "Content-Type": "text/csv; charset=utf-8",
+    "Content-Disposition": `attachment; filename="${fileName}"`,
+    "Cache-Control": "no-store",
+  });
+  res.end(`\uFEFF${csvLines.join("\n")}`);
 }
 
 function getRequestProtocol(req, hostHeader = "") {

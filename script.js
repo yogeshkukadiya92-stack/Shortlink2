@@ -917,6 +917,7 @@ function renderPagesBuilder() {
           <h2>Submissions</h2>
           <p>${draft.id ? `Latest responses for ${escapeHtml(draft.title)}.` : "Create a form to start collecting submissions."}</p>
         </div>
+        ${draft.id ? '<button class="link-button secondary" id="exportResponsesButton" type="button">Export Excel</button>' : ""}
       </div>
       ${draft.id ? renderFormSubmissions(draft.submissions || []) : '<div class="empty-state">No form selected yet.</div>'}
     </section>
@@ -950,6 +951,13 @@ function renderPagesBuilder() {
   if (deleteButton) {
     deleteButton.addEventListener("click", async () => {
       await deleteForm(draft.id);
+    });
+  }
+
+  const exportResponsesButton = document.getElementById("exportResponsesButton");
+  if (exportResponsesButton) {
+    exportResponsesButton.addEventListener("click", () => {
+      window.location.href = `/api/pages/${encodeURIComponent(draft.id)}/export`;
     });
   }
 }
@@ -1120,7 +1128,7 @@ async function renderAnalyticsPage() {
         </div>
       </section>
       <section class="surface-card">
-        <div class="surface-header"><div><h2>Recent clicks</h2><p>Latest visits across all your links with device, location, and IP details.</p></div></div>
+        <div class="surface-header"><div><h2>Recent clicks</h2><p>Latest visits across all your links with device, location, and IP details.</p></div><button class="link-button secondary" id="exportAnalyticsButton" type="button">Export Excel</button></div>
         <div class="admin-table">${renderClickRows(analytics.recentClicks, false)}</div>
       </section>
       <section class="surface-card">
@@ -1147,6 +1155,13 @@ async function renderAnalyticsPage() {
         </div>
       </section>
     `;
+
+    const exportAnalyticsButton = document.getElementById("exportAnalyticsButton");
+    if (exportAnalyticsButton) {
+      exportAnalyticsButton.addEventListener("click", () => {
+        window.location.href = "/api/analytics/export";
+      });
+    }
   } catch (error) {
     mainContent.innerHTML = `<section class="surface-card"><h2>Analytics error</h2><p>${escapeHtml(error.message)}</p></section>`;
   }
