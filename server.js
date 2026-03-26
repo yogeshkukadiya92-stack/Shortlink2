@@ -68,6 +68,11 @@ const server = http.createServer(async (req, res) => {
       return withAuth(req, res, (user) => handleUpdateProfile(body, req, res, user));
     }
 
+    if (req.method === "POST" && pathname === "/api/auth/change-password") {
+      const body = await readRequestBody(req);
+      return withAuth(req, res, (user) => handleChangePassword(body, res, user));
+    }
+
     if (req.method === "POST" && pathname === "/api/auth/logout") {
       return handleLogout(req, res);
     }
@@ -138,6 +143,10 @@ const server = http.createServer(async (req, res) => {
       return withAppAccess(req, res, (user) => sendJson(res, 200, { links: readLinksForUser(user.id) }));
     }
 
+    if (req.method === "GET" && pathname === "/api/analytics") {
+      return withAppAccess(req, res, (user) => sendJson(res, 200, { analytics: buildAnalyticsReport(user.id) }));
+    }
+
     if (req.method === "POST" && pathname === "/api/links") {
       const body = await readRequestBody(req);
       return withAppAccess(req, res, (user) => handleCreateLink(body, req, res, user));
@@ -173,6 +182,8 @@ const server = http.createServer(async (req, res) => {
         const match = links.find((item) => item.slug === slug);
 
         if (match) {
+          recordLinkVisit(match, req);
+          writeLinks(links);
           res.writeHead(302, { Location: match.destination });
           res.end();
           return;
@@ -460,6 +471,43 @@ function handleUpdateProfile(body, req, res, user) {
   return sendJson(res, 200, { user: serializeUser(record) });
 }
 
+function handleChangePassword(body, res, user) {
+  const users = readUsers();
+  const record = users.find((item) => item.id === user.id);
+
+  if (!record) {
+    return sendJson(res, 404, { error: "User not found." });
+  }
+
+  const currentPassword = String(body.currentPassword || "");
+  const nextPassword = String(body.newPassword || "");
+  const confirmPassword = String(body.confirmPassword || "");
+
+  if (!currentPassword || !nextPassword || !confirmPassword) {
+    return sendJson(res, 400, { error: "Fill in all password fields." });
+  }
+
+  if (hashPassword(currentPassword, record.salt) !== record.passwordHash) {
+    return sendJson(res, 400, { error: "Current password is incorrect." });
+  }
+
+  if (nextPassword.length < 6) {
+    return sendJson(res, 400, { error: "New password must be at least 6 characters." });
+  }
+
+  if (nextPassword !== confirmPassword) {
+    return sendJson(res, 400, { error: "New password and confirm password must match." });
+  }
+
+  record.salt = crypto.randomBytes(16).toString("hex");
+  record.passwordHash = hashPassword(nextPassword, record.salt);
+  record.resetToken = "";
+  record.resetExpiresAt = 0;
+  writeUsers(users);
+
+  return sendJson(res, 200, { success: true, message: "Password updated successfully." });
+}
+
 function handleAuthMe(req, res) {
   const user = getAuthenticatedUser(req);
 
@@ -621,10 +669,33 @@ function handleAdminSubscriptionUpdate(userId, body, res) {
     return sendJson(res, 404, { error: "User not found." });
   }
 
+  const mode = String(body.mode || "active").trim().toLowerCase();
   const days = Math.max(1, Number(body.days) || 30);
-  user.subscriptionStatus = "active";
-  user.subscriptionStartedAt = Date.now();
-  user.subscriptionExpiresAt = Date.now() + days * 24 * 60 * 60 * 1000;
+  const now = Date.now();
+
+  if (mode === "active") {
+    user.subscriptionStatus = "active";
+    user.subscriptionStartedAt = now;
+    user.subscriptionExpiresAt = now + days * 24 * 60 * 60 * 1000;
+  } else if (mode === "trial") {
+    user.subscriptionStatus = "trialing";
+    user.trialStartedAt = now;
+    user.trialEndsAt = now + days * 24 * 60 * 60 * 1000;
+    user.subscriptionStartedAt = 0;
+    user.subscriptionExpiresAt = 0;
+  } else if (mode === "inactive") {
+    user.subscriptionStatus = "inactive";
+    user.trialEndsAt = 0;
+    user.subscriptionStartedAt = 0;
+    user.subscriptionExpiresAt = 0;
+  } else if (mode === "lifetime") {
+    user.subscriptionStatus = "lifetime";
+    user.subscriptionStartedAt = now;
+    user.subscriptionExpiresAt = 0;
+  } else {
+    return sendJson(res, 400, { error: "Invalid subscription mode." });
+  }
+
   writeUsers(users);
 
   return sendJson(res, 200, { success: true, billing: serializeBilling(user) });
@@ -790,6 +861,10 @@ function hasLifetimeAccess(user) {
     return false;
   }
 
+  if (String(user.subscriptionStatus || "").toLowerCase() === "lifetime") {
+    return true;
+  }
+
   return builtInLifetimeEmails.includes(String(user.email || "").toLowerCase());
 }
 
@@ -829,6 +904,7 @@ function handleCreateLink(body, req, res, user) {
     shortUrl,
     includeQr,
     createdAt: new Date().toISOString(),
+    analytics: createEmptyAnalytics(),
   };
 
   links.unshift(nextLink);
@@ -846,6 +922,44 @@ function handleDeleteLink(slug, res, user) {
 
   writeLinks(nextLinks);
   return sendJson(res, 200, { success: true });
+}
+
+function buildAnalyticsReport(userId) {
+  const links = readLinksForUser(userId);
+  const totalClicks = links.reduce((sum, link) => sum + Number(link.analytics?.totalClicks || 0), 0);
+  const allClicks = links.flatMap((link) => (Array.isArray(link.analytics?.clicks) ? link.analytics.clicks : []).map((click) => ({
+    ...click,
+    slug: link.slug,
+    shortUrl: link.shortUrl,
+  })));
+
+  return {
+    totalLinks: links.length,
+    totalClicks,
+    topCountries: summarizeClicks(allClicks, "country"),
+    topCities: summarizeClicks(allClicks, "cityLabel"),
+    topDevices: summarizeClicks(allClicks, "deviceType"),
+    topPlatforms: summarizeClicks(allClicks, "platform"),
+    topBrowsers: summarizeClicks(allClicks, "browser"),
+    recentClicks: allClicks.sort((left, right) => new Date(right.clickedAt).getTime() - new Date(left.clickedAt).getTime()).slice(0, 12),
+    links: links.map((link) => ({
+      id: link.id,
+      slug: link.slug,
+      shortUrl: link.shortUrl,
+      destination: link.destination,
+      totalClicks: Number(link.analytics?.totalClicks || 0),
+      lastClickedAt: link.analytics?.lastClickedAt || "",
+      topCountries: summarizeClicks(link.analytics?.clicks || [], "country"),
+      topCities: summarizeClicks(link.analytics?.clicks || [], "cityLabel"),
+      topDevices: summarizeClicks(link.analytics?.clicks || [], "deviceType"),
+      topPlatforms: summarizeClicks(link.analytics?.clicks || [], "platform"),
+      topBrowsers: summarizeClicks(link.analytics?.clicks || [], "browser"),
+      recentClicks: (link.analytics?.clicks || [])
+        .slice()
+        .sort((left, right) => new Date(right.clickedAt).getTime() - new Date(left.clickedAt).getTime())
+        .slice(0, 8),
+    })).sort((left, right) => right.totalClicks - left.totalClicks || right.id - left.id),
+  };
 }
 
 function handleSaveSettings(body, req, res, user) {
@@ -891,6 +1005,44 @@ function ensureUserSettings(userId, req) {
   writeSettingsStore(store);
 }
 
+function createEmptyAnalytics() {
+  return {
+    totalClicks: 0,
+    lastClickedAt: "",
+    clicks: [],
+  };
+}
+
+function recordLinkVisit(link, req) {
+  if (!link.analytics || typeof link.analytics !== "object") {
+    link.analytics = createEmptyAnalytics();
+  }
+
+  if (!Array.isArray(link.analytics.clicks)) {
+    link.analytics.clicks = [];
+  }
+
+  const geo = getGeoDetails(req);
+  const client = parseUserAgent(req.headers["user-agent"] || "");
+  const click = {
+    id: crypto.randomUUID(),
+    clickedAt: new Date().toISOString(),
+    ip: getClientIp(req),
+    country: geo.country,
+    city: geo.city,
+    cityLabel: geo.city && geo.country !== "Unknown" ? `${geo.city}, ${geo.country}` : (geo.city || geo.country),
+    platform: client.platform,
+    deviceType: client.deviceType,
+    browser: client.browser,
+    referrer: String(req.headers.referer || req.headers.referrer || "").trim(),
+  };
+
+  link.analytics.totalClicks = Number(link.analytics.totalClicks || 0) + 1;
+  link.analytics.lastClickedAt = click.clickedAt;
+  link.analytics.clicks.unshift(click);
+  link.analytics.clicks = link.analytics.clicks.slice(0, 500);
+}
+
 function normalizeUrl(input) {
   let value = input;
 
@@ -907,6 +1059,20 @@ function normalizeUrl(input) {
   } catch {
     return null;
   }
+}
+
+function summarizeClicks(clicks, key) {
+  const counts = new Map();
+
+  for (const click of clicks || []) {
+    const value = String(click?.[key] || "Unknown").trim() || "Unknown";
+    counts.set(value, (counts.get(value) || 0) + 1);
+  }
+
+  return [...counts.entries()]
+    .map(([label, count]) => ({ label, count }))
+    .sort((left, right) => right.count - left.count)
+    .slice(0, 6);
 }
 
 function generateSlug(links) {
@@ -997,6 +1163,75 @@ function sanitizeDomainInput(value, req) {
   }
 
   return normalized;
+}
+
+function getClientIp(req) {
+  const forwarded = String(req.headers["x-forwarded-for"] || "").split(",").map((item) => item.trim()).filter(Boolean)[0];
+  const realIp = String(req.headers["x-real-ip"] || "").trim();
+  const socketIp = String(req.socket?.remoteAddress || "").trim();
+  return forwarded || realIp || socketIp || "Unknown";
+}
+
+function getGeoDetails(req) {
+  const country = firstHeaderValue(req, [
+    "cf-ipcountry",
+    "x-vercel-ip-country",
+    "x-country-code",
+    "x-geo-country",
+    "x-appengine-country",
+  ]);
+  const city = firstHeaderValue(req, [
+    "x-vercel-ip-city",
+    "x-geo-city",
+    "x-appengine-city",
+  ]);
+
+  return {
+    country: country || "Unknown",
+    city: city || "Unknown",
+  };
+}
+
+function firstHeaderValue(req, keys) {
+  for (const key of keys) {
+    const value = String(req.headers[key] || "").trim();
+    if (value) {
+      return value;
+    }
+  }
+
+  return "";
+}
+
+function parseUserAgent(userAgent) {
+  const ua = String(userAgent || "");
+  const lower = ua.toLowerCase();
+
+  let deviceType = "Web";
+  if (lower.includes("iphone")) deviceType = "iPhone";
+  else if (lower.includes("ipad")) deviceType = "iPad";
+  else if (lower.includes("android")) deviceType = "Android";
+  else if (lower.includes("macintosh") || lower.includes("mac os")) deviceType = "Mac";
+  else if (lower.includes("windows")) deviceType = "Windows PC";
+  else if (lower.includes("linux")) deviceType = "Linux";
+
+  let platform = "Unknown";
+  if (lower.includes("iphone")) platform = "iOS";
+  else if (lower.includes("ipad")) platform = "iPadOS";
+  else if (lower.includes("android")) platform = "Android";
+  else if (lower.includes("mac os") || lower.includes("macintosh")) platform = "macOS";
+  else if (lower.includes("windows")) platform = "Windows";
+  else if (lower.includes("linux")) platform = "Linux";
+
+  let browser = "Unknown";
+  if (lower.includes("edg/")) browser = "Edge";
+  else if (lower.includes("chrome/") && !lower.includes("edg/")) browser = "Chrome";
+  else if (lower.includes("safari/") && !lower.includes("chrome/")) browser = "Safari";
+  else if (lower.includes("firefox/")) browser = "Firefox";
+  else if (lower.includes("opr/") || lower.includes("opera/")) browser = "Opera";
+  else if (lower.includes("samsungbrowser/")) browser = "Samsung Internet";
+
+  return { deviceType, platform, browser };
 }
 
 function buildShortUrl(domain, slug) {

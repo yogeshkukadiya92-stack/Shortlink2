@@ -257,6 +257,17 @@ async function loadLinks() {
   linksCache = payload.links || [];
 }
 
+async function loadAnalytics() {
+  const response = await fetch("/api/analytics");
+  const payload = await response.json();
+
+  if (!response.ok) {
+    throw new Error(payload.error || "Unable to load analytics");
+  }
+
+  return payload.analytics;
+}
+
 function renderPage() {
   if (!currentUser || currentPage === "auth") return renderAuthPage();
   if (!billingCache.hasAccess && currentPage !== "admin" && !currentUser.isAdmin) return renderBillingPage();
@@ -475,7 +486,7 @@ function renderAuthPage() {
           <label class="field-label" for="signinEmail">Email</label>
           <input class="url-input" id="signinEmail" type="email" placeholder="you@example.com" required>
           <label class="field-label" for="signinPassword">Password</label>
-          <input class="url-input" id="signinPassword" type="password" placeholder="Enter password" required>
+          <div class="password-field"><input class="url-input" id="signinPassword" type="password" placeholder="Enter password" required><button class="password-toggle" type="button" data-password-toggle="signinPassword">Show</button></div>
           <button class="primary-action auth-submit" type="submit">Sign in</button>
           <button class="auth-inline-link" type="button" id="forgotToggle">Forgot password?</button>
           <button class="auth-google-button" type="button" id="googleLoginButton">Continue with Google</button>
@@ -486,13 +497,13 @@ function renderAuthPage() {
           <label class="field-label" for="signupEmail">Email</label>
           <input class="url-input" id="signupEmail" type="email" placeholder="you@example.com" required>
           <label class="field-label" for="signupPassword">Password</label>
-          <input class="url-input" id="signupPassword" type="password" placeholder="Minimum 6 characters" required>
+          <div class="password-field"><input class="url-input" id="signupPassword" type="password" placeholder="Minimum 6 characters" required><button class="password-toggle" type="button" data-password-toggle="signupPassword">Show</button></div>
           <button class="primary-action auth-submit" type="submit">Create account</button>
           <button class="auth-google-button" type="button" id="googleSignupButton">Continue with Google</button>
         </form>
         <form class="auth-form ${authMode === "reset" ? "" : "hidden"}" id="resetForm">
           <label class="field-label" for="resetPassword">New password</label>
-          <input class="url-input" id="resetPassword" type="password" placeholder="Minimum 6 characters" required>
+          <div class="password-field"><input class="url-input" id="resetPassword" type="password" placeholder="Minimum 6 characters" required><button class="password-toggle" type="button" data-password-toggle="resetPassword">Show</button></div>
           <button class="primary-action auth-submit" type="submit">Reset password</button>
         </form>
         <form class="auth-form hidden" id="forgotForm">
@@ -628,6 +639,8 @@ function renderAuthPage() {
     resetForm.classList.add("hidden");
     verifyEmailToken(token, authBanner);
   }
+
+  bindPasswordToggles();
 }
 
 async function submitAuth(url, payload, banner) {
@@ -791,10 +804,70 @@ function renderPagesBuilder() {
   mainContent.innerHTML = `<section class="surface-card"><div class="surface-header"><div><h2>Page builder</h2><p>Create a simple landing page structure for campaigns.</p></div></div><div class="builder-grid"><div class="form-card"><label class="field-label" for="pageName">Page name</label><input id="pageName" class="url-input" type="text" placeholder="Summer launch page"><label class="field-label" for="pageHeadline">Headline</label><input id="pageHeadline" class="url-input" type="text" placeholder="Everything you need in one short page"><label class="field-label" for="pageCta">CTA label</label><input id="pageCta" class="url-input" type="text" placeholder="Get started"></div><div class="preview-card"><span class="eyebrow">Live preview</span><h3>Summer launch page</h3><p>Everything you need in one short page</p><button class="primary-action inline-action">Get started</button></div></div></section>`;
 }
 
-function renderAnalyticsPage() {
-  const total = linksCache.length;
-  const qrReady = linksCache.filter((item) => item.includeQr).length;
-  mainContent.innerHTML = `<section class="stat-grid"><article class="stat-card"><span>Your links</span><strong>${total}</strong></article><article class="stat-card"><span>QR-ready links</span><strong>${qrReady}</strong></article><article class="stat-card"><span>Connected domains</span><strong>${settingsCache.domains.length}</strong></article></section><section class="surface-card"><div class="surface-header"><div><h2>Traffic snapshot</h2><p>This is a dashboard preview for your own workspace only.</p></div></div><div class="chart-bars"><div class="bar-wrap"><span>Mon</span><i style="height: 42%"></i></div><div class="bar-wrap"><span>Tue</span><i style="height: 58%"></i></div><div class="bar-wrap"><span>Wed</span><i style="height: 76%"></i></div><div class="bar-wrap"><span>Thu</span><i style="height: 64%"></i></div><div class="bar-wrap"><span>Fri</span><i style="height: 88%"></i></div><div class="bar-wrap"><span>Sat</span><i style="height: 52%"></i></div><div class="bar-wrap"><span>Sun</span><i style="height: 39%"></i></div></div></section>`;
+async function renderAnalyticsPage() {
+  mainContent.innerHTML = `<section class="surface-card"><p>Loading analytics...</p></section>`;
+
+  try {
+    const analytics = await loadAnalytics();
+    mainContent.innerHTML = `
+      <section class="stat-grid">
+        <article class="stat-card"><span>Total links</span><strong>${analytics.totalLinks}</strong></article>
+        <article class="stat-card"><span>Total clicks</span><strong>${analytics.totalClicks}</strong></article>
+        <article class="stat-card"><span>Connected domains</span><strong>${settingsCache.domains.length}</strong></article>
+      </section>
+      <section class="surface-card two-column">
+        <div class="stack-card-group">
+          <article class="mini-card inset-card">
+            <h3>Top countries</h3>
+            <div class="analytics-list">${renderAnalyticsBadges(analytics.topCountries)}</div>
+          </article>
+          <article class="mini-card inset-card">
+            <h3>Top cities</h3>
+            <div class="analytics-list">${renderAnalyticsBadges(analytics.topCities)}</div>
+          </article>
+        </div>
+        <div class="stack-card-group">
+          <article class="mini-card inset-card">
+            <h3>Top devices</h3>
+            <div class="analytics-list">${renderAnalyticsBadges(analytics.topDevices)}</div>
+          </article>
+          <article class="mini-card inset-card">
+            <h3>Top browsers & platforms</h3>
+            <div class="analytics-list">${renderAnalyticsBadges(analytics.topBrowsers)}${renderAnalyticsBadges(analytics.topPlatforms)}</div>
+          </article>
+        </div>
+      </section>
+      <section class="surface-card">
+        <div class="surface-header"><div><h2>Recent clicks</h2><p>Latest visits across all your links with device, location, and IP details.</p></div></div>
+        <div class="admin-table">${renderClickRows(analytics.recentClicks, false)}</div>
+      </section>
+      <section class="surface-card">
+        <div class="surface-header"><div><h2>Per-link reports</h2><p>Every link shows clicks, country/city mix, device source, browser, and recent click history.</p></div></div>
+        <div class="analytics-report-grid">
+          ${analytics.links.length ? analytics.links.map((link) => `
+            <article class="mini-card inset-card analytics-report-card">
+              <div class="surface-header">
+                <div>
+                  <h3>${escapeHtml(link.slug)}</h3>
+                  <p><a href="${escapeHtml(link.shortUrl)}" target="_blank" rel="noreferrer">${escapeHtml(link.shortUrl)}</a></p>
+                </div>
+                <span class="chip-link">${link.totalClicks} clicks</span>
+              </div>
+              <div class="analytics-meta-grid">
+                <div><strong>Countries</strong><div class="analytics-list">${renderAnalyticsBadges(link.topCountries)}</div></div>
+                <div><strong>Cities</strong><div class="analytics-list">${renderAnalyticsBadges(link.topCities)}</div></div>
+                <div><strong>Devices</strong><div class="analytics-list">${renderAnalyticsBadges(link.topDevices)}</div></div>
+                <div><strong>Browsers</strong><div class="analytics-list">${renderAnalyticsBadges(link.topBrowsers)}</div></div>
+              </div>
+              <div class="admin-table analytics-click-table">${renderClickRows(link.recentClicks, true)}</div>
+            </article>
+          `).join("") : '<div class="empty-state">No analytics yet. Share a short link and visits will appear here.</div>'}
+        </div>
+      </section>
+    `;
+  } catch (error) {
+    mainContent.innerHTML = `<section class="surface-card"><h2>Analytics error</h2><p>${escapeHtml(error.message)}</p></section>`;
+  }
 }
 
 function renderCampaignsPage() {
@@ -860,11 +933,11 @@ function renderSettingsPage() {
           <div class="form-card">
             <h3>Change password</h3>
             <label class="field-label" for="currentPasswordInput">Current password</label>
-            <input id="currentPasswordInput" class="url-input" type="password" placeholder="Enter current password">
+            <div class="password-field"><input id="currentPasswordInput" class="url-input" type="password" placeholder="Enter current password"><button class="password-toggle" type="button" data-password-toggle="currentPasswordInput">Show</button></div>
             <label class="field-label" for="newPasswordInput">New password</label>
-            <input id="newPasswordInput" class="url-input" type="password" placeholder="Minimum 6 characters">
+            <div class="password-field"><input id="newPasswordInput" class="url-input" type="password" placeholder="Minimum 6 characters"><button class="password-toggle" type="button" data-password-toggle="newPasswordInput">Show</button></div>
             <label class="field-label" for="confirmPasswordInput">Confirm new password</label>
-            <input id="confirmPasswordInput" class="url-input" type="password" placeholder="Re-enter new password">
+            <div class="password-field"><input id="confirmPasswordInput" class="url-input" type="password" placeholder="Re-enter new password"><button class="password-toggle" type="button" data-password-toggle="confirmPasswordInput">Show</button></div>
             <button class="primary-action inline-action" id="changePasswordButton">Update password</button>
           </div>
           <div class="form-card">
@@ -936,6 +1009,8 @@ function renderSettingsPage() {
       showGlobalMessage(error.message, true);
     }
   });
+
+  bindPasswordToggles();
 }
 
 function wireCreateForm() {
@@ -1058,6 +1133,35 @@ function renderQrLinkItems() {
   return linksCache.slice(0, 6).map((link) => `<button class="qr-link-item ${link.slug === (getSelectedQrLink()?.slug || "") ? "active" : ""}" data-select-qr="${escapeHtml(link.slug)}"><strong>${escapeHtml(link.slug)}</strong><span>${escapeHtml(getLinkUrl(link))}</span></button>`).join("");
 }
 
+function renderAnalyticsBadges(items) {
+  if (!items || !items.length) {
+    return '<div class="empty-state">No data yet.</div>';
+  }
+
+  return items.map((item) => `<div class="analytics-pill"><span>${escapeHtml(item.label)}</span><strong>${item.count}</strong></div>`).join("");
+}
+
+function renderClickRows(clicks, compact) {
+  if (!clicks || !clicks.length) {
+    return '<div class="empty-state">No clicks recorded yet.</div>';
+  }
+
+  return clicks.map((click) => `
+    <div class="admin-row analytics-row ${compact ? "compact" : ""}">
+      <div class="admin-main">
+        ${click.slug ? `<strong>${escapeHtml(click.slug)}</strong>` : ""}
+        <span>${escapeHtml(new Date(click.clickedAt).toLocaleString())}</span>
+        <span>${escapeHtml(click.country || "Unknown")} • ${escapeHtml(click.city || "Unknown")}</span>
+        <span>${escapeHtml(click.deviceType || "Unknown")} • ${escapeHtml(click.platform || "Unknown")} • ${escapeHtml(click.browser || "Unknown")}</span>
+      </div>
+      <div class="admin-actions analytics-actions">
+        <span class="analytics-tag">${escapeHtml(click.ip || "Unknown")}</span>
+        ${click.referrer ? `<span class="analytics-tag muted">${escapeHtml(click.referrer)}</span>` : ""}
+      </div>
+    </div>
+  `).join("");
+}
+
 function buildDomainPreview(domain, slug = "sample-link") {
   const localPattern = /^(localhost|127\.0\.0\.1)(:\d+)?$/i.test(domain);
   const protocol = localPattern ? "http" : "https";
@@ -1077,6 +1181,23 @@ function setInlineBanner(element, message, isError) {
   element.textContent = message;
   element.classList.remove("hidden", "error");
   if (isError) element.classList.add("error");
+}
+
+function bindPasswordToggles() {
+  document.querySelectorAll("[data-password-toggle]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const inputId = button.getAttribute("data-password-toggle");
+      const input = document.getElementById(inputId);
+
+      if (!input) {
+        return;
+      }
+
+      const shouldShow = input.type === "password";
+      input.type = shouldShow ? "text" : "password";
+      button.textContent = shouldShow ? "Hide" : "Show";
+    });
+  });
 }
 
 function escapeHtml(value) {
