@@ -1,20 +1,27 @@
+const body = document.body;
 const sidebar = document.getElementById("sidebar");
 const sidebarToggle = document.getElementById("sidebarToggle");
 const mainContent = document.getElementById("mainContent");
 const pageTitle = document.getElementById("pageTitle");
 const pageEyebrow = document.getElementById("pageEyebrow");
 const searchInput = document.getElementById("searchInput");
-const currentPage = getCurrentPage();
+const logoutButton = document.getElementById("logoutButton");
+const profileName = document.querySelector(".profile-name");
+const avatar = document.querySelector(".avatar");
 
+let currentPage = getCurrentPage();
+let currentUser = null;
 let linksCache = [];
+let selectedQrSlug = null;
 let settingsCache = {
   workspaceName: "AnyLink Workspace",
   defaultDomain: window.location.host,
   domains: [window.location.host],
 };
-let selectedQrSlug = null;
+const authQuery = new URLSearchParams(window.location.search);
 
 const pageMeta = {
+  auth: { eyebrow: "Secure Access", title: "Sign in" },
   home: { eyebrow: "Workspace", title: "Home" },
   links: { eyebrow: "Library", title: "Links" },
   "qr-codes": { eyebrow: "Create", title: "QR Codes" },
@@ -29,30 +36,50 @@ sidebarToggle.addEventListener("click", () => {
   sidebar.classList.toggle("collapsed");
 });
 
-document.querySelectorAll(".nav-item[data-page]").forEach((item) => {
-  item.classList.toggle("active", item.dataset.page === currentPage);
+logoutButton.addEventListener("click", async () => {
+  await fetch("/api/auth/logout", { method: "POST" });
+  window.location.href = "/auth";
 });
 
 searchInput.addEventListener("input", () => {
-  if (currentPage === "links") {
+  if (currentPage === "links" && currentUser) {
     renderLinksPage(linksCache, searchInput.value.trim().toLowerCase());
+  }
+});
+
+document.addEventListener("click", (event) => {
+  const qrLink = event.target.closest("[data-open-qr]");
+  if (qrLink) {
+    selectedQrSlug = qrLink.getAttribute("data-open-qr");
   }
 });
 
 initialize();
 
 async function initialize() {
-  await loadSettings();
+  currentPage = getCurrentPage();
+  await loadCurrentUser();
 
-  const meta = pageMeta[currentPage] || pageMeta.home;
-  pageEyebrow.textContent = meta.eyebrow;
-  pageTitle.textContent = meta.title;
-  document.title = `${meta.title} | ${settingsCache.workspaceName}`;
-
-  if (["home", "links", "analytics", "qr-codes"].includes(currentPage)) {
-    await loadLinks();
+  if (!currentUser && currentPage !== "auth") {
+    window.location.replace("/auth");
+    return;
   }
 
+  if (currentUser && currentPage === "auth") {
+    window.location.replace("/home");
+    return;
+  }
+
+  applyShellMode();
+
+  if (currentUser) {
+    await loadSettings();
+    if (["home", "links", "analytics", "qr-codes"].includes(currentPage)) {
+      await loadLinks();
+    }
+  }
+
+  updateHeaderMeta();
   renderPage();
 }
 
@@ -61,49 +88,74 @@ function getCurrentPage() {
   return cleaned || "home";
 }
 
-async function loadSettings() {
+async function loadCurrentUser() {
   try {
-    const response = await fetch("/api/settings");
+    const response = await fetch("/api/auth/me");
     const payload = await response.json();
-
-    if (!response.ok) {
-      throw new Error(payload.error || "Unable to load settings");
-    }
-
-    settingsCache = normalizeClientSettings(payload.settings || settingsCache);
-  } catch (error) {
-    showGlobalMessage(`Could not load settings. ${error.message}`, true);
+    currentUser = payload.user || null;
+  } catch {
+    currentUser = null;
   }
+}
+
+function applyShellMode() {
+  const authMode = !currentUser || currentPage === "auth";
+  body.classList.toggle("auth-screen", authMode);
+  logoutButton.classList.toggle("hidden", !currentUser);
+
+  if (currentUser) {
+    profileName.textContent = currentUser.name;
+    avatar.textContent = currentUser.name.charAt(0).toUpperCase();
+  } else {
+    profileName.textContent = "Guest";
+    avatar.textContent = "A";
+  }
+
+  document.querySelectorAll(".nav-item[data-page]").forEach((item) => {
+    item.classList.toggle("active", item.dataset.page === currentPage);
+  });
+}
+
+function updateHeaderMeta() {
+  const meta = pageMeta[currentPage] || pageMeta.home;
+  pageEyebrow.textContent = meta.eyebrow;
+  pageTitle.textContent = currentUser ? meta.title : "AnyLink";
+  document.title = currentUser ? `${meta.title} | ${settingsCache.workspaceName}` : "AnyLink | Auth";
+}
+
+async function loadSettings() {
+  const response = await fetch("/api/settings");
+  const payload = await response.json();
+
+  if (!response.ok) {
+    throw new Error(payload.error || "Unable to load settings");
+  }
+
+  settingsCache = normalizeSettings(payload.settings || settingsCache);
 }
 
 async function saveSettings(nextSettings) {
   const response = await fetch("/api/settings", {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(nextSettings),
   });
-
   const payload = await response.json();
 
   if (!response.ok) {
     throw new Error(payload.error || "Unable to save settings");
   }
 
-  settingsCache = normalizeClientSettings(payload.settings);
-  document.title = `${pageMeta[currentPage]?.title || "AnyLink"} | ${settingsCache.workspaceName}`;
+  settingsCache = normalizeSettings(payload.settings);
+  updateHeaderMeta();
   return settingsCache;
 }
 
-function normalizeClientSettings(settings) {
+function normalizeSettings(settings) {
   const domains = Array.isArray(settings.domains) && settings.domains.length
     ? [...new Set(settings.domains)]
     : [settings.defaultDomain || window.location.host];
-
-  const defaultDomain = domains.includes(settings.defaultDomain)
-    ? settings.defaultDomain
-    : domains[0];
+  const defaultDomain = domains.includes(settings.defaultDomain) ? settings.defaultDomain : domains[0];
 
   return {
     workspaceName: settings.workspaceName || "AnyLink Workspace",
@@ -113,196 +165,328 @@ function normalizeClientSettings(settings) {
 }
 
 async function loadLinks() {
-  try {
-    const response = await fetch("/api/links");
-    const payload = await response.json();
+  const response = await fetch("/api/links");
+  const payload = await response.json();
 
-    if (!response.ok) {
-      throw new Error(payload.error || "Unable to load links");
-    }
-
-    linksCache = payload.links || [];
-  } catch (error) {
-    linksCache = [];
-    showGlobalMessage(`Could not load links. ${error.message}`, true);
+  if (!response.ok) {
+    throw new Error(payload.error || "Unable to load links");
   }
+
+  linksCache = payload.links || [];
 }
 
 function renderPage() {
-  if (currentPage === "home") {
-    renderHomePage();
-    return;
-  }
+  if (!currentUser || currentPage === "auth") return renderAuthPage();
+  if (currentPage === "home") return renderHomePage();
+  if (currentPage === "links") return renderLinksPage(linksCache, searchInput.value.trim().toLowerCase());
+  if (currentPage === "qr-codes") return renderQrPage();
+  if (currentPage === "pages") return renderPagesBuilder();
+  if (currentPage === "analytics") return renderAnalyticsPage();
+  if (currentPage === "campaigns") return renderCampaignsPage();
+  if (currentPage === "custom-domains") return renderDomainsPage();
+  if (currentPage === "settings") return renderSettingsPage();
 
-  if (currentPage === "links") {
-    renderLinksPage(linksCache, searchInput.value.trim().toLowerCase());
-    return;
-  }
+  mainContent.innerHTML = `<section class="surface-card"><h2>Page not found</h2><p>This dashboard page is not available.</p></section>`;
+}
 
-  if (currentPage === "qr-codes") {
-    renderQrPage();
-    return;
-  }
-
-  if (currentPage === "pages") {
-    renderPagesBuilder();
-    return;
-  }
-
-  if (currentPage === "analytics") {
-    renderAnalyticsPage();
-    return;
-  }
-
-  if (currentPage === "campaigns") {
-    renderCampaignsPage();
-    return;
-  }
-
-  if (currentPage === "custom-domains") {
-    renderDomainsPage();
-    return;
-  }
-
-  if (currentPage === "settings") {
-    renderSettingsPage();
-    return;
-  }
-
+function renderAuthPage() {
+  const authMode = authQuery.get("mode") || "signin";
+  const token = authQuery.get("token") || "";
   mainContent.innerHTML = `
-    <section class="surface-card">
-      <h2>Page not found</h2>
-      <p>This dashboard page is not available.</p>
+    <section class="auth-shell">
+      <div class="auth-card auth-copy-card">
+        <p class="eyebrow">Private Workspace</p>
+        <h1>Own your links, securely.</h1>
+        <p class="auth-copy">Create a personal AnyLink account, keep your links private, and manage your own domains, QR codes, and analytics without mixing data with anyone else.</p>
+        <div class="auth-feature-list">
+          <div class="auth-feature"><span class="task-check filled"></span><span>Personal sign up and sign in</span></div>
+          <div class="auth-feature"><span class="task-check filled"></span><span>Private links and settings per user</span></div>
+          <div class="auth-feature"><span class="task-check filled"></span><span>Separate custom domains and QR workspace</span></div>
+        </div>
+      </div>
+      <div class="auth-card auth-form-card">
+        <div class="auth-tabs">
+          <button class="auth-tab ${authMode === "signup" ? "" : "active"}" data-auth-tab="signin">Sign in</button>
+          <button class="auth-tab ${authMode === "signup" ? "active" : ""}" data-auth-tab="signup">Sign up</button>
+        </div>
+        <form class="auth-form ${authMode === "signup" || authMode === "reset" ? "hidden" : ""}" id="signinForm">
+          <label class="field-label" for="signinEmail">Email</label>
+          <input class="url-input" id="signinEmail" type="email" placeholder="you@example.com" required>
+          <label class="field-label" for="signinPassword">Password</label>
+          <input class="url-input" id="signinPassword" type="password" placeholder="Enter password" required>
+          <button class="primary-action auth-submit" type="submit">Sign in</button>
+          <button class="auth-inline-link" type="button" id="forgotToggle">Forgot password?</button>
+          <button class="auth-google-button" type="button" id="googleLoginButton">Continue with Google</button>
+        </form>
+        <form class="auth-form ${authMode === "signup" ? "" : "hidden"}" id="signupForm">
+          <label class="field-label" for="signupName">Full name</label>
+          <input class="url-input" id="signupName" type="text" placeholder="Your name" required>
+          <label class="field-label" for="signupEmail">Email</label>
+          <input class="url-input" id="signupEmail" type="email" placeholder="you@example.com" required>
+          <label class="field-label" for="signupPassword">Password</label>
+          <input class="url-input" id="signupPassword" type="password" placeholder="Minimum 6 characters" required>
+          <button class="primary-action auth-submit" type="submit">Create account</button>
+          <button class="auth-google-button" type="button" id="googleSignupButton">Continue with Google</button>
+        </form>
+        <form class="auth-form ${authMode === "reset" ? "" : "hidden"}" id="resetForm">
+          <label class="field-label" for="resetPassword">New password</label>
+          <input class="url-input" id="resetPassword" type="password" placeholder="Minimum 6 characters" required>
+          <button class="primary-action auth-submit" type="submit">Reset password</button>
+        </form>
+        <form class="auth-form hidden" id="forgotForm">
+          <label class="field-label" for="forgotEmail">Email</label>
+          <input class="url-input" id="forgotEmail" type="email" placeholder="you@example.com" required>
+          <button class="primary-action auth-submit" type="submit">Generate reset link</button>
+          <button class="auth-inline-link" type="button" id="backToSignin">Back to sign in</button>
+        </form>
+        <div class="result-banner hidden" id="authBanner" aria-live="polite"></div>
+      </div>
     </section>
   `;
+
+  const signinForm = document.getElementById("signinForm");
+  const signupForm = document.getElementById("signupForm");
+  const resetForm = document.getElementById("resetForm");
+  const forgotForm = document.getElementById("forgotForm");
+  const authBanner = document.getElementById("authBanner");
+  const forgotToggle = document.getElementById("forgotToggle");
+  const backToSignin = document.getElementById("backToSignin");
+  const googleLoginButton = document.getElementById("googleLoginButton");
+  const googleSignupButton = document.getElementById("googleSignupButton");
+
+  document.querySelectorAll("[data-auth-tab]").forEach((tab) => {
+    tab.addEventListener("click", () => {
+      const mode = tab.getAttribute("data-auth-tab");
+      document.querySelectorAll("[data-auth-tab]").forEach((item) => item.classList.toggle("active", item === tab));
+      signinForm.classList.toggle("hidden", mode !== "signin");
+      signupForm.classList.toggle("hidden", mode !== "signup");
+      resetForm.classList.add("hidden");
+      forgotForm.classList.add("hidden");
+      authBanner.classList.add("hidden");
+    });
+  });
+
+  if (forgotToggle) {
+    forgotToggle.addEventListener("click", () => {
+      signinForm.classList.add("hidden");
+      signupForm.classList.add("hidden");
+      resetForm.classList.add("hidden");
+      forgotForm.classList.remove("hidden");
+      authBanner.classList.add("hidden");
+    });
+  }
+
+  if (backToSignin) {
+    backToSignin.addEventListener("click", () => {
+      signinForm.classList.remove("hidden");
+      forgotForm.classList.add("hidden");
+      authBanner.classList.add("hidden");
+    });
+  }
+
+  [googleLoginButton, googleSignupButton].filter(Boolean).forEach((button) => {
+    button.addEventListener("click", async () => {
+      const response = await fetch("/api/auth/google");
+      const payload = await response.json();
+      setInlineBanner(authBanner, payload.error || "Google login is not configured yet.", true);
+    });
+  });
+
+  signinForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    setInlineBanner(authBanner, "Signing in...", false);
+    await submitAuth("/api/auth/login", {
+      email: document.getElementById("signinEmail").value.trim(),
+      password: document.getElementById("signinPassword").value,
+    }, authBanner);
+  });
+
+  signupForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    setInlineBanner(authBanner, "Creating your account...", false);
+    await submitAuth("/api/auth/signup", {
+      name: document.getElementById("signupName").value.trim(),
+      email: document.getElementById("signupEmail").value.trim(),
+      password: document.getElementById("signupPassword").value,
+    }, authBanner);
+  });
+
+  if (forgotForm) {
+    forgotForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      setInlineBanner(authBanner, "Generating reset link...", false);
+      try {
+        const response = await fetch("/api/auth/forgot-password", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email: document.getElementById("forgotEmail").value.trim() }),
+        });
+        const payload = await response.json();
+        if (!response.ok) {
+          setInlineBanner(authBanner, payload.error || "Could not generate reset link.", true);
+          return;
+        }
+        setInlineBanner(authBanner, payload.resetUrl ? `Reset link: ${payload.resetUrl}` : payload.message, false);
+      } catch (error) {
+        setInlineBanner(authBanner, error.message, true);
+      }
+    });
+  }
+
+  if (resetForm && authMode === "reset" && token) {
+    setInlineBanner(authBanner, "Enter a new password to finish resetting your account.", false);
+    resetForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      setInlineBanner(authBanner, "Resetting password...", false);
+      try {
+        const response = await fetch("/api/auth/reset-password", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            token,
+            password: document.getElementById("resetPassword").value,
+          }),
+        });
+        const payload = await response.json();
+        if (!response.ok) {
+          setInlineBanner(authBanner, payload.error || "Could not reset password.", true);
+          return;
+        }
+        setInlineBanner(authBanner, `${payload.message} Go back to sign in.`, false);
+      } catch (error) {
+        setInlineBanner(authBanner, error.message, true);
+      }
+    });
+  }
+
+  if (authMode === "verify" && token) {
+    signinForm.classList.add("hidden");
+    signupForm.classList.add("hidden");
+    forgotForm.classList.add("hidden");
+    resetForm.classList.add("hidden");
+    verifyEmailToken(token, authBanner);
+  }
+}
+
+async function submitAuth(url, payload, banner) {
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const data = await response.json();
+
+    if (!response.ok) {
+      setInlineBanner(banner, data.error || "Authentication failed.", true);
+      return;
+    }
+
+    currentUser = data.user;
+    settingsCache = normalizeSettings(data.settings || settingsCache);
+    if (data.verificationUrl) {
+      setInlineBanner(banner, `Account created. Verify your email: ${data.verificationUrl}`, false);
+      return;
+    }
+    window.location.href = "/home";
+  } catch (error) {
+    setInlineBanner(banner, error.message, true);
+  }
+}
+
+async function verifyEmailToken(token, banner) {
+  setInlineBanner(banner, "Verifying your email...", false);
+  try {
+    const response = await fetch("/api/auth/verify-email", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token }),
+    });
+    const payload = await response.json();
+    if (!response.ok) {
+      setInlineBanner(banner, payload.error || "Could not verify email.", true);
+      return;
+    }
+    setInlineBanner(banner, `${payload.message} You can sign in now.`, false);
+  } catch (error) {
+    setInlineBanner(banner, error.message, true);
+  }
+}
+
+function bindVerificationAction() {
+  const button = document.getElementById("sendVerificationButton");
+  const notice = document.getElementById("verificationNotice");
+
+  if (!button || !notice || currentUser.emailVerified) {
+    return;
+  }
+
+  button.addEventListener("click", async () => {
+    setInlineBanner(notice, "Generating verification link...", false);
+    try {
+      const response = await fetch("/api/auth/send-verification", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: currentUser.email }),
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        setInlineBanner(notice, payload.error || "Could not generate verification link.", true);
+        return;
+      }
+      setInlineBanner(notice, payload.verificationUrl ? `Verification link: ${payload.verificationUrl}` : payload.message, false);
+    } catch (error) {
+      setInlineBanner(notice, error.message, true);
+    }
+  });
 }
 
 function renderHomePage() {
   const activeDomain = escapeHtml(settingsCache.defaultDomain);
-
   mainContent.innerHTML = `
     <div class="creation-tabs">
-      <button class="creation-tab active">
-        <svg viewBox="0 0 24 24" aria-hidden="true">
-          <path d="M9.5 14.5 7 17a4 4 0 1 1-5.7-5.6l3.3-3.4A4 4 0 0 1 10.3 9" />
-          <path d="m14.5 9.5 2.5-2.5a4 4 0 1 1 5.7 5.6l-3.3 3.4A4 4 0 0 1 13.7 15" />
-          <path d="m8.5 15.5 7-7" />
-        </svg>
-        <span>Short link</span>
-      </button>
-      <a class="creation-tab" href="/qr-codes">
-        <svg viewBox="0 0 24 24" aria-hidden="true">
-          <path d="M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4z" />
-          <path d="M16 14h2M14 17h6M14 20h6M19 15v5" />
-        </svg>
-        <span>QR Code</span>
-      </a>
+      <button class="creation-tab active"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9.5 14.5 7 17a4 4 0 1 1-5.7-5.6l3.3-3.4A4 4 0 0 1 10.3 9" /><path d="m14.5 9.5 2.5-2.5a4 4 0 1 1 5.7 5.6l-3.3 3.4A4 4 0 0 1 13.7 15" /><path d="m8.5 15.5 7-7" /></svg><span>Short link</span></button>
+      <a class="creation-tab" href="/qr-codes"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4z" /><path d="M16 14h2M14 17h6M14 20h6M19 15v5" /></svg><span>QR Code</span></a>
     </div>
-
     <section class="hero-card">
       <div class="hero-main">
         <div class="hero-heading">
-          <div>
-            <h1>Quick create: Short link</h1>
-            <p class="meta-line">Active domain: <strong>${activeDomain}</strong></p>
-          </div>
-          <p class="limit-copy">Create, save, and open any destination with your own short URL.</p>
+          <div><h1>Quick create: Short link</h1><p class="meta-line">Active domain: <strong>${activeDomain}</strong></p></div>
+          <p class="limit-copy">Signed in as <strong>${escapeHtml(currentUser.name)}</strong>. Your links stay private to your account.</p>
         </div>
-
         <div class="input-row">
-          <div class="input-stack">
-            <label for="destination" class="field-label">Enter your destination URL</label>
-            <input id="destination" class="url-input" type="url" placeholder="https://example.com/my-long-url">
-          </div>
+          <div class="input-stack"><label for="destination" class="field-label">Enter your destination URL</label><input id="destination" class="url-input" type="url" placeholder="https://example.com/my-long-url"></div>
           <button class="primary-action" id="createLinkButton">Create your AnyLink</button>
         </div>
-
         <div class="input-row secondary-row">
-          <div class="input-stack">
-            <label for="slug" class="field-label">Custom back-half (optional)</label>
-            <input id="slug" class="url-input" type="text" placeholder="offer-2026">
-          </div>
-          <div class="inline-note">
-            Your short link will look like:
-            <strong id="shortBaseLabel">${escapeHtml(buildShortPreview("your-slug"))}</strong>
-          </div>
+          <div class="input-stack"><label for="slug" class="field-label">Custom back-half (optional)</label><input id="slug" class="url-input" type="text" placeholder="offer-2026"></div>
+          <div class="inline-note">Your short link will look like:<strong id="shortBaseLabel">${escapeHtml(buildShortPreview("your-slug"))}</strong></div>
         </div>
-
-        <label class="checkbox-row">
-          <input type="checkbox" id="qrToggle">
-          <span>Also create a QR-ready entry for this link</span>
-        </label>
-
-        <div class="promo-strip">
-          <span>${settingsCache.domains.length} domain${settingsCache.domains.length === 1 ? "" : "s"} connected</span>
-          <a href="/custom-domains">Manage domains</a>
-        </div>
-
+        <label class="checkbox-row"><input type="checkbox" id="qrToggle"><span>Also create a QR-ready entry for this link</span></label>
+        <div class="promo-strip"><span>${settingsCache.domains.length} domain${settingsCache.domains.length === 1 ? "" : "s"} connected to your private workspace</span><a href="/custom-domains">Manage domains</a></div>
         <div class="result-banner hidden" id="resultBanner" aria-live="polite"></div>
+        ${currentUser.emailVerified ? "" : '<div class="result-banner" id="verificationNotice">Email not verified yet. <button class="auth-inline-link" type="button" id="sendVerificationButton">Generate verification link</button></div>'}
       </div>
-
       <aside class="hero-aside">
-        <h2>Switch brands without rebuilding</h2>
-        <p>Add as many domains as you want, choose an active one, and generate fresh links from it instantly.</p>
-        <a class="aside-pill" href="/custom-domains">Manage custom domains</a>
+        <h2>Your personal link vault</h2>
+        <p>Everything in this dashboard is scoped to your account only. Other users will see only their own links, settings, and QR workspace.</p>
         <a class="aside-pill" href="/links">View all AnyLinks</a>
+        <a class="aside-pill" href="/custom-domains">Manage custom domains</a>
         <a class="aside-upgrade" href="/analytics">Track performance</a>
       </aside>
     </section>
-
     <section class="bottom-grid">
-      <article class="mini-card">
-        <div class="mini-card-header">
-          <h3>Recent AnyLinks</h3>
-          <a href="/links">Open library</a>
-        </div>
-        <div class="links-list" id="homeLinksList">${renderLinkItems(linksCache.slice(0, 3), false)}</div>
-      </article>
-
-      <article class="mini-card">
-        <div class="mini-card-header">
-          <h3>Domain stack</h3>
-          <div class="progress-ring">${settingsCache.domains.length}</div>
-        </div>
-        <div class="domain-stack">
-          ${settingsCache.domains.slice(0, 4).map((domain) => `
-            <div class="domain-pill ${domain === settingsCache.defaultDomain ? "active" : ""}">
-              <strong>${escapeHtml(domain)}</strong>
-              <span>${domain === settingsCache.defaultDomain ? "Active" : "Ready"}</span>
-            </div>
-          `).join("")}
-        </div>
-      </article>
+      <article class="mini-card"><div class="mini-card-header"><h3>Your recent links</h3><a href="/links">Open library</a></div><div class="links-list" id="homeLinksList">${renderLinkItems(linksCache.slice(0, 3), false)}</div></article>
+      <article class="mini-card"><div class="mini-card-header"><h3>Workspace overview</h3><div class="progress-ring">${settingsCache.domains.length}</div></div><div class="domain-stack">${settingsCache.domains.slice(0, 4).map((domain) => `<div class="domain-pill ${domain === settingsCache.defaultDomain ? "active" : ""}"><strong>${escapeHtml(domain)}</strong><span>${domain === settingsCache.defaultDomain ? "Active" : "Ready"}</span></div>`).join("")}</div></article>
     </section>
   `;
-
   wireCreateForm();
+  bindVerificationAction();
 }
 
 function renderLinksPage(links, query = "") {
-  const filtered = links.filter((link) => {
-    if (!query) {
-      return true;
-    }
-
-    return [link.slug, link.destination, link.shortUrl].some((value) =>
-      String(value).toLowerCase().includes(query),
-    );
-  });
-
-  mainContent.innerHTML = `
-    <section class="surface-card">
-      <div class="surface-header">
-        <div>
-          <h2>All short links</h2>
-          <p>Search, copy, open, and delete saved AnyLinks.</p>
-        </div>
-        <a class="chip-link" href="/home">Create another</a>
-      </div>
-      <div class="links-list" id="linksPageList">${renderLinkItems(filtered, true)}</div>
-    </section>
-  `;
-
+  const filtered = links.filter((link) => !query || [link.slug, link.destination, link.shortUrl].some((value) => String(value).toLowerCase().includes(query)));
+  mainContent.innerHTML = `<section class="surface-card"><div class="surface-header"><div><h2>Your short links</h2><p>Only links created inside your account appear here.</p></div><a class="chip-link" href="/home">Create another</a></div><div class="links-list">${renderLinkItems(filtered, true)}</div></section>`;
   wireLinkActions();
 }
 
@@ -314,36 +498,19 @@ function renderQrPage() {
   mainContent.innerHTML = `
     <section class="surface-card two-column">
       <div>
-        <div class="surface-header">
-          <div>
-            <h2>QR Code workspace</h2>
-            <p>Create scan-ready entries for your short links and download them instantly.</p>
-          </div>
-        </div>
+        <div class="surface-header"><div><h2>QR Code workspace</h2><p>Generate scannable QR codes for links inside your private account.</p></div></div>
         <div class="qr-panel">
-          <div class="qr-box">
-            ${sample
-              ? `<img class="qr-image" src="${escapeHtml(qrImageUrl)}" alt="QR code for ${escapeHtml(qrTargetUrl)}">`
-              : `<div class="qr-grid"></div>`}
-          </div>
+          <div class="qr-box">${sample ? `<img class="qr-image" src="${escapeHtml(qrImageUrl)}" alt="QR code for ${escapeHtml(qrTargetUrl)}">` : `<div class="qr-grid"></div>`}</div>
           <div class="qr-copy">
             <strong>${sample ? escapeHtml(qrTargetUrl) : "Create a link first"}</strong>
             <p>${sample ? "Use this QR in posters, packaging, menus, business cards, or flyers." : "Once you create a link on Home, it can appear here as a QR-ready item."}</p>
             <div class="qr-action-row">
-              ${sample ? `<a class="primary-action inline-action" href="${escapeHtml(qrImageUrl)}" target="_blank" rel="noreferrer">Open QR</a>` : `<a class="primary-action inline-action" href="/home">Create link</a>`}
-              ${sample ? `<a class="link-button secondary qr-download" href="${escapeHtml(qrImageUrl)}" download="anylink-${escapeHtml(sample.slug)}-qr.png">Download</a>` : ""}
+              ${sample ? `<a class="primary-action inline-action" href="${escapeHtml(qrImageUrl)}" target="_blank" rel="noreferrer">Open QR</a><a class="link-button secondary qr-download" href="${escapeHtml(qrImageUrl)}" download="anylink-${escapeHtml(sample.slug)}-qr.png">Download</a>` : `<a class="primary-action inline-action" href="/home">Create link</a>`}
             </div>
           </div>
         </div>
       </div>
-      <div class="stack-card-group">
-        <article class="mini-card inset-card">
-          <h3>QR-ready links</h3>
-          <div class="qr-link-list">
-            ${renderQrLinkItems()}
-          </div>
-        </article>
-      </div>
+      <div class="stack-card-group"><article class="mini-card inset-card"><h3>Your QR-ready links</h3><div class="qr-link-list">${renderQrLinkItems()}</div></article></div>
     </section>
   `;
 
@@ -356,232 +523,60 @@ function renderQrPage() {
 }
 
 function renderPagesBuilder() {
-  mainContent.innerHTML = `
-    <section class="surface-card">
-      <div class="surface-header">
-        <div>
-          <h2>Page builder</h2>
-          <p>Create a simple landing page structure for campaigns.</p>
-        </div>
-      </div>
-      <div class="builder-grid">
-        <div class="form-card">
-          <label class="field-label" for="pageName">Page name</label>
-          <input id="pageName" class="url-input" type="text" placeholder="Summer launch page">
-          <label class="field-label" for="pageHeadline">Headline</label>
-          <input id="pageHeadline" class="url-input" type="text" placeholder="Everything you need in one short page">
-          <label class="field-label" for="pageCta">CTA label</label>
-          <input id="pageCta" class="url-input" type="text" placeholder="Get started">
-        </div>
-        <div class="preview-card">
-          <span class="eyebrow">Live preview</span>
-          <h3>Summer launch page</h3>
-          <p>Everything you need in one short page</p>
-          <button class="primary-action inline-action">Get started</button>
-        </div>
-      </div>
-    </section>
-  `;
+  mainContent.innerHTML = `<section class="surface-card"><div class="surface-header"><div><h2>Page builder</h2><p>Create a simple landing page structure for campaigns.</p></div></div><div class="builder-grid"><div class="form-card"><label class="field-label" for="pageName">Page name</label><input id="pageName" class="url-input" type="text" placeholder="Summer launch page"><label class="field-label" for="pageHeadline">Headline</label><input id="pageHeadline" class="url-input" type="text" placeholder="Everything you need in one short page"><label class="field-label" for="pageCta">CTA label</label><input id="pageCta" class="url-input" type="text" placeholder="Get started"></div><div class="preview-card"><span class="eyebrow">Live preview</span><h3>Summer launch page</h3><p>Everything you need in one short page</p><button class="primary-action inline-action">Get started</button></div></div></section>`;
 }
 
 function renderAnalyticsPage() {
   const total = linksCache.length;
   const qrReady = linksCache.filter((item) => item.includeQr).length;
-
-  mainContent.innerHTML = `
-    <section class="stat-grid">
-      <article class="stat-card">
-        <span>Total links</span>
-        <strong>${total}</strong>
-      </article>
-      <article class="stat-card">
-        <span>QR-ready links</span>
-        <strong>${qrReady}</strong>
-      </article>
-      <article class="stat-card">
-        <span>Connected domains</span>
-        <strong>${settingsCache.domains.length}</strong>
-      </article>
-    </section>
-
-    <section class="surface-card">
-      <div class="surface-header">
-        <div>
-          <h2>Traffic snapshot</h2>
-          <p>A simple view of how your workspace is performing.</p>
-        </div>
-      </div>
-      <div class="chart-bars">
-        <div class="bar-wrap"><span>Mon</span><i style="height: 42%"></i></div>
-        <div class="bar-wrap"><span>Tue</span><i style="height: 58%"></i></div>
-        <div class="bar-wrap"><span>Wed</span><i style="height: 76%"></i></div>
-        <div class="bar-wrap"><span>Thu</span><i style="height: 64%"></i></div>
-        <div class="bar-wrap"><span>Fri</span><i style="height: 88%"></i></div>
-        <div class="bar-wrap"><span>Sat</span><i style="height: 52%"></i></div>
-        <div class="bar-wrap"><span>Sun</span><i style="height: 39%"></i></div>
-      </div>
-    </section>
-  `;
+  mainContent.innerHTML = `<section class="stat-grid"><article class="stat-card"><span>Your links</span><strong>${total}</strong></article><article class="stat-card"><span>QR-ready links</span><strong>${qrReady}</strong></article><article class="stat-card"><span>Connected domains</span><strong>${settingsCache.domains.length}</strong></article></section><section class="surface-card"><div class="surface-header"><div><h2>Traffic snapshot</h2><p>This is a dashboard preview for your own workspace only.</p></div></div><div class="chart-bars"><div class="bar-wrap"><span>Mon</span><i style="height: 42%"></i></div><div class="bar-wrap"><span>Tue</span><i style="height: 58%"></i></div><div class="bar-wrap"><span>Wed</span><i style="height: 76%"></i></div><div class="bar-wrap"><span>Thu</span><i style="height: 64%"></i></div><div class="bar-wrap"><span>Fri</span><i style="height: 88%"></i></div><div class="bar-wrap"><span>Sat</span><i style="height: 52%"></i></div><div class="bar-wrap"><span>Sun</span><i style="height: 39%"></i></div></div></section>`;
 }
 
 function renderCampaignsPage() {
-  mainContent.innerHTML = `
-    <section class="surface-card">
-      <div class="surface-header">
-        <div>
-          <h2>Campaign tracker</h2>
-          <p>Keep your UTM campaigns organized in one place.</p>
-        </div>
-      </div>
-      <div class="campaign-list">
-        <div class="campaign-item"><strong>Summer Sale</strong><span>Email - Active</span></div>
-        <div class="campaign-item"><strong>Creator Outreach</strong><span>Social - Draft</span></div>
-        <div class="campaign-item"><strong>Retail Posters</strong><span>Offline - Active</span></div>
-      </div>
-    </section>
-  `;
+  mainContent.innerHTML = `<section class="surface-card"><div class="surface-header"><div><h2>Campaign tracker</h2><p>Keep your UTM campaigns organized in one private place.</p></div></div><div class="campaign-list"><div class="campaign-item"><strong>Summer Sale</strong><span>Email - Active</span></div><div class="campaign-item"><strong>Creator Outreach</strong><span>Social - Draft</span></div><div class="campaign-item"><strong>Retail Posters</strong><span>Offline - Active</span></div></div></section>`;
 }
 
 function renderDomainsPage() {
-  const domainCards = settingsCache.domains.map((domain) => `
-    <div class="managed-domain ${domain === settingsCache.defaultDomain ? "active" : ""}">
-      <div class="managed-domain-copy">
-        <strong>${escapeHtml(domain)}</strong>
-        <span>${escapeHtml(buildDomainPreview(domain))}</span>
-      </div>
-      <div class="managed-domain-actions">
-        ${domain === settingsCache.defaultDomain
-          ? '<span class="domain-status">Active</span>'
-          : `<button class="link-button" data-activate-domain="${escapeHtml(domain)}">Set active</button>`}
-        ${settingsCache.domains.length > 1
-          ? `<button class="link-button danger" data-remove-domain="${escapeHtml(domain)}">Remove</button>`
-          : ""}
-      </div>
-    </div>
-  `).join("");
-
-  mainContent.innerHTML = `
-    <section class="surface-card two-column">
-      <div>
-        <div class="surface-header">
-          <div>
-            <h2>Custom domains</h2>
-            <p>Add as many custom domains as you want. Pick one active domain for new links anytime.</p>
-          </div>
-          <span class="chip-link">${settingsCache.domains.length} saved</span>
-        </div>
-        <div class="managed-domain-list">
-          ${domainCards}
-        </div>
-      </div>
-      <div class="form-card">
-        <label class="field-label" for="domainName">Add a new domain</label>
-        <input id="domainName" class="url-input" type="text" placeholder="go.yourbrand.com">
-        <button class="primary-action inline-action" id="addDomainButton">Add domain</button>
-        <p class="helper-copy">You can add unlimited domains here. One domain stays active for fresh short links.</p>
-      </div>
-    </section>
-  `;
+  mainContent.innerHTML = `<section class="surface-card two-column"><div><div class="surface-header"><div><h2>Custom domains</h2><p>Add as many custom domains as you want. Only you can manage the domains linked to your account.</p></div><span class="chip-link">${settingsCache.domains.length} saved</span></div><div class="managed-domain-list">${settingsCache.domains.map((domain) => `<div class="managed-domain ${domain === settingsCache.defaultDomain ? "active" : ""}"><div class="managed-domain-copy"><strong>${escapeHtml(domain)}</strong><span>${escapeHtml(buildDomainPreview(domain))}</span></div><div class="managed-domain-actions">${domain === settingsCache.defaultDomain ? '<span class="domain-status">Active</span>' : `<button class="link-button" data-activate-domain="${escapeHtml(domain)}">Set active</button>`}${settingsCache.domains.length > 1 ? `<button class="link-button danger" data-remove-domain="${escapeHtml(domain)}">Remove</button>` : ""}</div></div>`).join("")}</div></div><div class="form-card"><label class="field-label" for="domainName">Add a new domain</label><input id="domainName" class="url-input" type="text" placeholder="go.yourbrand.com"><button class="primary-action inline-action" id="addDomainButton">Add domain</button><p class="helper-copy">You can add unlimited domains here. One domain stays active for fresh short links.</p></div></section>`;
 
   document.getElementById("addDomainButton").addEventListener("click", async () => {
-    const domainName = document.getElementById("domainName").value.trim();
-    const normalized = sanitizeDomain(domainName);
-
-    if (!normalized) {
-      showGlobalMessage("Enter a valid domain or host.", true);
-      return;
-    }
-
-    if (settingsCache.domains.includes(normalized)) {
-      showGlobalMessage("That domain is already added.", true);
-      return;
-    }
-
-    try {
-      await saveSettings({
-        workspaceName: settingsCache.workspaceName,
-        defaultDomain: settingsCache.defaultDomain,
-        domains: [...settingsCache.domains, normalized],
-      });
-      renderDomainsPage();
-      showGlobalMessage(`Domain added: ${normalized}`, false);
-    } catch (error) {
-      showGlobalMessage(error.message, true);
-    }
+    const domain = sanitizeDomain(document.getElementById("domainName").value.trim());
+    if (!domain) return showGlobalMessage("Enter a valid domain or host.", true);
+    if (settingsCache.domains.includes(domain)) return showGlobalMessage("That domain is already added.", true);
+    await persistDomains([...settingsCache.domains, domain], settingsCache.defaultDomain, `Domain added: ${domain}`);
   });
 
-  document.querySelectorAll("[data-activate-domain]").forEach((button) => {
-    button.addEventListener("click", async () => {
-      const domain = button.getAttribute("data-activate-domain");
+  document.querySelectorAll("[data-activate-domain]").forEach((button) => button.addEventListener("click", async () => {
+    const domain = button.getAttribute("data-activate-domain");
+    await persistDomains(settingsCache.domains, domain, `Active domain changed to ${domain}`);
+  }));
 
-      try {
-        await saveSettings({
-          workspaceName: settingsCache.workspaceName,
-          defaultDomain: domain,
-          domains: settingsCache.domains,
-        });
-        renderDomainsPage();
-        showGlobalMessage(`Active domain changed to ${domain}`, false);
-      } catch (error) {
-        showGlobalMessage(error.message, true);
-      }
-    });
-  });
+  document.querySelectorAll("[data-remove-domain]").forEach((button) => button.addEventListener("click", async () => {
+    const domain = button.getAttribute("data-remove-domain");
+    const domains = settingsCache.domains.filter((item) => item !== domain);
+    const nextDefault = settingsCache.defaultDomain === domain ? domains[0] : settingsCache.defaultDomain;
+    await persistDomains(domains, nextDefault, `Removed domain: ${domain}`);
+  }));
+}
 
-  document.querySelectorAll("[data-remove-domain]").forEach((button) => {
-    button.addEventListener("click", async () => {
-      const domain = button.getAttribute("data-remove-domain");
-      const domains = settingsCache.domains.filter((item) => item !== domain);
-      const nextDefault = settingsCache.defaultDomain === domain ? domains[0] : settingsCache.defaultDomain;
-
-      try {
-        await saveSettings({
-          workspaceName: settingsCache.workspaceName,
-          defaultDomain: nextDefault,
-          domains,
-        });
-        renderDomainsPage();
-        showGlobalMessage(`Removed domain: ${domain}`, false);
-      } catch (error) {
-        showGlobalMessage(error.message, true);
-      }
-    });
-  });
+async function persistDomains(domains, defaultDomain, successMessage) {
+  try {
+    await saveSettings({ workspaceName: settingsCache.workspaceName, domains, defaultDomain });
+    renderDomainsPage();
+    showGlobalMessage(successMessage, false);
+  } catch (error) {
+    showGlobalMessage(error.message, true);
+  }
 }
 
 function renderSettingsPage() {
-  mainContent.innerHTML = `
-    <section class="surface-card two-column">
-      <div class="form-card">
-        <label class="field-label" for="workspaceName">Workspace name</label>
-        <input id="workspaceName" class="url-input" type="text" value="${escapeHtml(settingsCache.workspaceName)}">
-        <label class="field-label" for="defaultDomain">Active domain</label>
-        <select id="defaultDomain" class="url-input domain-select">
-          ${settingsCache.domains.map((domain) => `
-            <option value="${escapeHtml(domain)}" ${domain === settingsCache.defaultDomain ? "selected" : ""}>${escapeHtml(domain)}</option>
-          `).join("")}
-        </select>
-        <button class="primary-action inline-action" id="saveSettingsButton">Save settings</button>
-      </div>
-      <div class="mini-card inset-card">
-        <h3>Workspace status</h3>
-        <div class="task-list">
-          <div class="task-item"><span class="task-check filled"></span><span>API online</span></div>
-          <div class="task-item"><span class="task-check filled"></span><span>Redirect engine ready</span></div>
-          <div class="task-item"><span class="task-check filled"></span><span>${settingsCache.domains.length} domain${settingsCache.domains.length === 1 ? "" : "s"} connected</span></div>
-        </div>
-      </div>
-    </section>
-  `;
+  mainContent.innerHTML = `<section class="surface-card two-column"><div class="form-card"><label class="field-label" for="workspaceName">Workspace name</label><input id="workspaceName" class="url-input" type="text" value="${escapeHtml(settingsCache.workspaceName)}"><label class="field-label" for="defaultDomain">Active domain</label><select id="defaultDomain" class="url-input domain-select">${settingsCache.domains.map((domain) => `<option value="${escapeHtml(domain)}" ${domain === settingsCache.defaultDomain ? "selected" : ""}>${escapeHtml(domain)}</option>`).join("")}</select><button class="primary-action inline-action" id="saveSettingsButton">Save settings</button></div><div class="mini-card inset-card"><h3>Workspace status</h3><div class="task-list"><div class="task-item"><span class="task-check filled"></span><span>Logged in as ${escapeHtml(currentUser.email)}</span></div><div class="task-item"><span class="task-check filled"></span><span>Redirect engine ready</span></div><div class="task-item"><span class="task-check filled"></span><span>${settingsCache.domains.length} domain${settingsCache.domains.length === 1 ? "" : "s"} connected</span></div></div></div></section>`;
 
   document.getElementById("saveSettingsButton").addEventListener("click", async () => {
-    const workspaceName = document.getElementById("workspaceName").value.trim();
-    const defaultDomain = document.getElementById("defaultDomain").value.trim();
-
     try {
       await saveSettings({
-        workspaceName,
-        defaultDomain,
+        workspaceName: document.getElementById("workspaceName").value.trim(),
+        defaultDomain: document.getElementById("defaultDomain").value.trim(),
         domains: settingsCache.domains,
       });
       renderSettingsPage();
@@ -593,150 +588,86 @@ function renderSettingsPage() {
 }
 
 function wireCreateForm() {
-  const createLinkButton = document.getElementById("createLinkButton");
   const destinationInput = document.getElementById("destination");
   const slugInput = document.getElementById("slug");
   const qrToggle = document.getElementById("qrToggle");
   const resultBanner = document.getElementById("resultBanner");
   const shortBaseLabel = document.getElementById("shortBaseLabel");
 
-  const updateShortBasePreview = () => {
-    const previewSlug = sanitizeSlug(slugInput.value.trim()) || "your-slug";
-    shortBaseLabel.textContent = buildShortPreview(previewSlug);
+  const updatePreview = () => {
+    shortBaseLabel.textContent = buildShortPreview(sanitizeSlug(slugInput.value.trim()) || "your-slug");
   };
 
-  const setBanner = (message, isError) => {
-    resultBanner.textContent = message;
-    resultBanner.classList.remove("hidden", "error");
-    if (isError) {
-      resultBanner.classList.add("error");
-    }
-  };
-
-  const handleCreateLink = async () => {
-    const destination = destinationInput.value.trim();
-    const slug = sanitizeSlug(slugInput.value.trim());
-
-    setBanner("Creating your AnyLink...", false);
-
+  const createLink = async () => {
+    setInlineBanner(resultBanner, "Creating your AnyLink...", false);
     try {
       const response = await fetch("/api/links", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          destination,
-          slug,
+          destination: destinationInput.value.trim(),
+          slug: sanitizeSlug(slugInput.value.trim()),
           includeQr: qrToggle.checked,
         }),
       });
-
       const payload = await response.json();
-
-      if (!response.ok) {
-        setBanner(payload.error || "Something went wrong while creating the short link.", true);
-        return;
-      }
+      if (!response.ok) return setInlineBanner(resultBanner, payload.error || "Could not create link.", true);
 
       linksCache.unshift(payload.link);
-      if (qrToggle.checked) {
-        selectedQrSlug = payload.link.slug;
-      }
-      setBanner(`AnyLink created: ${payload.link.shortUrl}`, false);
+      if (qrToggle.checked) selectedQrSlug = payload.link.slug;
+      setInlineBanner(resultBanner, `AnyLink created: ${buildLiveLinkUrl(payload.link.slug)}`, false);
       destinationInput.value = "";
       slugInput.value = "";
       qrToggle.checked = false;
-      updateShortBasePreview();
-
-      const homeLinksList = document.getElementById("homeLinksList");
-      if (homeLinksList) {
-        homeLinksList.innerHTML = renderLinkItems(linksCache.slice(0, 3), false);
-      }
+      updatePreview();
+      const list = document.getElementById("homeLinksList");
+      if (list) list.innerHTML = renderLinkItems(linksCache.slice(0, 3), false);
     } catch (error) {
-      setBanner(`Could not reach the server. ${error.message}`, true);
+      setInlineBanner(resultBanner, error.message, true);
     }
   };
 
-  slugInput.addEventListener("input", updateShortBasePreview);
-  destinationInput.addEventListener("keydown", (event) => {
-    if (event.key === "Enter") {
-      handleCreateLink();
-    }
-  });
-  slugInput.addEventListener("keydown", (event) => {
-    if (event.key === "Enter") {
-      handleCreateLink();
-    }
-  });
-  createLinkButton.addEventListener("click", handleCreateLink);
-  updateShortBasePreview();
+  document.getElementById("createLinkButton").addEventListener("click", createLink);
+  destinationInput.addEventListener("keydown", (event) => event.key === "Enter" && createLink());
+  slugInput.addEventListener("keydown", (event) => event.key === "Enter" && createLink());
+  slugInput.addEventListener("input", updatePreview);
+  updatePreview();
 }
 
 function wireLinkActions() {
-  document.querySelectorAll("[data-copy]").forEach((button) => {
-    button.addEventListener("click", async () => {
-      const shortUrl = button.getAttribute("data-copy");
+  document.querySelectorAll("[data-copy]").forEach((button) => button.addEventListener("click", async () => {
+    const shortUrl = button.getAttribute("data-copy");
+    try {
+      await navigator.clipboard.writeText(shortUrl);
+      showGlobalMessage(`Copied: ${shortUrl}`, false);
+    } catch {
+      showGlobalMessage(`Copy failed. Open this link manually: ${shortUrl}`, true);
+    }
+  }));
 
-      try {
-        await navigator.clipboard.writeText(shortUrl);
-        showGlobalMessage(`Copied: ${shortUrl}`, false);
-      } catch {
-        showGlobalMessage(`Copy failed. Open this link manually: ${shortUrl}`, true);
-      }
-    });
-  });
-
-  document.querySelectorAll("[data-delete]").forEach((button) => {
-    button.addEventListener("click", async () => {
-      const slug = button.getAttribute("data-delete");
-
-      try {
-        const response = await fetch(`/api/links/${encodeURIComponent(slug)}`, {
-          method: "DELETE",
-        });
-        const payload = await response.json();
-
-        if (!response.ok) {
-          throw new Error(payload.error || "Delete failed");
-        }
-
-        linksCache = linksCache.filter((item) => item.slug !== slug);
-        renderLinksPage(linksCache, searchInput.value.trim().toLowerCase());
-        showGlobalMessage(`Deleted: ${slug}`, false);
-      } catch (error) {
-        showGlobalMessage(error.message, true);
-      }
-    });
-  });
+  document.querySelectorAll("[data-delete]").forEach((button) => button.addEventListener("click", async () => {
+    const slug = button.getAttribute("data-delete");
+    try {
+      const response = await fetch(`/api/links/${encodeURIComponent(slug)}`, { method: "DELETE" });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || "Delete failed");
+      linksCache = linksCache.filter((item) => item.slug !== slug);
+      renderLinksPage(linksCache, searchInput.value.trim().toLowerCase());
+      showGlobalMessage(`Deleted: ${slug}`, false);
+    } catch (error) {
+      showGlobalMessage(error.message, true);
+    }
+  }));
 }
 
 function renderLinkItems(links, includeDelete) {
-  if (!links.length) {
-    return '<div class="empty-state">No links yet. Create your first AnyLink above.</div>';
-  }
+  if (!links.length) return '<div class="empty-state">No links yet. Create your first AnyLink above.</div>';
 
-  return links
-    .map((link) => {
-      const createdAt = new Date(link.createdAt).toLocaleString();
-      return `
-        <div class="link-item">
-          <div class="link-copy">
-            <a href="${escapeHtml(buildLiveLinkUrl(link.slug))}" target="_blank" rel="noreferrer">${escapeHtml(buildLiveLinkUrl(link.slug))}</a>
-            <strong>${escapeHtml(link.slug)}</strong>
-            <p>${escapeHtml(link.destination)}</p>
-            <p>Created: ${escapeHtml(createdAt)}</p>
-          </div>
-          <div class="link-actions">
-            <button class="link-button" data-copy="${escapeHtml(buildLiveLinkUrl(link.slug))}">Copy</button>
-            <a class="link-button secondary" href="${escapeHtml(buildLiveLinkUrl(link.slug))}" target="_blank" rel="noreferrer">Open</a>
-            <a class="link-button secondary" href="/qr-codes" data-open-qr="${escapeHtml(link.slug)}">QR</a>
-            ${includeDelete ? `<button class="link-button danger" data-delete="${escapeHtml(link.slug)}">Delete</button>` : ""}
-          </div>
-        </div>
-      `;
-    })
-    .join("");
+  return links.map((link) => {
+    const createdAt = new Date(link.createdAt).toLocaleString();
+    const liveUrl = buildLiveLinkUrl(link.slug);
+    return `<div class="link-item"><div class="link-copy"><a href="${escapeHtml(liveUrl)}" target="_blank" rel="noreferrer">${escapeHtml(liveUrl)}</a><strong>${escapeHtml(link.slug)}</strong><p>${escapeHtml(link.destination)}</p><p>Created: ${escapeHtml(createdAt)}</p></div><div class="link-actions"><button class="link-button" data-copy="${escapeHtml(liveUrl)}">Copy</button><a class="link-button secondary" href="${escapeHtml(liveUrl)}" target="_blank" rel="noreferrer">Open</a><a class="link-button secondary" href="/qr-codes" data-open-qr="${escapeHtml(link.slug)}">QR</a>${includeDelete ? `<button class="link-button danger" data-delete="${escapeHtml(link.slug)}">Delete</button>` : ""}</div></div>`;
+  }).join("");
 }
 
 function buildShortPreview(slug) {
@@ -754,26 +685,15 @@ function buildQrImageUrl(targetUrl) {
 function getSelectedQrLink() {
   if (selectedQrSlug) {
     const found = linksCache.find((item) => item.slug === selectedQrSlug);
-    if (found) {
-      return found;
-    }
+    if (found) return found;
   }
-
-  const qrPreferred = linksCache.find((item) => item.includeQr);
-  return qrPreferred || linksCache[0] || null;
+  return linksCache.find((item) => item.includeQr) || linksCache[0] || null;
 }
 
 function renderQrLinkItems() {
-  if (!linksCache.length) {
-    return '<div class="empty-state">No links available yet. Create one from Home first.</div>';
-  }
+  if (!linksCache.length) return '<div class="empty-state">No links available yet. Create one from Home first.</div>';
 
-  return linksCache.slice(0, 6).map((link) => `
-    <button class="qr-link-item ${link.slug === (getSelectedQrLink()?.slug || "") ? "active" : ""}" data-select-qr="${escapeHtml(link.slug)}">
-      <strong>${escapeHtml(link.slug)}</strong>
-      <span>${escapeHtml(buildLiveLinkUrl(link.slug))}</span>
-    </button>
-  `).join("");
+  return linksCache.slice(0, 6).map((link) => `<button class="qr-link-item ${link.slug === (getSelectedQrLink()?.slug || "") ? "active" : ""}" data-select-qr="${escapeHtml(link.slug)}"><strong>${escapeHtml(link.slug)}</strong><span>${escapeHtml(buildLiveLinkUrl(link.slug))}</span></button>`).join("");
 }
 
 function buildDomainPreview(domain, slug = "sample-link") {
@@ -787,52 +707,31 @@ function sanitizeSlug(value) {
 }
 
 function sanitizeDomain(value) {
-  const cleaned = String(value || "")
-    .replace(/^https?:\/\//i, "")
-    .replace(/\/.*$/, "")
-    .trim()
-    .toLowerCase();
+  const cleaned = String(value || "").replace(/^https?:\/\//i, "").replace(/\/.*$/, "").trim().toLowerCase();
+  return cleaned && /^[a-z0-9.-]+(?::\d+)?$/.test(cleaned) ? cleaned : null;
+}
 
-  if (!cleaned || !/^[a-z0-9.-]+(?::\d+)?$/.test(cleaned)) {
-    return null;
-  }
-
-  return cleaned;
+function setInlineBanner(element, message, isError) {
+  element.textContent = message;
+  element.classList.remove("hidden", "error");
+  if (isError) element.classList.add("error");
 }
 
 function escapeHtml(value) {
-  return String(value)
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#39;");
+  return String(value).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#39;");
 }
 
 function showGlobalMessage(message, isError) {
   let banner = document.getElementById("globalBanner");
-
   if (!banner) {
     banner = document.createElement("div");
     banner.id = "globalBanner";
     banner.className = "global-banner";
     document.body.appendChild(banner);
   }
-
   banner.textContent = message;
   banner.classList.toggle("error", Boolean(isError));
   banner.classList.add("visible");
-
   window.clearTimeout(showGlobalMessage.timeoutId);
-  showGlobalMessage.timeoutId = window.setTimeout(() => {
-    banner.classList.remove("visible");
-  }, 2200);
+  showGlobalMessage.timeoutId = window.setTimeout(() => banner.classList.remove("visible"), 2200);
 }
-
-document.addEventListener("click", (event) => {
-  const qrLink = event.target.closest("[data-open-qr]");
-
-  if (qrLink) {
-    selectedQrSlug = qrLink.getAttribute("data-open-qr");
-  }
-});

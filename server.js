@@ -1,6 +1,7 @@
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
+const crypto = require("crypto");
 const { URL } = require("url");
 
 const host = "0.0.0.0";
@@ -9,8 +10,16 @@ const rootDir = __dirname;
 const dataDir = path.join(rootDir, "data");
 const linksFile = path.join(dataDir, "links.json");
 const settingsFile = path.join(dataDir, "settings.json");
+const usersFile = path.join(dataDir, "users.json");
+const sessionsFile = path.join(dataDir, "sessions.json");
+const sessionCookieName = "anylink_session";
+const sessionLifetimeMs = 1000 * 60 * 60 * 24 * 14;
+const verificationLifetimeMs = 1000 * 60 * 30;
+const resetLifetimeMs = 1000 * 60 * 30;
+
 const appRoutes = new Set([
   "/",
+  "/auth",
   "/home",
   "/links",
   "/qr-codes",
@@ -40,27 +49,69 @@ const server = http.createServer(async (req, res) => {
     const requestUrl = new URL(req.url, `http://${req.headers.host || `${host}:${port}`}`);
     const pathname = decodeURIComponent(requestUrl.pathname);
 
-    if (req.method === "GET" && pathname === "/api/links") {
-      return sendJson(res, 200, { links: readLinks() });
+    if (req.method === "POST" && pathname === "/api/auth/signup") {
+      const body = await readRequestBody(req);
+      return handleSignup(body, req, res);
     }
 
-    if (req.method === "GET" && pathname === "/api/settings") {
-      return sendJson(res, 200, { settings: readSettings(req) });
+    if (req.method === "POST" && pathname === "/api/auth/login") {
+      const body = await readRequestBody(req);
+      return handleLogin(body, req, res);
+    }
+
+    if (req.method === "POST" && pathname === "/api/auth/logout") {
+      return handleLogout(req, res);
+    }
+
+    if (req.method === "GET" && pathname === "/api/auth/me") {
+      return handleAuthMe(req, res);
+    }
+
+    if (req.method === "POST" && pathname === "/api/auth/forgot-password") {
+      const body = await readRequestBody(req);
+      return handleForgotPassword(body, req, res);
+    }
+
+    if (req.method === "POST" && pathname === "/api/auth/reset-password") {
+      const body = await readRequestBody(req);
+      return handleResetPassword(body, req, res);
+    }
+
+    if (req.method === "POST" && pathname === "/api/auth/send-verification") {
+      const body = await readRequestBody(req);
+      return handleSendVerification(body, req, res);
+    }
+
+    if (req.method === "POST" && pathname === "/api/auth/verify-email") {
+      const body = await readRequestBody(req);
+      return handleVerifyEmail(body, req, res);
+    }
+
+    if (req.method === "GET" && pathname === "/api/auth/google") {
+      return sendJson(res, 501, { error: "Google login needs OAuth credentials before it can be enabled." });
+    }
+
+    if (req.method === "GET" && pathname === "/api/links") {
+      return withAuth(req, res, (user) => sendJson(res, 200, { links: readLinksForUser(user.id) }));
     }
 
     if (req.method === "POST" && pathname === "/api/links") {
       const body = await readRequestBody(req);
-      return handleCreateLink(body, req, res);
-    }
-
-    if (req.method === "POST" && pathname === "/api/settings") {
-      const body = await readRequestBody(req);
-      return handleSaveSettings(body, req, res);
+      return withAuth(req, res, (user) => handleCreateLink(body, req, res, user));
     }
 
     if (req.method === "DELETE" && pathname.startsWith("/api/links/")) {
       const slug = pathname.split("/").pop();
-      return handleDeleteLink(slug, res);
+      return withAuth(req, res, (user) => handleDeleteLink(slug, res, user));
+    }
+
+    if (req.method === "GET" && pathname === "/api/settings") {
+      return withAuth(req, res, (user) => sendJson(res, 200, { settings: readSettingsForUser(user.id, req) }));
+    }
+
+    if (req.method === "POST" && pathname === "/api/settings") {
+      const body = await readRequestBody(req);
+      return withAuth(req, res, (user) => handleSaveSettings(body, req, res, user));
     }
 
     if (req.method === "GET" && appRoutes.has(pathname)) {
@@ -101,44 +152,86 @@ function ensureStorage() {
     fs.mkdirSync(dataDir, { recursive: true });
   }
 
-  if (!fs.existsSync(linksFile)) {
-    fs.writeFileSync(linksFile, "[]", "utf8");
-  }
+  ensureJsonFile(linksFile, []);
+  ensureJsonFile(settingsFile, []);
+  ensureJsonFile(usersFile, []);
+  ensureJsonFile(sessionsFile, []);
+}
 
-  if (!fs.existsSync(settingsFile)) {
-    fs.writeFileSync(settingsFile, JSON.stringify(defaultSettings(), null, 2), "utf8");
+function ensureJsonFile(filePath, fallbackValue) {
+  if (!fs.existsSync(filePath)) {
+    fs.writeFileSync(filePath, JSON.stringify(fallbackValue, null, 2), "utf8");
   }
+}
+
+function readJsonFile(filePath, fallbackValue) {
+  try {
+    const raw = fs.readFileSync(filePath, "utf8");
+    const parsed = JSON.parse(raw);
+    return Array.isArray(fallbackValue) ? (Array.isArray(parsed) ? parsed : fallbackValue) : parsed;
+  } catch {
+    return fallbackValue;
+  }
+}
+
+function writeJsonFile(filePath, payload) {
+  fs.writeFileSync(filePath, JSON.stringify(payload, null, 2), "utf8");
 }
 
 function readLinks() {
-  try {
-    const raw = fs.readFileSync(linksFile, "utf8");
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
+  return readJsonFile(linksFile, []);
+}
+
+function readLinksForUser(userId) {
+  return readLinks().filter((item) => item.userId === userId);
 }
 
 function writeLinks(links) {
-  fs.writeFileSync(linksFile, JSON.stringify(links, null, 2), "utf8");
+  writeJsonFile(linksFile, links);
 }
 
-function readSettings(req) {
-  try {
-    const raw = fs.readFileSync(settingsFile, "utf8");
-    const parsed = JSON.parse(raw);
-    return {
-      ...defaultSettings(req),
-      ...parsed,
-    };
-  } catch {
-    return defaultSettings(req);
+function readUsers() {
+  return readJsonFile(usersFile, []);
+}
+
+function writeUsers(users) {
+  writeJsonFile(usersFile, users);
+}
+
+function readSessions() {
+  const sessions = readJsonFile(sessionsFile, []);
+  const now = Date.now();
+  const validSessions = sessions.filter((session) => Number(session.expiresAt) > now);
+
+  if (validSessions.length !== sessions.length) {
+    writeSessions(validSessions);
   }
+
+  return validSessions;
 }
 
-function writeSettings(settings) {
-  fs.writeFileSync(settingsFile, JSON.stringify(settings, null, 2), "utf8");
+function writeSessions(sessions) {
+  writeJsonFile(sessionsFile, sessions);
+}
+
+function readSettingsStore() {
+  const parsed = readJsonFile(settingsFile, []);
+
+  if (Array.isArray(parsed)) {
+    return parsed;
+  }
+
+  return [];
+}
+
+function writeSettingsStore(store) {
+  writeJsonFile(settingsFile, store);
+}
+
+function readSettingsForUser(userId, req) {
+  const store = readSettingsStore();
+  const existing = store.find((item) => item.userId === userId);
+  return normalizeSettings(existing || { userId }, req);
 }
 
 function readRequestBody(req) {
@@ -165,7 +258,277 @@ function readRequestBody(req) {
   });
 }
 
-function handleCreateLink(body, req, res) {
+function withAuth(req, res, handler) {
+  const user = getAuthenticatedUser(req);
+
+  if (!user) {
+    return sendJson(res, 401, { error: "Authentication required." });
+  }
+
+  return handler(user);
+}
+
+function getAuthenticatedUser(req) {
+  const cookies = parseCookies(req.headers.cookie || "");
+  const token = cookies[sessionCookieName];
+
+  if (!token) {
+    return null;
+  }
+
+  const sessions = readSessions();
+  const session = sessions.find((item) => item.token === token);
+
+  if (!session) {
+    return null;
+  }
+
+  const user = readUsers().find((item) => item.id === session.userId);
+  return user || null;
+}
+
+function handleSignup(body, req, res) {
+  const name = String(body.name || "").trim();
+  const email = String(body.email || "").trim().toLowerCase();
+  const password = String(body.password || "");
+
+  if (!name || !email || !password) {
+    return sendJson(res, 400, { error: "Name, email, and password are required." });
+  }
+
+  if (!/^\S+@\S+\.\S+$/.test(email)) {
+    return sendJson(res, 400, { error: "Enter a valid email address." });
+  }
+
+  if (password.length < 6) {
+    return sendJson(res, 400, { error: "Password must be at least 6 characters." });
+  }
+
+  const users = readUsers();
+
+  if (users.some((item) => item.email === email)) {
+    return sendJson(res, 409, { error: "An account with this email already exists." });
+  }
+
+  const salt = crypto.randomBytes(16).toString("hex");
+  const passwordHash = hashPassword(password, salt);
+  const user = {
+    id: crypto.randomUUID(),
+    name,
+    email,
+    salt,
+    passwordHash,
+    emailVerified: false,
+    verificationToken: createToken(),
+    verificationExpiresAt: Date.now() + verificationLifetimeMs,
+    resetToken: "",
+    resetExpiresAt: 0,
+    createdAt: new Date().toISOString(),
+  };
+
+  users.push(user);
+  writeUsers(users);
+  ensureUserSettings(user.id, req);
+  return createSessionResponse(user, req, res, 201, {
+    verificationUrl: buildAuthUrl(req, "verify", user.verificationToken),
+  });
+}
+
+function handleLogin(body, req, res) {
+  const email = String(body.email || "").trim().toLowerCase();
+  const password = String(body.password || "");
+  const user = readUsers().find((item) => item.email === email);
+
+  if (!user) {
+    return sendJson(res, 401, { error: "Invalid email or password." });
+  }
+
+  const passwordHash = hashPassword(password, user.salt);
+
+  if (passwordHash !== user.passwordHash) {
+    return sendJson(res, 401, { error: "Invalid email or password." });
+  }
+
+  return createSessionResponse(user, req, res, 200);
+}
+
+function handleLogout(req, res) {
+  const cookies = parseCookies(req.headers.cookie || "");
+  const token = cookies[sessionCookieName];
+
+  if (token) {
+    const sessions = readSessions().filter((item) => item.token !== token);
+    writeSessions(sessions);
+  }
+
+  res.writeHead(200, {
+    "Content-Type": "application/json; charset=utf-8",
+    "Set-Cookie": buildSessionCookie("", { maxAge: 0 }),
+  });
+  res.end(JSON.stringify({ success: true }));
+}
+
+function handleAuthMe(req, res) {
+  const user = getAuthenticatedUser(req);
+
+  if (!user) {
+    return sendJson(res, 200, { user: null });
+  }
+
+  return sendJson(res, 200, { user: serializeUser(user) });
+}
+
+function handleForgotPassword(body, req, res) {
+  const email = String(body.email || "").trim().toLowerCase();
+  const users = readUsers();
+  const user = users.find((item) => item.email === email);
+
+  if (!user) {
+    return sendJson(res, 200, { success: true, message: "If that email exists, a reset link has been created." });
+  }
+
+  user.resetToken = createToken();
+  user.resetExpiresAt = Date.now() + resetLifetimeMs;
+  writeUsers(users);
+
+  return sendJson(res, 200, {
+    success: true,
+    message: "Reset link generated.",
+    resetUrl: buildAuthUrl(req, "reset", user.resetToken),
+  });
+}
+
+function handleResetPassword(body, req, res) {
+  const token = String(body.token || "").trim();
+  const password = String(body.password || "");
+  const users = readUsers();
+  const user = users.find((item) => item.resetToken === token && Number(item.resetExpiresAt) > Date.now());
+
+  if (!user) {
+    return sendJson(res, 400, { error: "This reset link is invalid or expired." });
+  }
+
+  if (password.length < 6) {
+    return sendJson(res, 400, { error: "Password must be at least 6 characters." });
+  }
+
+  user.salt = crypto.randomBytes(16).toString("hex");
+  user.passwordHash = hashPassword(password, user.salt);
+  user.resetToken = "";
+  user.resetExpiresAt = 0;
+  writeUsers(users);
+
+  return sendJson(res, 200, { success: true, message: "Password updated. You can sign in now." });
+}
+
+function handleSendVerification(body, req, res) {
+  const email = String(body.email || "").trim().toLowerCase();
+  const users = readUsers();
+  const user = users.find((item) => item.email === email);
+
+  if (!user) {
+    return sendJson(res, 404, { error: "No account found for that email." });
+  }
+
+  if (user.emailVerified) {
+    return sendJson(res, 200, { success: true, message: "Email is already verified." });
+  }
+
+  user.verificationToken = createToken();
+  user.verificationExpiresAt = Date.now() + verificationLifetimeMs;
+  writeUsers(users);
+
+  return sendJson(res, 200, {
+    success: true,
+    message: "Verification link generated.",
+    verificationUrl: buildAuthUrl(req, "verify", user.verificationToken),
+  });
+}
+
+function handleVerifyEmail(body, req, res) {
+  const token = String(body.token || "").trim();
+  const users = readUsers();
+  const user = users.find((item) => item.verificationToken === token && Number(item.verificationExpiresAt) > Date.now());
+
+  if (!user) {
+    return sendJson(res, 400, { error: "This verification link is invalid or expired." });
+  }
+
+  user.emailVerified = true;
+  user.verificationToken = "";
+  user.verificationExpiresAt = 0;
+  writeUsers(users);
+
+  return sendJson(res, 200, { success: true, message: "Email verified successfully." });
+}
+
+function createSessionResponse(user, req, res, statusCode, extras = {}) {
+  const sessions = readSessions().filter((item) => item.userId !== user.id);
+  const token = crypto.randomBytes(32).toString("hex");
+  const session = {
+    token,
+    userId: user.id,
+    createdAt: Date.now(),
+    expiresAt: Date.now() + sessionLifetimeMs,
+  };
+
+  sessions.push(session);
+  writeSessions(sessions);
+
+  res.writeHead(statusCode, {
+    "Content-Type": "application/json; charset=utf-8",
+    "Set-Cookie": buildSessionCookie(token, { maxAge: sessionLifetimeMs / 1000 }),
+  });
+  res.end(JSON.stringify({ user: serializeUser(user), settings: readSettingsForUser(user.id, req), ...extras }));
+}
+
+function buildSessionCookie(value, options = {}) {
+  const parts = [
+    `${sessionCookieName}=${value}`,
+    "Path=/",
+    "HttpOnly",
+    "SameSite=Lax",
+  ];
+
+  if (process.env.NODE_ENV === "production") {
+    parts.push("Secure");
+  }
+
+  if (typeof options.maxAge === "number") {
+    parts.push(`Max-Age=${options.maxAge}`);
+  }
+
+  return parts.join("; ");
+}
+
+function parseCookies(cookieHeader) {
+  return cookieHeader
+    .split(";")
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .reduce((accumulator, part) => {
+      const separatorIndex = part.indexOf("=");
+      const key = separatorIndex >= 0 ? part.slice(0, separatorIndex) : part;
+      const value = separatorIndex >= 0 ? part.slice(separatorIndex + 1) : "";
+      accumulator[key] = decodeURIComponent(value);
+      return accumulator;
+    }, {});
+}
+
+function hashPassword(password, salt) {
+  return crypto.scryptSync(password, salt, 64).toString("hex");
+}
+
+function serializeUser(user) {
+  return {
+    id: user.id,
+    name: user.name,
+    email: user.email,
+    emailVerified: Boolean(user.emailVerified),
+  };
+}
+
+function handleCreateLink(body, req, res, user) {
   const rawDestination = String(body.destination || "").trim();
   const customSlug = String(body.slug || "").trim().toLowerCase();
   const includeQr = Boolean(body.includeQr);
@@ -191,10 +554,11 @@ function handleCreateLink(body, req, res) {
     return sendJson(res, 409, { error: "That short link already exists. Try another custom slug." });
   }
 
-  const settings = readSettings(req);
+  const settings = readSettingsForUser(user.id, req);
   const shortUrl = buildShortUrl(settings.defaultDomain || req.headers.host, slug);
   const nextLink = {
     id: Date.now(),
+    userId: user.id,
     slug,
     destination,
     shortUrl,
@@ -204,8 +568,62 @@ function handleCreateLink(body, req, res) {
 
   links.unshift(nextLink);
   writeLinks(links);
-
   sendJson(res, 201, { link: nextLink });
+}
+
+function handleDeleteLink(slug, res, user) {
+  const links = readLinks();
+  const nextLinks = links.filter((item) => !(item.slug === slug && item.userId === user.id));
+
+  if (nextLinks.length === links.length) {
+    return sendJson(res, 404, { error: "Link not found." });
+  }
+
+  writeLinks(nextLinks);
+  return sendJson(res, 200, { success: true });
+}
+
+function handleSaveSettings(body, req, res, user) {
+  const currentSettings = readSettingsForUser(user.id, req);
+  const workspaceName = String(body.workspaceName || currentSettings.workspaceName || "").trim();
+  const defaultDomain = sanitizeDomainInput(String(body.defaultDomain || currentSettings.defaultDomain || "").trim(), req);
+  const requestedDomains = Array.isArray(body.domains) ? body.domains : currentSettings.domains;
+  const domains = normalizeDomains(requestedDomains, req);
+
+  if (!workspaceName) {
+    return sendJson(res, 400, { error: "Workspace name is required." });
+  }
+
+  if (!defaultDomain) {
+    return sendJson(res, 400, { error: "Enter a valid domain or host." });
+  }
+
+  if (!domains.includes(defaultDomain)) {
+    domains.unshift(defaultDomain);
+  }
+
+  const nextSettings = normalizeSettings({
+    userId: user.id,
+    workspaceName,
+    defaultDomain,
+    domains,
+  }, req);
+
+  const store = readSettingsStore().filter((item) => item.userId !== user.id);
+  store.push(nextSettings);
+  writeSettingsStore(store);
+  return sendJson(res, 200, { settings: nextSettings });
+}
+
+function ensureUserSettings(userId, req) {
+  const store = readSettingsStore();
+
+  if (store.some((item) => item.userId === userId)) {
+    return;
+  }
+
+  store.push(normalizeSettings({ userId }, req));
+  writeSettingsStore(store);
 }
 
 function normalizeUrl(input) {
@@ -226,40 +644,6 @@ function normalizeUrl(input) {
   }
 }
 
-function handleDeleteLink(slug, res) {
-  const links = readLinks();
-  const nextLinks = links.filter((item) => item.slug !== slug);
-
-  if (nextLinks.length === links.length) {
-    return sendJson(res, 404, { error: "Link not found." });
-  }
-
-  writeLinks(nextLinks);
-  return sendJson(res, 200, { success: true });
-}
-
-function handleSaveSettings(body, req, res) {
-  const currentSettings = readSettings(req);
-  const workspaceName = String(body.workspaceName || currentSettings.workspaceName || "").trim();
-  const defaultDomain = sanitizeDomainInput(String(body.defaultDomain || "").trim(), req);
-
-  if (!workspaceName) {
-    return sendJson(res, 400, { error: "Workspace name is required." });
-  }
-
-  if (!defaultDomain) {
-    return sendJson(res, 400, { error: "Enter a valid domain or host." });
-  }
-
-  const nextSettings = {
-    workspaceName,
-    defaultDomain,
-  };
-
-  writeSettings(nextSettings);
-  return sendJson(res, 200, { settings: nextSettings });
-}
-
 function generateSlug(links) {
   const alphabet = "abcdefghjkmnpqrstuvwxyz23456789";
 
@@ -278,20 +662,62 @@ function generateSlug(links) {
 }
 
 function defaultSettings(req) {
+  const fallbackDomain = req?.headers?.host || "127.0.0.1:3000";
   return {
+    userId: "",
     workspaceName: "AnyLink Workspace",
-    defaultDomain: req?.headers?.host || `${host}:${port}`,
+    defaultDomain: fallbackDomain,
+    domains: [fallbackDomain],
   };
 }
 
+function normalizeSettings(settings, req) {
+  const base = defaultSettings(req);
+  const workspaceName = String(settings?.workspaceName || base.workspaceName).trim() || base.workspaceName;
+  const domains = normalizeDomains(settings?.domains || [settings?.defaultDomain || base.defaultDomain], req);
+  const requestedDefault = sanitizeDomainInput(String(settings?.defaultDomain || "").trim(), req);
+  const defaultDomain = requestedDefault && domains.includes(requestedDefault) ? requestedDefault : domains[0];
+
+  if (!domains.includes(defaultDomain)) {
+    domains.unshift(defaultDomain);
+  }
+
+  return {
+    userId: settings?.userId || "",
+    workspaceName,
+    defaultDomain,
+    domains,
+  };
+}
+
+function normalizeDomains(domains, req) {
+  const fallback = req?.headers?.host || "127.0.0.1:3000";
+  const seen = new Set();
+  const normalized = [];
+
+  for (const domain of domains || []) {
+    const cleaned = sanitizeDomainInput(String(domain || "").trim(), req);
+    if (cleaned && !seen.has(cleaned)) {
+      seen.add(cleaned);
+      normalized.push(cleaned);
+    }
+  }
+
+  if (!normalized.length) {
+    normalized.push(fallback);
+  }
+
+  return normalized;
+}
+
 function sanitizeDomainInput(value, req) {
-  const fallback = req?.headers?.host || `${host}:${port}`;
+  const fallback = req?.headers?.host || "127.0.0.1:3000";
 
   if (!value) {
     return fallback;
   }
 
-  let normalized = value
+  const normalized = value
     .replace(/^https?:\/\//i, "")
     .replace(/\/.*$/, "")
     .trim()
@@ -312,6 +738,16 @@ function buildShortUrl(domain, slug) {
   const isLocalHost = /^(localhost|127\.0\.0\.1)(:\d+)?$/i.test(domain);
   const protocol = isLocalHost ? "http" : "https";
   return `${protocol}://${domain}/${slug}`;
+}
+
+function createToken() {
+  return crypto.randomBytes(24).toString("hex");
+}
+
+function buildAuthUrl(req, mode, token) {
+  const hostHeader = req?.headers?.host || "127.0.0.1:3000";
+  const protocol = /^(localhost|127\.0\.0\.1)(:\d+)?$/i.test(hostHeader) ? "http" : "https";
+  return `${protocol}://${hostHeader}/auth?mode=${encodeURIComponent(mode)}&token=${encodeURIComponent(token)}`;
 }
 
 function serveFile(filePath, res) {
