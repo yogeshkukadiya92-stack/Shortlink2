@@ -17,6 +17,7 @@ const sessionLifetimeMs = 1000 * 60 * 60 * 24 * 14;
 const verificationLifetimeMs = 1000 * 60 * 30;
 const resetLifetimeMs = 1000 * 60 * 30;
 const trialLifetimeMs = 1000 * 60 * 60 * 24 * 3;
+const publicAppDomain = process.env.PUBLIC_APP_DOMAIN || "go.shortlinks.in";
 const builtInAdminEmails = ["yogshkukadiya92@gmail.com", "yogeshkukadiya92@gmail.com"];
 const builtInLifetimeEmails = ["yogeshkukadiya92@gmail.com"];
 
@@ -1093,7 +1094,7 @@ function generateSlug(links) {
 }
 
 function defaultSettings(req) {
-  const fallbackDomain = req?.headers?.host || "127.0.0.1:3000";
+  const fallbackDomain = getDefaultShortDomain(req);
   return {
     userId: "",
     workspaceName: "AnyLink Workspace",
@@ -1122,7 +1123,7 @@ function normalizeSettings(settings, req) {
 }
 
 function normalizeDomains(domains, req) {
-  const fallback = req?.headers?.host || "127.0.0.1:3000";
+  const fallback = getDefaultShortDomain(req);
   const seen = new Set();
   const normalized = [];
 
@@ -1136,13 +1137,15 @@ function normalizeDomains(domains, req) {
 
   if (!normalized.length) {
     normalized.push(fallback);
+  } else if (!seen.has(fallback)) {
+    normalized.unshift(fallback);
   }
 
   return normalized;
 }
 
 function sanitizeDomainInput(value, req) {
-  const fallback = req?.headers?.host || "127.0.0.1:3000";
+  const fallback = getDefaultShortDomain(req);
 
   if (!value) {
     return fallback;
@@ -1163,6 +1166,15 @@ function sanitizeDomainInput(value, req) {
   }
 
   return normalized;
+}
+
+function getDefaultShortDomain(req) {
+  const hostHeader = String(req?.headers?.host || "").trim();
+  if (/^(localhost|127\.0\.0\.1)(:\d+)?$/i.test(hostHeader)) {
+    return hostHeader || "127.0.0.1:3000";
+  }
+
+  return publicAppDomain;
 }
 
 function getClientIp(req) {

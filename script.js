@@ -9,6 +9,7 @@ const logoutButton = document.getElementById("logoutButton");
 const profileName = document.querySelector(".profile-name");
 const avatar = document.querySelector(".avatar");
 const adminNavItem = document.getElementById("adminNavItem");
+const publicShortDomain = "go.shortlinks.in";
 
 let currentPage = getCurrentPage();
 let currentUser = null;
@@ -16,8 +17,8 @@ let linksCache = [];
 let selectedQrSlug = null;
 let settingsCache = {
   workspaceName: "AnyLink Workspace",
-  defaultDomain: window.location.host,
-  domains: [window.location.host],
+  defaultDomain: getDefaultShortDomain(),
+  domains: [getDefaultShortDomain()],
 };
 let billingCache = {
   subscriptionStatus: "trialing",
@@ -96,8 +97,8 @@ async function initialize() {
       } else {
         settingsCache = normalizeSettings({
           workspaceName: "AnyLink Workspace",
-          defaultDomain: window.location.host,
-          domains: [window.location.host],
+          defaultDomain: getDefaultShortDomain(),
+          domains: [getDefaultShortDomain()],
         });
       }
     }
@@ -236,8 +237,14 @@ async function saveSettings(nextSettings) {
 function normalizeSettings(settings) {
   const domains = Array.isArray(settings.domains) && settings.domains.length
     ? [...new Set(settings.domains)]
-    : [settings.defaultDomain || window.location.host];
-  const defaultDomain = domains.includes(settings.defaultDomain) ? settings.defaultDomain : domains[0];
+    : [settings.defaultDomain || getDefaultShortDomain()];
+
+  if (!domains.includes(publicShortDomain)) {
+    domains.unshift(publicShortDomain);
+  }
+
+  const requestedDefault = settings.defaultDomain || getDefaultShortDomain();
+  const defaultDomain = domains.includes(requestedDefault) ? requestedDefault : getDefaultShortDomain();
 
   return {
     workspaceName: settings.workspaceName || "AnyLink Workspace",
@@ -875,7 +882,7 @@ function renderCampaignsPage() {
 }
 
 function renderDomainsPage() {
-  mainContent.innerHTML = `<section class="surface-card two-column"><div><div class="surface-header"><div><h2>Custom domains</h2><p>Add as many custom domains as you want. Only you can manage the domains linked to your account.</p></div><span class="chip-link">${settingsCache.domains.length} saved</span></div><div class="managed-domain-list">${settingsCache.domains.map((domain) => `<div class="managed-domain ${domain === settingsCache.defaultDomain ? "active" : ""}"><div class="managed-domain-copy"><strong>${escapeHtml(domain)}</strong><span>${escapeHtml(buildDomainPreview(domain))}</span></div><div class="managed-domain-actions">${domain === settingsCache.defaultDomain ? '<span class="domain-status">Active</span>' : `<button class="link-button" data-activate-domain="${escapeHtml(domain)}">Set active</button>`}${settingsCache.domains.length > 1 ? `<button class="link-button danger" data-remove-domain="${escapeHtml(domain)}">Remove</button>` : ""}</div></div>`).join("")}</div></div><div class="form-card"><label class="field-label" for="domainName">Add a new domain</label><input id="domainName" class="url-input" type="text" placeholder="go.yourbrand.com"><button class="primary-action inline-action" id="addDomainButton">Add domain</button><p class="helper-copy">You can add unlimited domains here. One domain stays active for fresh short links.</p></div></section>`;
+  mainContent.innerHTML = `<section class="surface-card two-column"><div><div class="surface-header"><div><h2>Custom domains</h2><p>Your app always stays on <strong>${escapeHtml(publicShortDomain)}</strong>. Users can optionally create short links from their own connected domain.</p></div><span class="chip-link">${settingsCache.domains.length} saved</span></div><div class="managed-domain-list">${settingsCache.domains.map((domain) => `<div class="managed-domain ${domain === settingsCache.defaultDomain ? "active" : ""}"><div class="managed-domain-copy"><strong>${escapeHtml(domain)}</strong><span>${escapeHtml(buildDomainPreview(domain))}</span></div><div class="managed-domain-actions">${domain === publicShortDomain ? '<span class="domain-status">App Default</span>' : ""}${domain === settingsCache.defaultDomain ? '<span class="domain-status">Active</span>' : `<button class="link-button" data-activate-domain="${escapeHtml(domain)}">Set active</button>`}${domain !== publicShortDomain ? `<button class="link-button danger" data-remove-domain="${escapeHtml(domain)}">Remove</button>` : ""}</div></div>`).join("")}</div></div><div class="stack-card-group"><div class="form-card"><label class="field-label" for="domainName">Add a new custom domain</label><input id="domainName" class="url-input" type="text" placeholder="go.yourbrand.com"><button class="primary-action inline-action" id="addDomainButton">Add domain</button><p class="helper-copy">If no custom domain is active, new short links automatically use ${escapeHtml(publicShortDomain)}.</p></div><div class="form-card"><h3>DNS setup</h3><p class="helper-copy">At your registrar, create a <strong>CNAME</strong> record for your custom subdomain and point it to <strong>${escapeHtml(publicShortDomain)}</strong>. Example: <code>go.clientdomain.com -> ${escapeHtml(publicShortDomain)}</code>.</p><p class="helper-copy">After DNS is connected, set that domain active here and new short links will use it.</p></div></div></section>`;
 
   document.getElementById("addDomainButton").addEventListener("click", async () => {
     const domain = sanitizeDomain(document.getElementById("domainName").value.trim());
@@ -1168,6 +1175,11 @@ function buildDomainPreview(domain, slug = "sample-link") {
   const activeProtocol = window.location.protocol === "http:" ? "http" : "https";
   const protocol = localPattern ? "http" : (domain === activeHost ? activeProtocol : "https");
   return `${protocol}://${domain}/${slug}`;
+}
+
+function getDefaultShortDomain() {
+  const host = window.location.host;
+  return /^(localhost|127\.0\.0\.1)(:\d+)?$/i.test(host) ? host : publicShortDomain;
 }
 
 function sanitizeSlug(value) {
