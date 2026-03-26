@@ -3,6 +3,9 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 const { URL } = require("url");
+const { createUser: createDbUser, findUserByEmail, updateUser: updateDbUser } = require("./repositories/usersRepository");
+const { createSession: createDbSession, deleteSessionByToken: deleteDbSessionByToken, findSessionByToken } = require("./repositories/sessionsRepository");
+const { upsertWorkspaceSettings } = require("./repositories/settingsRepository");
 
 const host = "0.0.0.0";
 const port = process.env.PORT || 3000;
@@ -57,30 +60,30 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "POST" && pathname === "/api/auth/signup") {
       const body = await readRequestBody(req);
-      return handleSignup(body, req, res);
+      return await handleSignup(body, req, res);
     }
 
     if (req.method === "POST" && pathname === "/api/auth/login") {
       const body = await readRequestBody(req);
-      return handleLogin(body, req, res);
+      return await handleLogin(body, req, res);
     }
 
     if (req.method === "POST" && pathname === "/api/auth/profile") {
       const body = await readRequestBody(req);
-      return withAuth(req, res, (user) => handleUpdateProfile(body, req, res, user));
+      return await withAuth(req, res, (user) => handleUpdateProfile(body, req, res, user));
     }
 
     if (req.method === "POST" && pathname === "/api/auth/change-password") {
       const body = await readRequestBody(req);
-      return withAuth(req, res, (user) => handleChangePassword(body, res, user));
+      return await withAuth(req, res, (user) => handleChangePassword(body, res, user));
     }
 
     if (req.method === "POST" && pathname === "/api/auth/logout") {
-      return handleLogout(req, res);
+      return await handleLogout(req, res);
     }
 
     if (req.method === "GET" && pathname === "/api/auth/me") {
-      return handleAuthMe(req, res);
+      return await handleAuthMe(req, res);
     }
 
     if (req.method === "POST" && pathname === "/api/auth/forgot-password") {
@@ -420,7 +423,69 @@ function getAuthenticatedUser(req) {
   return user || null;
 }
 
-function handleSignup(body, req, res) {
+async function getAuthenticatedUserAsync(req) {
+  const cookies = parseCookies(req.headers.cookie || "");
+  const token = cookies[sessionCookieName];
+
+  if (!token) {
+    return null;
+  }
+
+  try {
+    const session = await findSessionByToken(token);
+    if (session?.user) {
+      return normalizeDbUser(session.user);
+    }
+  } catch {
+    // Fall back to file-backed session lookup while migration is in progress.
+  }
+
+  return getAuthenticatedUser(req);
+}
+
+function buildStoredPassword(password) {
+  const salt = crypto.randomBytes(16).toString("hex");
+  const hash = hashPassword(password, salt);
+  return { salt, combined: `${salt}:${hash}` };
+}
+
+function verifyPassword(password, userLike) {
+  const stored = String(userLike?.passwordHash || "");
+
+  if (stored.includes(":")) {
+    const [salt, hash] = stored.split(":");
+    return hashPassword(password, salt) === hash;
+  }
+
+  if (userLike?.salt) {
+    return hashPassword(password, userLike.salt) === stored;
+  }
+
+  return false;
+}
+
+function normalizeDbUser(user) {
+  return {
+    ...user,
+    trialStartedAt: user.trialStartedAt ? new Date(user.trialStartedAt).getTime() : 0,
+    trialEndsAt: user.trialEndsAt ? new Date(user.trialEndsAt).getTime() : 0,
+    subscriptionStartedAt: user.subscriptionStartedAt ? new Date(user.subscriptionStartedAt).getTime() : 0,
+    subscriptionExpiresAt: user.subscriptionExpiresAt ? new Date(user.subscriptionExpiresAt).getTime() : 0,
+  };
+}
+
+async function ensureDbWorkspaceSettings(userId, req) {
+  try {
+    await upsertWorkspaceSettings(userId, {
+      workspaceName: "AnyLink Workspace",
+      defaultDomain: getDefaultShortDomain(req),
+    });
+  } catch {
+    // Keep JSON settings as the fallback source while we migrate feature-by-feature.
+  }
+}
+
+async function handleSignup(body, req, res) {
   const name = String(body.name || "").trim();
   const email = String(body.email || "").trim().toLowerCase();
   const password = String(body.password || "");
@@ -438,19 +503,25 @@ function handleSignup(body, req, res) {
   }
 
   const users = readUsers();
+  let dbExistingUser = null;
 
-  if (users.some((item) => item.email === email)) {
+  try {
+    dbExistingUser = await findUserByEmail(email);
+  } catch {
+    dbExistingUser = null;
+  }
+
+  if (users.some((item) => item.email === email) || dbExistingUser) {
     return sendJson(res, 409, { error: "An account with this email already exists." });
   }
 
-  const salt = crypto.randomBytes(16).toString("hex");
-  const passwordHash = hashPassword(password, salt);
+  const { salt, combined } = buildStoredPassword(password);
   const user = {
     id: crypto.randomUUID(),
     name,
     email,
     salt,
-    passwordHash,
+    passwordHash: combined,
     emailVerified: false,
     isAdmin: users.length === 0,
     subscriptionStatus: "trialing",
@@ -468,36 +539,68 @@ function handleSignup(body, req, res) {
   users.push(user);
   writeUsers(users);
   ensureUserSettings(user.id, req);
-  return createSessionResponse(user, req, res, 201, {
+  await ensureDbWorkspaceSettings(user.id, req);
+
+  try {
+    await createDbUser({
+      id: user.id,
+      name,
+      email,
+      passwordHash: combined,
+      emailVerified: false,
+      isAdmin: users.length === 1,
+      subscriptionStatus: "TRIALING",
+      trialStartedAt: new Date(user.trialStartedAt),
+      trialEndsAt: new Date(user.trialEndsAt),
+      subscriptionStartedAt: null,
+      subscriptionExpiresAt: null,
+      createdAt: new Date(user.createdAt),
+    });
+  } catch {
+    // JSON remains the live fallback while DB migration rolls out.
+  }
+
+  return await createSessionResponse(user, req, res, 201, {
     verificationUrl: buildAuthUrl(req, "verify", user.verificationToken),
   });
 }
 
-function handleLogin(body, req, res) {
+async function handleLogin(body, req, res) {
   const email = String(body.email || "").trim().toLowerCase();
   const password = String(body.password || "");
-  const user = readUsers().find((item) => item.email === email);
+  let user = null;
+
+  try {
+    const dbUser = await findUserByEmail(email);
+    if (dbUser && verifyPassword(password, dbUser)) {
+      user = normalizeDbUser(dbUser);
+    }
+  } catch {
+    user = null;
+  }
 
   if (!user) {
-    return sendJson(res, 401, { error: "Invalid email or password." });
+    user = readUsers().find((item) => item.email === email);
+    if (!user || !verifyPassword(password, user)) {
+      return sendJson(res, 401, { error: "Invalid email or password." });
+    }
   }
 
-  const passwordHash = hashPassword(password, user.salt);
-
-  if (passwordHash !== user.passwordHash) {
-    return sendJson(res, 401, { error: "Invalid email or password." });
-  }
-
-  return createSessionResponse(user, req, res, 200);
+  return await createSessionResponse(user, req, res, 200);
 }
 
-function handleLogout(req, res) {
+async function handleLogout(req, res) {
   const cookies = parseCookies(req.headers.cookie || "");
   const token = cookies[sessionCookieName];
 
   if (token) {
     const sessions = readSessions().filter((item) => item.token !== token);
     writeSessions(sessions);
+    try {
+      await deleteDbSessionByToken(token);
+    } catch {
+      // Ignore DB session delete failures during fallback mode.
+    }
   }
 
   res.writeHead(200, {
@@ -507,7 +610,7 @@ function handleLogout(req, res) {
   res.end(JSON.stringify({ success: true }));
 }
 
-function handleUpdateProfile(body, req, res, user) {
+async function handleUpdateProfile(body, req, res, user) {
   const users = readUsers();
   const record = users.find((item) => item.id === user.id);
 
@@ -524,10 +627,16 @@ function handleUpdateProfile(body, req, res, user) {
   record.name = nextName;
   writeUsers(users);
 
+  try {
+    await updateDbUser(user.id, { name: nextName });
+  } catch {
+    // Keep file-backed user as fallback until full migration is complete.
+  }
+
   return sendJson(res, 200, { user: serializeUser(record) });
 }
 
-function handleChangePassword(body, res, user) {
+async function handleChangePassword(body, res, user) {
   const users = readUsers();
   const record = users.find((item) => item.id === user.id);
 
@@ -555,17 +664,24 @@ function handleChangePassword(body, res, user) {
     return sendJson(res, 400, { error: "New password and confirm password must match." });
   }
 
-  record.salt = crypto.randomBytes(16).toString("hex");
-  record.passwordHash = hashPassword(nextPassword, record.salt);
+  const { salt, combined } = buildStoredPassword(nextPassword);
+  record.salt = salt;
+  record.passwordHash = combined;
   record.resetToken = "";
   record.resetExpiresAt = 0;
   writeUsers(users);
 
+  try {
+    await updateDbUser(user.id, { passwordHash: combined });
+  } catch {
+    // Keep file-backed password as fallback until full migration is complete.
+  }
+
   return sendJson(res, 200, { success: true, message: "Password updated successfully." });
 }
 
-function handleAuthMe(req, res) {
-  const user = getAuthenticatedUser(req);
+async function handleAuthMe(req, res) {
+  const user = await getAuthenticatedUserAsync(req);
 
   if (!user) {
     return sendJson(res, 200, { user: null });
@@ -804,7 +920,7 @@ function handleAdminRevokeSession(sessionToken, res) {
   return sendJson(res, 200, { success: true });
 }
 
-function createSessionResponse(user, req, res, statusCode, extras = {}) {
+async function createSessionResponse(user, req, res, statusCode, extras = {}) {
   const sessions = readSessions().filter((item) => item.userId !== user.id);
   const token = crypto.randomBytes(32).toString("hex");
   const session = {
@@ -816,6 +932,17 @@ function createSessionResponse(user, req, res, statusCode, extras = {}) {
 
   sessions.push(session);
   writeSessions(sessions);
+
+  try {
+    await createDbSession({
+      token,
+      userId: user.id,
+      expiresAt: new Date(session.expiresAt),
+      createdAt: new Date(session.createdAt),
+    });
+  } catch {
+    // JSON session stays as fallback.
+  }
 
   res.writeHead(statusCode, {
     "Content-Type": "application/json; charset=utf-8",
