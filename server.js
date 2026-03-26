@@ -9,6 +9,7 @@ const port = process.env.PORT || 3000;
 const rootDir = __dirname;
 const dataDir = path.join(rootDir, "data");
 const linksFile = path.join(dataDir, "links.json");
+const pagesFile = path.join(dataDir, "pages.json");
 const settingsFile = path.join(dataDir, "settings.json");
 const usersFile = path.join(dataDir, "users.json");
 const sessionsFile = path.join(dataDir, "sessions.json");
@@ -148,6 +149,26 @@ const server = http.createServer(async (req, res) => {
       return withAppAccess(req, res, (user) => sendJson(res, 200, { analytics: buildAnalyticsReport(user.id) }));
     }
 
+    if (req.method === "GET" && pathname === "/api/pages") {
+      return withAppAccess(req, res, (user) => sendJson(res, 200, { pages: readPagesForUser(user.id, req) }));
+    }
+
+    if (req.method === "POST" && pathname === "/api/pages") {
+      const body = await readRequestBody(req);
+      return withAppAccess(req, res, (user) => handleSavePage(body, req, res, user));
+    }
+
+    if (req.method === "DELETE" && pathname.startsWith("/api/pages/")) {
+      const pageId = pathname.split("/").pop();
+      return withAppAccess(req, res, (user) => handleDeletePage(pageId, res, user));
+    }
+
+    if (req.method === "POST" && pathname.startsWith("/api/forms/") && pathname.endsWith("/submit")) {
+      const body = await readRequestBody(req);
+      const slug = pathname.split("/")[3];
+      return handlePublicFormSubmit(slug, body, req, res);
+    }
+
     if (req.method === "POST" && pathname === "/api/links") {
       const body = await readRequestBody(req);
       return withAppAccess(req, res, (user) => handleCreateLink(body, req, res, user));
@@ -170,6 +191,11 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "GET" && pathname.startsWith("/api/domains/verify/")) {
       const domain = decodeURIComponent(pathname.split("/").pop());
       return withAppAccess(req, res, (user) => handleVerifyDomain(domain, req, res, user));
+    }
+
+    if (req.method === "GET" && pathname.startsWith("/forms/")) {
+      const slug = pathname.split("/")[2];
+      return handlePublicFormPage(slug, req, res);
     }
 
     if (req.method === "GET" && appRoutes.has(pathname)) {
@@ -213,6 +239,7 @@ function ensureStorage() {
   }
 
   ensureJsonFile(linksFile, []);
+  ensureJsonFile(pagesFile, []);
   ensureJsonFile(settingsFile, []);
   ensureJsonFile(usersFile, []);
   ensureJsonFile(sessionsFile, []);
@@ -240,6 +267,20 @@ function writeJsonFile(filePath, payload) {
 
 function readLinks() {
   return readJsonFile(linksFile, []);
+}
+
+function readPages() {
+  return readJsonFile(pagesFile, []);
+}
+
+function writePages(pages) {
+  writeJsonFile(pagesFile, pages);
+}
+
+function readPagesForUser(userId, req) {
+  return readPages()
+    .filter((item) => item.userId === userId)
+    .map((item) => normalizePage(item, req));
 }
 
 function readLinksForUser(userId) {
@@ -918,6 +959,204 @@ function handleCreateLink(body, req, res, user) {
   sendJson(res, 201, { link: nextLink });
 }
 
+function handleSavePage(body, req, res, user) {
+  const title = String(body.title || "").trim();
+  const headline = String(body.headline || "").trim();
+  const description = String(body.description || "").trim();
+  const submitLabel = String(body.submitLabel || "").trim() || "Submit";
+  const thanksMessage = String(body.thanksMessage || "").trim() || "Thanks, your response has been received.";
+  const rawSlug = String(body.slug || "").trim().toLowerCase();
+
+  if (!title) {
+    return sendJson(res, 400, { error: "Form name is required." });
+  }
+
+  const slug = sanitizeFormSlug(rawSlug || title);
+
+  if (!slug) {
+    return sendJson(res, 400, { error: "Use a valid slug with letters, numbers, and hyphens only." });
+  }
+
+  const fields = normalizeFormFields(body.fields || {});
+  const pages = readPages();
+  const existingIndex = pages.findIndex((item) => item.id === body.id && item.userId === user.id);
+  const conflictingSlug = pages.find((item) => item.slug === slug && item.id !== body.id);
+
+  if (conflictingSlug) {
+    return sendJson(res, 409, { error: "That form slug is already in use." });
+  }
+
+  if (existingIndex >= 0) {
+    const current = pages[existingIndex];
+    pages[existingIndex] = normalizePage({
+      ...current,
+      title,
+      headline: headline || title,
+      description,
+      submitLabel,
+      thanksMessage,
+      slug,
+      fields,
+      updatedAt: new Date().toISOString(),
+    }, req);
+  } else {
+    pages.unshift(normalizePage({
+      id: crypto.randomUUID(),
+      userId: user.id,
+      title,
+      headline: headline || title,
+      description,
+      submitLabel,
+      thanksMessage,
+      slug,
+      fields,
+      submissions: [],
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    }, req));
+  }
+
+  writePages(pages);
+  const saved = pages.find((item) => item.slug === slug && item.userId === user.id);
+  return sendJson(res, existingIndex >= 0 ? 200 : 201, { page: normalizePage(saved, req) });
+}
+
+function handleDeletePage(pageId, res, user) {
+  const pages = readPages();
+  const nextPages = pages.filter((item) => !(item.id === pageId && item.userId === user.id));
+
+  if (nextPages.length === pages.length) {
+    return sendJson(res, 404, { error: "Form not found." });
+  }
+
+  writePages(nextPages);
+  return sendJson(res, 200, { success: true });
+}
+
+function handlePublicFormPage(slug, req, res) {
+  const page = readPages().find((item) => item.slug === slug);
+
+  if (!page) {
+    res.writeHead(404, { "Content-Type": "text/html; charset=utf-8" });
+    res.end("<!DOCTYPE html><html><body style=\"font-family:Arial,sans-serif;padding:40px;\"><h1>Form not found</h1><p>This form link is not available.</p></body></html>");
+    return;
+  }
+
+  const normalizedPage = normalizePage(page, req);
+  const fieldMarkup = getEnabledFormFields(normalizedPage.fields).map((field) => `
+    <label style="display:grid;gap:8px;">
+      <span style="font-weight:600;color:#1f356c;">${escapeHtml(field.label)}</span>
+      ${field.type === "textarea"
+        ? `<textarea name="${field.key}" ${field.required ? "required" : ""} rows="5" style="padding:14px 16px;border:1px solid #d9e2f0;border-radius:14px;font:inherit;"></textarea>`
+        : `<input type="${field.type}" name="${field.key}" ${field.required ? "required" : ""} style="padding:14px 16px;border:1px solid #d9e2f0;border-radius:14px;font:inherit;">`}
+    </label>
+  `).join("");
+
+  const html = `<!DOCTYPE html>
+  <html lang="en">
+    <head>
+      <meta charset="UTF-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <title>${escapeHtml(normalizedPage.title)} | AnyLink Form</title>
+      <style>
+        body{margin:0;font-family:Segoe UI,Arial,sans-serif;background:linear-gradient(180deg,#edf5ff,#f8fbff);color:#132b5c;}
+        .wrap{max-width:760px;margin:0 auto;padding:32px 18px 60px;}
+        .card{background:#fff;border:1px solid #dce7f7;border-radius:28px;padding:28px;box-shadow:0 22px 60px rgba(39,85,166,.12);}
+        .eyebrow{margin:0 0 10px;color:#6580b8;letter-spacing:.16em;text-transform:uppercase;font-size:.8rem}
+        h1{margin:0 0 12px;font-size:clamp(2rem,5vw,3rem);line-height:1.02}
+        p{margin:0 0 18px;color:#4e6795;font-size:1rem;line-height:1.65}
+        form{display:grid;gap:16px;margin-top:22px}
+        button{height:52px;border:none;border-radius:16px;background:linear-gradient(135deg,#2852e0,#10a9d9);color:#fff;font-weight:700;font-size:1rem;cursor:pointer}
+        .status{display:none;margin-top:16px;padding:14px 16px;border-radius:14px;background:#eff8f2;color:#1f7a42}
+        .status.error{background:#fff1f0;color:#b3402d}
+      </style>
+    </head>
+    <body>
+      <div class="wrap">
+        <div class="card">
+          <p class="eyebrow">Response form</p>
+          <h1>${escapeHtml(normalizedPage.headline)}</h1>
+          <p>${escapeHtml(normalizedPage.description || "Fill out this form and your response will go straight into the owner's dashboard.")}</p>
+          <form id="publicForm">
+            ${fieldMarkup}
+            <button type="submit">${escapeHtml(normalizedPage.submitLabel)}</button>
+          </form>
+          <div id="formStatus" class="status" aria-live="polite"></div>
+        </div>
+      </div>
+      <script>
+        const form = document.getElementById("publicForm");
+        const status = document.getElementById("formStatus");
+        form.addEventListener("submit", async (event) => {
+          event.preventDefault();
+          const entries = Object.fromEntries(new FormData(form).entries());
+          status.className = "status";
+          status.style.display = "block";
+          status.textContent = "Submitting...";
+          try {
+            const response = await fetch("/api/forms/${encodeURIComponent(normalizedPage.slug)}/submit", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(entries)
+            });
+            const payload = await response.json();
+            if (!response.ok) throw new Error(payload.error || "Unable to submit form.");
+            form.reset();
+            status.textContent = payload.message || ${JSON.stringify(normalizedPage.thanksMessage)};
+          } catch (error) {
+            status.className = "status error";
+            status.style.display = "block";
+            status.textContent = error.message;
+          }
+        });
+      </script>
+    </body>
+  </html>`;
+
+  res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+  res.end(html);
+}
+
+function handlePublicFormSubmit(slug, body, req, res) {
+  const pages = readPages();
+  const page = pages.find((item) => item.slug === slug);
+
+  if (!page) {
+    return sendJson(res, 404, { error: "Form not found." });
+  }
+
+  const normalizedPage = normalizePage(page, req);
+  const answers = {};
+
+  for (const field of getEnabledFormFields(normalizedPage.fields)) {
+    const value = String(body[field.key] || "").trim();
+    if (field.required && !value) {
+      return sendJson(res, 400, { error: `${field.label} is required.` });
+    }
+    answers[field.key] = value;
+  }
+
+  const geo = getGeoDetails(req);
+  const agent = parseUserAgent(req.headers["user-agent"] || "");
+  page.submissions = Array.isArray(page.submissions) ? page.submissions : [];
+  page.submissions.unshift({
+    id: crypto.randomUUID(),
+    submittedAt: new Date().toISOString(),
+    answers,
+    meta: {
+      ip: getClientIp(req),
+      country: geo.country,
+      city: geo.city,
+      browser: agent.browser,
+      platform: agent.platform,
+      device: agent.deviceType,
+    },
+  });
+  page.updatedAt = new Date().toISOString();
+  writePages(pages);
+  return sendJson(res, 201, { success: true, message: normalizedPage.thanksMessage });
+}
+
 function handleDeleteLink(slug, res, user) {
   const links = readLinks();
   const nextLinks = links.filter((item) => !(item.slug === slug && item.userId === user.id));
@@ -1020,6 +1259,68 @@ function handleVerifyDomain(domain, req, res, user) {
     recordType: "CNAME",
     hostHint: sanitizedDomain.split(".")[0] || sanitizedDomain,
   });
+}
+
+function sanitizeFormSlug(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9-]+/g, "-")
+    .replace(/-{2,}/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+function normalizeFormFields(fields) {
+  return {
+    name: fields.name !== false,
+    email: fields.email !== false,
+    phone: fields.phone === true,
+    company: fields.company === true,
+    message: fields.message !== false,
+  };
+}
+
+function getEnabledFormFields(fields) {
+  const normalized = normalizeFormFields(fields);
+  const allFields = [
+    { key: "name", label: "Full name", type: "text", required: normalized.name },
+    { key: "email", label: "Email address", type: "email", required: normalized.email },
+    { key: "phone", label: "Phone number", type: "tel", required: false },
+    { key: "company", label: "Company", type: "text", required: false },
+    { key: "message", label: "Message", type: "textarea", required: normalized.message },
+  ];
+
+  return allFields.filter((field) => normalized[field.key]);
+}
+
+function normalizePage(page, req) {
+  const normalized = {
+    id: page.id || crypto.randomUUID(),
+    userId: page.userId || "",
+    title: String(page.title || "Untitled form").trim(),
+    headline: String(page.headline || page.title || "Untitled form").trim(),
+    description: String(page.description || "").trim(),
+    submitLabel: String(page.submitLabel || "Submit").trim(),
+    thanksMessage: String(page.thanksMessage || "Thanks, your response has been received.").trim(),
+    slug: sanitizeFormSlug(page.slug || page.title || "form"),
+    fields: normalizeFormFields(page.fields || {}),
+    submissions: Array.isArray(page.submissions) ? page.submissions : [],
+    createdAt: page.createdAt || new Date().toISOString(),
+    updatedAt: page.updatedAt || page.createdAt || new Date().toISOString(),
+  };
+
+  return {
+    ...normalized,
+    publicUrl: buildPublicFormUrl(normalized.slug, req),
+    submissionCount: normalized.submissions.length,
+  };
+}
+
+function buildPublicFormUrl(slug, req) {
+  const hostHeader = req?.headers?.host || publicAppDomain;
+  const protocol = getRequestProtocol(req, hostHeader);
+  const localHost = /^(localhost|127\.0\.0\.1)(:\d+)?$/i.test(hostHeader) ? hostHeader : publicAppDomain;
+  return `${protocol}://${localHost}/forms/${slug}`;
 }
 
 function ensureUserSettings(userId, req) {
@@ -1321,6 +1622,15 @@ function buildAuthUrl(req, mode, token) {
   const hostHeader = req?.headers?.host || "127.0.0.1:3000";
   const protocol = getRequestProtocol(req, hostHeader);
   return `${protocol}://${hostHeader}/auth?mode=${encodeURIComponent(mode)}&token=${encodeURIComponent(token)}`;
+}
+
+function escapeHtml(value) {
+  return String(value || "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
 }
 
 function getRequestProtocol(req, hostHeader = "") {

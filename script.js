@@ -14,7 +14,9 @@ const publicShortDomain = "go.shortlinks.in";
 let currentPage = getCurrentPage();
 let currentUser = null;
 let linksCache = [];
+let pagesCache = [];
 let selectedQrSlug = null;
+let selectedFormId = "";
 let settingsCache = {
   workspaceName: "AnyLink Workspace",
   defaultDomain: getDefaultShortDomain(),
@@ -93,6 +95,9 @@ async function initialize() {
         await loadSettings();
         if (["home", "links", "analytics", "qr-codes"].includes(currentPage)) {
           await loadLinks();
+        }
+        if (currentPage === "pages") {
+          await loadPages();
         }
       } else {
         settingsCache = normalizeSettings({
@@ -273,6 +278,21 @@ async function loadAnalytics() {
   }
 
   return payload.analytics;
+}
+
+async function loadPages() {
+  const response = await fetch("/api/pages");
+  const payload = await response.json();
+
+  if (!response.ok) {
+    throw new Error(payload.error || "Unable to load forms");
+  }
+
+  pagesCache = payload.pages || [];
+
+  if (!selectedFormId && pagesCache.length) {
+    selectedFormId = pagesCache[0].id;
+  }
 }
 
 function renderPage() {
@@ -811,7 +831,259 @@ function renderQrPage() {
 }
 
 function renderPagesBuilder() {
-  mainContent.innerHTML = `<section class="surface-card"><div class="surface-header"><div><h2>Page builder</h2><p>Create a simple landing page structure for campaigns.</p></div></div><div class="builder-grid"><div class="form-card"><label class="field-label" for="pageName">Page name</label><input id="pageName" class="url-input" type="text" placeholder="Summer launch page"><label class="field-label" for="pageHeadline">Headline</label><input id="pageHeadline" class="url-input" type="text" placeholder="Everything you need in one short page"><label class="field-label" for="pageCta">CTA label</label><input id="pageCta" class="url-input" type="text" placeholder="Get started"></div><div class="preview-card"><span class="eyebrow">Live preview</span><h3>Summer launch page</h3><p>Everything you need in one short page</p><button class="primary-action inline-action">Get started</button></div></div></section>`;
+  const selectedPage = getSelectedForm();
+  const draft = selectedPage || createEmptyFormDraft();
+  const totalSubmissions = pagesCache.reduce((sum, page) => sum + (page.submissionCount || 0), 0);
+
+  mainContent.innerHTML = `
+    <section class="stat-grid">
+      <article class="stat-card"><span>Total forms</span><strong>${pagesCache.length}</strong></article>
+      <article class="stat-card"><span>Total submissions</span><strong>${totalSubmissions}</strong></article>
+      <article class="stat-card"><span>Live form domain</span><strong>${escapeHtml(publicShortDomain)}</strong></article>
+    </section>
+    <section class="surface-card">
+      <div class="surface-header">
+        <div>
+          <h2>Form builder</h2>
+          <p>Create lead capture forms, share the public link, and collect every response in one place.</p>
+        </div>
+        <button class="link-button" id="newFormButton" type="button">New form</button>
+      </div>
+      <div class="builder-grid">
+        <div class="form-card">
+          <input id="formId" type="hidden" value="${escapeHtml(draft.id || "")}">
+          <label class="field-label" for="formTitle">Form name</label>
+          <input id="formTitle" class="url-input" type="text" value="${escapeHtml(draft.title)}" placeholder="Lead capture form">
+          <label class="field-label" for="formSlug">Public slug</label>
+          <input id="formSlug" class="url-input" type="text" value="${escapeHtml(draft.slug)}" placeholder="lead-capture">
+          <label class="field-label" for="formHeadline">Headline</label>
+          <input id="formHeadline" class="url-input" type="text" value="${escapeHtml(draft.headline)}" placeholder="Let us know what you need">
+          <label class="field-label" for="formDescription">Description</label>
+          <textarea id="formDescription" class="url-input textarea-input" rows="4" placeholder="Short message under the headline">${escapeHtml(draft.description)}</textarea>
+          <label class="field-label" for="formSubmitLabel">Submit button label</label>
+          <input id="formSubmitLabel" class="url-input" type="text" value="${escapeHtml(draft.submitLabel)}" placeholder="Submit">
+          <label class="field-label" for="formThanksMessage">Thank-you message</label>
+          <textarea id="formThanksMessage" class="url-input textarea-input" rows="3" placeholder="Thanks, your response has been received.">${escapeHtml(draft.thanksMessage)}</textarea>
+          <div class="form-field-toggle-group">
+            ${renderFieldToggle("name", "Full name", draft.fields.name)}
+            ${renderFieldToggle("email", "Email address", draft.fields.email)}
+            ${renderFieldToggle("phone", "Phone number", draft.fields.phone)}
+            ${renderFieldToggle("company", "Company", draft.fields.company)}
+            ${renderFieldToggle("message", "Message", draft.fields.message)}
+          </div>
+          <div class="form-builder-actions">
+            <button class="primary-action inline-action" id="saveFormButton" type="button">${draft.id ? "Update form" : "Create form"}</button>
+            ${draft.id ? '<button class="link-button danger" id="deleteCurrentFormButton" type="button">Delete</button>' : ""}
+          </div>
+        </div>
+        <div class="stack-card-group">
+          <article class="preview-card">
+            <span class="eyebrow">Live preview</span>
+            <h3>${escapeHtml(draft.headline || "Your form headline")}</h3>
+            <p>${escapeHtml(draft.description || "This is how your public form will feel to visitors before they submit their details.")}</p>
+            <div class="dns-helper-grid">
+              <span><strong>Public link</strong>${escapeHtml(getPublicFormUrl(draft.slug || "your-form"))}</span>
+              <span><strong>Responses</strong>${draft.submissionCount || 0}</span>
+              <span><strong>Submit CTA</strong>${escapeHtml(draft.submitLabel || "Submit")}</span>
+            </div>
+            <div class="managed-domain-actions">
+              <button class="link-button secondary" id="copyFormLinkButton" type="button">Copy link</button>
+              <a class="link-button secondary" href="${escapeHtml(getPublicFormUrl(draft.slug || "your-form"))}" target="_blank" rel="noreferrer">Open form</a>
+            </div>
+          </article>
+          <article class="mini-card inset-card">
+            <div class="surface-header">
+              <div>
+                <h3>Your forms</h3>
+                <p>Click any form to edit it or review submissions.</p>
+              </div>
+            </div>
+            <div class="form-library">
+              ${pagesCache.length ? pagesCache.map((page) => `
+                <button class="form-library-item ${page.id === draft.id ? "active" : ""}" data-edit-form="${escapeHtml(page.id)}" type="button">
+                  <strong>${escapeHtml(page.title)}</strong>
+                  <span>${escapeHtml(page.publicUrl)}</span>
+                  <em>${page.submissionCount || 0} submission${page.submissionCount === 1 ? "" : "s"}</em>
+                </button>
+              `).join("") : '<div class="empty-state">No forms yet. Build your first form on the left.</div>'}
+            </div>
+          </article>
+        </div>
+      </div>
+    </section>
+    <section class="surface-card">
+      <div class="surface-header">
+        <div>
+          <h2>Submissions</h2>
+          <p>${draft.id ? `Latest responses for ${escapeHtml(draft.title)}.` : "Create a form to start collecting submissions."}</p>
+        </div>
+      </div>
+      ${draft.id ? renderFormSubmissions(draft.submissions || []) : '<div class="empty-state">No form selected yet.</div>'}
+    </section>
+  `;
+
+  document.getElementById("newFormButton").addEventListener("click", () => {
+    selectedFormId = "";
+    renderPagesBuilder();
+  });
+
+  document.getElementById("copyFormLinkButton").addEventListener("click", async () => {
+    const url = getPublicFormUrl(draft.slug || "your-form");
+    try {
+      await navigator.clipboard.writeText(url);
+      showGlobalMessage(`Copied form link: ${url}`, false);
+    } catch {
+      showGlobalMessage(`Copy failed. Open this link manually: ${url}`, true);
+    }
+  });
+
+  document.getElementById("saveFormButton").addEventListener("click", async () => {
+    await saveFormFromBuilder();
+  });
+
+  document.querySelectorAll("[data-edit-form]").forEach((button) => button.addEventListener("click", () => {
+    selectedFormId = button.getAttribute("data-edit-form");
+    renderPagesBuilder();
+  }));
+
+  const deleteButton = document.getElementById("deleteCurrentFormButton");
+  if (deleteButton) {
+    deleteButton.addEventListener("click", async () => {
+      await deleteForm(draft.id);
+    });
+  }
+}
+
+function createEmptyFormDraft() {
+  return {
+    id: "",
+    title: "",
+    slug: "",
+    headline: "",
+    description: "",
+    submitLabel: "Submit",
+    thanksMessage: "Thanks, your response has been received.",
+    publicUrl: getPublicFormUrl("your-form"),
+    submissionCount: 0,
+    submissions: [],
+    fields: {
+      name: true,
+      email: true,
+      phone: false,
+      company: false,
+      message: true,
+    },
+  };
+}
+
+function getSelectedForm() {
+  return pagesCache.find((page) => page.id === selectedFormId) || null;
+}
+
+function renderFieldToggle(key, label, checked) {
+  return `
+    <label class="field-toggle">
+      <input type="checkbox" data-form-field="${escapeHtml(key)}" ${checked ? "checked" : ""}>
+      <span>${escapeHtml(label)}</span>
+    </label>
+  `;
+}
+
+function getPublicFormUrl(slug) {
+  const cleanSlug = sanitizeSlug(slug || "your-form");
+  const protocol = window.location.protocol === "http:" && window.location.hostname.includes("localhost") ? "http" : "https";
+  return `${protocol}://${publicShortDomain}/forms/${cleanSlug}`;
+}
+
+function sanitizeSlug(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9-]+/g, "-")
+    .replace(/-{2,}/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+async function saveFormFromBuilder() {
+  const id = document.getElementById("formId").value.trim();
+  const title = document.getElementById("formTitle").value.trim();
+  const slug = sanitizeSlug(document.getElementById("formSlug").value.trim() || title);
+  const headline = document.getElementById("formHeadline").value.trim();
+  const description = document.getElementById("formDescription").value.trim();
+  const submitLabel = document.getElementById("formSubmitLabel").value.trim();
+  const thanksMessage = document.getElementById("formThanksMessage").value.trim();
+  const fields = Object.fromEntries(
+    [...document.querySelectorAll("[data-form-field]")].map((input) => [input.getAttribute("data-form-field"), input.checked]),
+  );
+
+  if (!title) return showGlobalMessage("Form name is required.", true);
+  if (!slug) return showGlobalMessage("Public slug is required.", true);
+
+  try {
+    const response = await fetch("/api/pages", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id, title, slug, headline, description, submitLabel, thanksMessage, fields }),
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || "Unable to save form.");
+    await loadPages();
+    selectedFormId = payload.page.id;
+    renderPagesBuilder();
+    showGlobalMessage(id ? "Form updated successfully." : "Form created successfully.", false);
+  } catch (error) {
+    showGlobalMessage(error.message, true);
+  }
+}
+
+async function deleteForm(pageId) {
+  try {
+    const response = await fetch(`/api/pages/${encodeURIComponent(pageId)}`, { method: "DELETE" });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || "Unable to delete form.");
+    selectedFormId = "";
+    await loadPages();
+    renderPagesBuilder();
+    showGlobalMessage("Form deleted successfully.", false);
+  } catch (error) {
+    showGlobalMessage(error.message, true);
+  }
+}
+
+function renderFormSubmissions(submissions) {
+  if (!submissions.length) {
+    return '<div class="empty-state">No submissions yet. Share the public form link and new responses will appear here.</div>';
+  }
+
+  return `
+    <div class="form-submission-list">
+      ${submissions.map((submission) => `
+        <article class="mini-card inset-card submission-card">
+          <div class="surface-header">
+            <div>
+              <h3>${escapeHtml(new Date(submission.submittedAt).toLocaleString())}</h3>
+              <p>${escapeHtml(submission.meta?.city || "Unknown city")}, ${escapeHtml(submission.meta?.country || "Unknown country")} • ${escapeHtml(submission.meta?.device || "Web")} • ${escapeHtml(submission.meta?.browser || "Unknown browser")}</p>
+            </div>
+            <span class="chip-link">${escapeHtml(submission.meta?.ip || "Unknown IP")}</span>
+          </div>
+          <div class="submission-answer-grid">
+            ${Object.entries(submission.answers || {}).map(([key, value]) => `
+              <div class="submission-answer">
+                <strong>${escapeHtml(formatFieldLabel(key))}</strong>
+                <span>${escapeHtml(value || "-")}</span>
+              </div>
+            `).join("")}
+          </div>
+        </article>
+      `).join("")}
+    </div>
+  `;
+}
+
+function formatFieldLabel(key) {
+  return String(key || "")
+    .replace(/([A-Z])/g, " $1")
+    .replace(/^./, (match) => match.toUpperCase());
 }
 
 async function renderAnalyticsPage() {
