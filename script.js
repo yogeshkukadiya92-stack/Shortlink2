@@ -740,12 +740,13 @@ function renderHomePage() {
       </aside>
     </section>
     <section class="bottom-grid">
-      <article class="mini-card"><div class="mini-card-header"><h3>Your recent links</h3><a href="/links">Open library</a></div><div class="links-list" id="homeLinksList">${renderLinkItems(linksCache.slice(0, 3), false)}</div></article>
+      <article class="mini-card"><div class="mini-card-header"><h3>Your recent links</h3><a href="/links">Open library</a></div><div class="links-list" id="homeLinksList">${renderLinkItems(linksCache.slice(0, 3), true)}</div></article>
       <article class="mini-card"><div class="mini-card-header"><h3>Workspace overview</h3><div class="progress-ring">${settingsCache.domains.length}</div></div><div class="domain-stack">${settingsCache.domains.slice(0, 4).map((domain) => `<div class="domain-pill ${domain === settingsCache.defaultDomain ? "active" : ""}"><strong>${escapeHtml(domain)}</strong><span>${domain === settingsCache.defaultDomain ? "Active" : "Ready"}</span></div>`).join("")}</div></article>
     </section>
   `;
   wireCreateForm();
   bindVerificationAction();
+  wireLinkActions();
 }
 
 function renderLinksPage(links, query = "") {
@@ -971,7 +972,10 @@ function wireCreateForm() {
       qrToggle.checked = false;
       updatePreview();
       const list = document.getElementById("homeLinksList");
-      if (list) list.innerHTML = renderLinkItems(linksCache.slice(0, 3), false);
+      if (list) {
+        list.innerHTML = renderLinkItems(linksCache.slice(0, 3), true);
+        wireLinkActions();
+      }
     } catch (error) {
       setInlineBanner(resultBanner, error.message, true);
     }

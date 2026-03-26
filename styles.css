@@ -923,6 +923,7 @@ svg {
 
 .link-copy {
   min-width: 0;
+  flex: 1 1 auto;
 }
 
 .link-copy strong,
@@ -940,6 +941,8 @@ svg {
   color: #2a5be8;
   font-weight: 700;
   overflow-wrap: anywhere;
+  word-break: break-word;
+  line-height: 1.45;
 }
 
 .link-copy p {
@@ -947,12 +950,15 @@ svg {
   color: var(--muted);
   font-size: 0.92rem;
   overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .link-actions {
   display: flex;
   gap: 10px;
   flex-shrink: 0;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .link-button {
@@ -1368,6 +1374,25 @@ svg {
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: 10px;
+}
+
+.admin-select,
+.admin-days-input {
+  height: 40px;
+  border-radius: 12px;
+  border: 1px solid #d8e3f5;
+  background: #fff;
+  color: var(--text);
+  padding: 0 12px;
+  font: inherit;
+}
+
+.admin-select {
+  min-width: 120px;
+}
+
+.admin-days-input {
+  width: 88px;
 }
 
 .profile-meta {
