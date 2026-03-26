@@ -1164,7 +1164,9 @@ function renderClickRows(clicks, compact) {
 
 function buildDomainPreview(domain, slug = "sample-link") {
   const localPattern = /^(localhost|127\.0\.0\.1)(:\d+)?$/i.test(domain);
-  const protocol = localPattern ? "http" : "https";
+  const activeHost = window.location.host;
+  const activeProtocol = window.location.protocol === "http:" ? "http" : "https";
+  const protocol = localPattern ? "http" : (domain === activeHost ? activeProtocol : "https");
   return `${protocol}://${domain}/${slug}`;
 }
 

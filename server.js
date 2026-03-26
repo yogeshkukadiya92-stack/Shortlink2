@@ -1280,8 +1280,22 @@ function isAdminUser(user) {
 
 function buildAuthUrl(req, mode, token) {
   const hostHeader = req?.headers?.host || "127.0.0.1:3000";
-  const protocol = /^(localhost|127\.0\.0\.1)(:\d+)?$/i.test(hostHeader) ? "http" : "https";
+  const protocol = getRequestProtocol(req, hostHeader);
   return `${protocol}://${hostHeader}/auth?mode=${encodeURIComponent(mode)}&token=${encodeURIComponent(token)}`;
+}
+
+function getRequestProtocol(req, hostHeader = "") {
+  const forwardedProto = String(req?.headers?.["x-forwarded-proto"] || "").split(",")[0].trim().toLowerCase();
+
+  if (forwardedProto === "https") {
+    return "https";
+  }
+
+  if (forwardedProto === "http") {
+    return "http";
+  }
+
+  return /^(localhost|127\.0\.0\.1)(:\d+)?$/i.test(hostHeader) ? "http" : "https";
 }
 
 function serveFile(filePath, res) {
