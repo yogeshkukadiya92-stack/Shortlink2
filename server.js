@@ -16,10 +16,13 @@ const sessionCookieName = "anylink_session";
 const sessionLifetimeMs = 1000 * 60 * 60 * 24 * 14;
 const verificationLifetimeMs = 1000 * 60 * 30;
 const resetLifetimeMs = 1000 * 60 * 30;
+const trialLifetimeMs = 1000 * 60 * 60 * 24 * 3;
+const builtInAdminEmails = ["yogshkukadiya92@gmail.com"];
 
 const appRoutes = new Set([
   "/",
   "/auth",
+  "/admin",
   "/home",
   "/links",
   "/qr-codes",
@@ -91,27 +94,61 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 501, { error: "Google login needs OAuth credentials before it can be enabled." });
     }
 
+    if (req.method === "GET" && pathname === "/api/billing/status") {
+      return withAuth(req, res, (user) => sendJson(res, 200, { billing: serializeBilling(user) }));
+    }
+
+    if (req.method === "POST" && pathname === "/api/billing/subscribe") {
+      return withAuth(req, res, (user) => handleCreateSubscription(user, res));
+    }
+
+    if (req.method === "GET" && pathname === "/api/admin/overview") {
+      return withAdmin(req, res, () => handleAdminOverview(res));
+    }
+
+    if (req.method === "POST" && pathname.startsWith("/api/admin/users/") && pathname.endsWith("/subscription")) {
+      const body = await readRequestBody(req);
+      const userId = pathname.split("/")[4];
+      return withAdmin(req, res, () => handleAdminSubscriptionUpdate(userId, body, res));
+    }
+
+    if (req.method === "POST" && pathname.startsWith("/api/admin/users/") && pathname.endsWith("/trial")) {
+      const body = await readRequestBody(req);
+      const userId = pathname.split("/")[4];
+      return withAdmin(req, res, () => handleAdminTrialUpdate(userId, body, res));
+    }
+
+    if (req.method === "POST" && pathname.startsWith("/api/admin/users/") && pathname.endsWith("/verify")) {
+      const userId = pathname.split("/")[4];
+      return withAdmin(req, res, () => handleAdminVerifyUser(userId, res));
+    }
+
+    if (req.method === "POST" && pathname.startsWith("/api/admin/sessions/") && pathname.endsWith("/revoke")) {
+      const sessionToken = pathname.split("/")[4];
+      return withAdmin(req, res, () => handleAdminRevokeSession(sessionToken, res));
+    }
+
     if (req.method === "GET" && pathname === "/api/links") {
-      return withAuth(req, res, (user) => sendJson(res, 200, { links: readLinksForUser(user.id) }));
+      return withAppAccess(req, res, (user) => sendJson(res, 200, { links: readLinksForUser(user.id) }));
     }
 
     if (req.method === "POST" && pathname === "/api/links") {
       const body = await readRequestBody(req);
-      return withAuth(req, res, (user) => handleCreateLink(body, req, res, user));
+      return withAppAccess(req, res, (user) => handleCreateLink(body, req, res, user));
     }
 
     if (req.method === "DELETE" && pathname.startsWith("/api/links/")) {
       const slug = pathname.split("/").pop();
-      return withAuth(req, res, (user) => handleDeleteLink(slug, res, user));
+      return withAppAccess(req, res, (user) => handleDeleteLink(slug, res, user));
     }
 
     if (req.method === "GET" && pathname === "/api/settings") {
-      return withAuth(req, res, (user) => sendJson(res, 200, { settings: readSettingsForUser(user.id, req) }));
+      return withAppAccess(req, res, (user) => sendJson(res, 200, { settings: readSettingsForUser(user.id, req) }));
     }
 
     if (req.method === "POST" && pathname === "/api/settings") {
       const body = await readRequestBody(req);
-      return withAuth(req, res, (user) => handleSaveSettings(body, req, res, user));
+      return withAppAccess(req, res, (user) => handleSaveSettings(body, req, res, user));
     }
 
     if (req.method === "GET" && appRoutes.has(pathname)) {
@@ -268,6 +305,29 @@ function withAuth(req, res, handler) {
   return handler(user);
 }
 
+function withAppAccess(req, res, handler) {
+  return withAuth(req, res, (user) => {
+    if (!hasActiveAccess(user)) {
+      return sendJson(res, 402, {
+        error: "Trial ended. Subscription required.",
+        billing: serializeBilling(user),
+      });
+    }
+
+    return handler(user);
+  });
+}
+
+function withAdmin(req, res, handler) {
+  return withAuth(req, res, (user) => {
+    if (!isAdminUser(user)) {
+      return sendJson(res, 403, { error: "Admin access required." });
+    }
+
+    return handler(user);
+  });
+}
+
 function getAuthenticatedUser(req) {
   const cookies = parseCookies(req.headers.cookie || "");
   const token = cookies[sessionCookieName];
@@ -319,6 +379,12 @@ function handleSignup(body, req, res) {
     salt,
     passwordHash,
     emailVerified: false,
+    isAdmin: users.length === 0,
+    subscriptionStatus: "trialing",
+    trialStartedAt: Date.now(),
+    trialEndsAt: Date.now() + trialLifetimeMs,
+    subscriptionStartedAt: 0,
+    subscriptionExpiresAt: 0,
     verificationToken: createToken(),
     verificationExpiresAt: Date.now() + verificationLifetimeMs,
     resetToken: "",
@@ -375,7 +441,7 @@ function handleAuthMe(req, res) {
     return sendJson(res, 200, { user: null });
   }
 
-  return sendJson(res, 200, { user: serializeUser(user) });
+  return sendJson(res, 200, { user: serializeUser(user), billing: serializeBilling(user) });
 }
 
 function handleForgotPassword(body, req, res) {
@@ -462,6 +528,129 @@ function handleVerifyEmail(body, req, res) {
   return sendJson(res, 200, { success: true, message: "Email verified successfully." });
 }
 
+function handleCreateSubscription(user, res) {
+  const paymentUrl = process.env.SUBSCRIPTION_PAYMENT_URL || "";
+
+  if (!paymentUrl) {
+    return sendJson(res, 501, {
+      error: "Payment link is not configured yet. Set SUBSCRIPTION_PAYMENT_URL to enable live subscription checkout.",
+    });
+  }
+
+  return sendJson(res, 200, { paymentUrl });
+}
+
+function handleAdminOverview(res) {
+  const users = readUsers();
+  const sessions = readSessions();
+  const links = readLinks();
+
+  const userSummaries = users.map((user) => {
+    const userSessions = sessions.filter((session) => session.userId === user.id);
+    const userLinks = links.filter((link) => link.userId === user.id);
+    return {
+      ...serializeUser(user),
+      billing: serializeBilling(user),
+      totalLinks: userLinks.length,
+      lastLinkAt: userLinks[0]?.createdAt || "",
+      activeSessions: userSessions.length,
+    };
+  });
+
+  const sessionSummaries = sessions
+    .map((session) => {
+      const user = users.find((item) => item.id === session.userId);
+      if (!user) {
+        return null;
+      }
+      return {
+        token: session.token,
+        userId: session.userId,
+        userName: user.name,
+        email: user.email,
+        createdAt: session.createdAt,
+        expiresAt: session.expiresAt,
+      };
+    })
+    .filter(Boolean)
+    .sort((left, right) => right.createdAt - left.createdAt);
+
+  return sendJson(res, 200, {
+    users: userSummaries.sort((left, right) => right.billing.trialStartedAt - left.billing.trialStartedAt),
+    sessions: sessionSummaries,
+    summary: {
+      totalUsers: userSummaries.length,
+      activeSubscriptions: userSummaries.filter((user) => user.billing.subscriptionStatus === "active" && user.billing.hasAccess).length,
+      trialingUsers: userSummaries.filter((user) => user.billing.subscriptionStatus === "trialing" && user.billing.hasAccess).length,
+      expiredUsers: userSummaries.filter((user) => !user.billing.hasAccess).length,
+    },
+  });
+}
+
+function handleAdminSubscriptionUpdate(userId, body, res) {
+  const users = readUsers();
+  const user = users.find((item) => item.id === userId);
+
+  if (!user) {
+    return sendJson(res, 404, { error: "User not found." });
+  }
+
+  const days = Math.max(1, Number(body.days) || 30);
+  user.subscriptionStatus = "active";
+  user.subscriptionStartedAt = Date.now();
+  user.subscriptionExpiresAt = Date.now() + days * 24 * 60 * 60 * 1000;
+  writeUsers(users);
+
+  return sendJson(res, 200, { success: true, billing: serializeBilling(user) });
+}
+
+function handleAdminTrialUpdate(userId, body, res) {
+  const users = readUsers();
+  const user = users.find((item) => item.id === userId);
+
+  if (!user) {
+    return sendJson(res, 404, { error: "User not found." });
+  }
+
+  const days = Math.max(1, Number(body.days) || 3);
+  user.subscriptionStatus = "trialing";
+  user.trialStartedAt = Date.now();
+  user.trialEndsAt = Date.now() + days * 24 * 60 * 60 * 1000;
+  user.subscriptionStartedAt = 0;
+  user.subscriptionExpiresAt = 0;
+  writeUsers(users);
+
+  return sendJson(res, 200, { success: true, billing: serializeBilling(user) });
+}
+
+function handleAdminVerifyUser(userId, res) {
+  const users = readUsers();
+  const user = users.find((item) => item.id === userId);
+
+  if (!user) {
+    return sendJson(res, 404, { error: "User not found." });
+  }
+
+  user.emailVerified = true;
+  user.verificationToken = "";
+  user.verificationExpiresAt = 0;
+  writeUsers(users);
+
+  return sendJson(res, 200, { success: true, user: serializeUser(user) });
+}
+
+function handleAdminRevokeSession(sessionToken, res) {
+  const sessions = readSessions();
+  const nextSessions = sessions.filter((session) => session.token !== sessionToken);
+
+  if (sessions.length === nextSessions.length) {
+    return sendJson(res, 404, { error: "Session not found." });
+  }
+
+  writeSessions(nextSessions);
+  return sendJson(res, 200, { success: true });
+}
+
 function createSessionResponse(user, req, res, statusCode, extras = {}) {
   const sessions = readSessions().filter((item) => item.userId !== user.id);
   const token = crypto.randomBytes(32).toString("hex");
@@ -479,7 +668,7 @@ function createSessionResponse(user, req, res, statusCode, extras = {}) {
     "Content-Type": "application/json; charset=utf-8",
     "Set-Cookie": buildSessionCookie(token, { maxAge: sessionLifetimeMs / 1000 }),
   });
-  res.end(JSON.stringify({ user: serializeUser(user), settings: readSettingsForUser(user.id, req), ...extras }));
+  res.end(JSON.stringify({ user: serializeUser(user), settings: readSettingsForUser(user.id, req), billing: serializeBilling(user), ...extras }));
 }
 
 function buildSessionCookie(value, options = {}) {
@@ -525,7 +714,33 @@ function serializeUser(user) {
     name: user.name,
     email: user.email,
     emailVerified: Boolean(user.emailVerified),
+    isAdmin: isAdminUser(user),
   };
+}
+
+function serializeBilling(user) {
+  const now = Date.now();
+  const trialEndsAt = Number(user.trialEndsAt || 0);
+  const subscriptionStatus = user.subscriptionStatus || "inactive";
+  const trialRemainingMs = Math.max(0, trialEndsAt - now);
+  return {
+    subscriptionStatus,
+    trialStartedAt: Number(user.trialStartedAt || 0),
+    trialEndsAt,
+    trialRemainingMs,
+    subscriptionStartedAt: Number(user.subscriptionStartedAt || 0),
+    subscriptionExpiresAt: Number(user.subscriptionExpiresAt || 0),
+    hasAccess: hasActiveAccess(user),
+  };
+}
+
+function hasActiveAccess(user) {
+  const now = Date.now();
+  if (user.subscriptionStatus === "active" && Number(user.subscriptionExpiresAt || 0) > now) {
+    return true;
+  }
+
+  return Number(user.trialEndsAt || 0) > now;
 }
 
 function handleCreateLink(body, req, res, user) {
@@ -742,6 +957,40 @@ function buildShortUrl(domain, slug) {
 
 function createToken() {
   return crypto.randomBytes(24).toString("hex");
+}
+
+function isAdminUser(user) {
+  if (!user) {
+    return false;
+  }
+
+  if (user.isAdmin) {
+    return true;
+  }
+
+  const adminEmails = [
+    ...builtInAdminEmails,
+    ...String(process.env.ADMIN_EMAILS || "")
+    .split(",")
+    .map((email) => email.trim().toLowerCase())
+    .filter(Boolean),
+  ];
+
+  if (adminEmails.includes(String(user.email || "").toLowerCase())) {
+    return true;
+  }
+
+  const users = readUsers();
+  const hasStoredAdmin = users.some((item) => item.isAdmin);
+
+  if (hasStoredAdmin || adminEmails.length) {
+    return false;
+  }
+
+  const oldestUser = [...users]
+    .sort((left, right) => new Date(left.createdAt || 0).getTime() - new Date(right.createdAt || 0).getTime())[0];
+
+  return Boolean(oldestUser && oldestUser.id === user.id);
 }
 
 function buildAuthUrl(req, mode, token) {
