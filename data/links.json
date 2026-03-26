@@ -1,0 +1,42 @@
+[
+  {
+    "id": 1773772976211,
+    "slug": "3w72ng",
+    "destination": "https://docs.google.com/spreadsheets/d/19X3mpsWFnPusR8_GGCQO36LF8cTDQ9gKoPIc6h1p5jU/edit?gid=0#gid=0",
+    "shortUrl": "https://www.yogeshfitcoach92.com/3w72ng",
+    "includeQr": false,
+    "createdAt": "2026-03-17T18:42:56.211Z"
+  },
+  {
+    "id": 1773771709253,
+    "slug": "yogeshpatel",
+    "destination": "https://docs.google.com/spreadsheets/d/19X3mpsWFnPusR8_GGCQO36LF8cTDQ9gKoPIc6h1p5jU/edit?gid=0#gid=0",
+    "shortUrl": "http://127.0.0.1:3000/yogeshpatel",
+    "includeQr": false,
+    "createdAt": "2026-03-17T18:21:49.253Z"
+  },
+  {
+    "id": 1773771650347,
+    "slug": "vndcgc",
+    "destination": "https://app.bitly.com/Bo8t1a23PZZ/home",
+    "shortUrl": "http://127.0.0.1:3000/vndcgc",
+    "includeQr": false,
+    "createdAt": "2026-03-17T18:20:50.347Z"
+  },
+  {
+    "id": 1773771544613,
+    "slug": "demo-1773771541",
+    "destination": "https://example.com/test-page",
+    "shortUrl": "http://127.0.0.1:3000/demo-1773771541",
+    "includeQr": false,
+    "createdAt": "2026-03-17T18:19:04.613Z"
+  },
+  {
+    "id": 1773771500668,
+    "slug": "demo-link",
+    "destination": "https://example.com/test-page",
+    "shortUrl": "http://127.0.0.1:3000/demo-link",
+    "includeQr": false,
+    "createdAt": "2026-03-17T18:18:20.668Z"
+  }
+]

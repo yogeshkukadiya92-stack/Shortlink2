@@ -1,0 +1,9 @@
+{
+  "name": "anylink-shortener",
+  "version": "1.0.0",
+  "private": true,
+  "description": "AnyLink short URL dashboard and redirect app",
+  "scripts": {
+    "start": "node server.js"
+  }
+}
