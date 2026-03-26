@@ -5,7 +5,9 @@ const crypto = require("crypto");
 const { URL } = require("url");
 const { createUser: createDbUser, findUserByEmail, updateUser: updateDbUser } = require("./repositories/usersRepository");
 const { createSession: createDbSession, deleteSessionByToken: deleteDbSessionByToken, findSessionByToken } = require("./repositories/sessionsRepository");
-const { upsertWorkspaceSettings } = require("./repositories/settingsRepository");
+const { getWorkspaceSettings: getDbWorkspaceSettings, upsertWorkspaceSettings } = require("./repositories/settingsRepository");
+const { listLinksByUser, createLink: createDbLink, deleteLinkBySlug, findLinkBySlug } = require("./repositories/linksRepository");
+const { listDomainsByUser, upsertDomain, removeDomainsNotIn } = require("./repositories/domainsRepository");
 
 const host = "0.0.0.0";
 const port = process.env.PORT || 3000;
@@ -145,7 +147,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === "GET" && pathname === "/api/links") {
-      return withAppAccess(req, res, (user) => sendJson(res, 200, { links: readLinksForUser(user.id) }));
+      return await withAppAccess(req, res, async (user) => sendJson(res, 200, { links: await readLinksForUserAsync(user.id) }));
     }
 
     if (req.method === "GET" && pathname === "/api/analytics") {
@@ -183,26 +185,26 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "POST" && pathname === "/api/links") {
       const body = await readRequestBody(req);
-      return withAppAccess(req, res, (user) => handleCreateLink(body, req, res, user));
+      return await withAppAccess(req, res, (user) => handleCreateLink(body, req, res, user));
     }
 
     if (req.method === "DELETE" && pathname.startsWith("/api/links/")) {
       const slug = pathname.split("/").pop();
-      return withAppAccess(req, res, (user) => handleDeleteLink(slug, res, user));
+      return await withAppAccess(req, res, (user) => handleDeleteLink(slug, res, user));
     }
 
     if (req.method === "GET" && pathname === "/api/settings") {
-      return withAppAccess(req, res, (user) => sendJson(res, 200, { settings: readSettingsForUser(user.id, req) }));
+      return await withAppAccess(req, res, async (user) => sendJson(res, 200, { settings: await readSettingsForUserAsync(user.id, req) }));
     }
 
     if (req.method === "POST" && pathname === "/api/settings") {
       const body = await readRequestBody(req);
-      return withAppAccess(req, res, (user) => handleSaveSettings(body, req, res, user));
+      return await withAppAccess(req, res, (user) => handleSaveSettings(body, req, res, user));
     }
 
     if (req.method === "GET" && pathname.startsWith("/api/domains/verify/")) {
       const domain = decodeURIComponent(pathname.split("/").pop());
-      return withAppAccess(req, res, (user) => handleVerifyDomain(domain, req, res, user));
+      return await withAppAccess(req, res, (user) => handleVerifyDomain(domain, req, res, user));
     }
 
     if (req.method === "GET" && pathname.startsWith("/forms/")) {
@@ -299,6 +301,28 @@ function readLinksForUser(userId) {
   return readLinks().filter((item) => item.userId === userId);
 }
 
+async function readLinksForUserAsync(userId) {
+  try {
+    const links = await listLinksByUser(userId);
+    if (Array.isArray(links) && links.length) {
+      return links.map((item) => ({
+        id: item.id,
+        userId: item.userId,
+        slug: item.slug,
+        destination: item.destination,
+        shortUrl: item.shortUrl,
+        includeQr: Boolean(item.includeQr),
+        createdAt: item.createdAt instanceof Date ? item.createdAt.toISOString() : item.createdAt,
+        analytics: createEmptyAnalytics(),
+      }));
+    }
+  } catch {
+    // Keep JSON fallback while migration is in progress.
+  }
+
+  return readLinksForUser(userId);
+}
+
 function writeLinks(links) {
   writeJsonFile(linksFile, links);
 }
@@ -345,6 +369,29 @@ function readSettingsForUser(userId, req) {
   const store = readSettingsStore();
   const existing = store.find((item) => item.userId === userId);
   return normalizeSettings(existing || { userId }, req);
+}
+
+async function readSettingsForUserAsync(userId, req) {
+  try {
+    const dbSettings = await getDbWorkspaceSettings(userId);
+    const dbDomains = await listDomainsByUser(userId);
+
+    if (dbSettings) {
+      return normalizeSettings({
+        userId,
+        workspaceName: dbSettings.workspaceName,
+        defaultDomain: dbSettings.defaultDomain,
+        domains: [
+          dbSettings.defaultDomain,
+          ...dbDomains.map((item) => item.host),
+        ],
+      }, req);
+    }
+  } catch {
+    // Keep JSON fallback while migration is in progress.
+  }
+
+  return readSettingsForUser(userId, req);
 }
 
 function readRequestBody(req) {
@@ -1051,7 +1098,7 @@ function hasLifetimeAccess(user) {
   return builtInLifetimeEmails.includes(String(user.email || "").toLowerCase());
 }
 
-function handleCreateLink(body, req, res, user) {
+async function handleCreateLink(body, req, res, user) {
   const rawDestination = String(body.destination || "").trim();
   const customSlug = String(body.slug || "").trim().toLowerCase();
   const includeQr = Boolean(body.includeQr);
@@ -1077,7 +1124,7 @@ function handleCreateLink(body, req, res, user) {
     return sendJson(res, 409, { error: "That short link already exists. Try another custom slug." });
   }
 
-  const settings = readSettingsForUser(user.id, req);
+  const settings = await readSettingsForUserAsync(user.id, req);
   const shortUrl = buildShortUrl(settings.defaultDomain || req.headers.host, slug);
   const nextLink = {
     id: Date.now(),
@@ -1092,6 +1139,19 @@ function handleCreateLink(body, req, res, user) {
 
   links.unshift(nextLink);
   writeLinks(links);
+  try {
+    await createDbLink({
+      id: String(nextLink.id),
+      userId: user.id,
+      slug,
+      destination,
+      shortUrl,
+      includeQr,
+      createdAt: new Date(nextLink.createdAt),
+    });
+  } catch {
+    // JSON remains fallback during DB migration.
+  }
   sendJson(res, 201, { link: nextLink });
 }
 
@@ -1327,15 +1387,28 @@ function handlePublicFormSubmit(slug, body, req, res) {
   return sendJson(res, 201, { success: true, message: normalizedPage.thanksMessage });
 }
 
-function handleDeleteLink(slug, res, user) {
+async function handleDeleteLink(slug, res, user) {
   const links = readLinks();
   const nextLinks = links.filter((item) => !(item.slug === slug && item.userId === user.id));
 
   if (nextLinks.length === links.length) {
-    return sendJson(res, 404, { error: "Link not found." });
+    try {
+      const result = await deleteLinkBySlug(slug, user.id);
+      if (!result.count) {
+        return sendJson(res, 404, { error: "Link not found." });
+      }
+      return sendJson(res, 200, { success: true });
+    } catch {
+      return sendJson(res, 404, { error: "Link not found." });
+    }
   }
 
   writeLinks(nextLinks);
+  try {
+    await deleteLinkBySlug(slug, user.id);
+  } catch {
+    // JSON remains fallback during DB migration.
+  }
   return sendJson(res, 200, { success: true });
 }
 
@@ -1408,8 +1481,8 @@ function handleAnalyticsExport(req, res, user) {
   return sendCsv(res, "anylink-analytics.csv", headers, rows);
 }
 
-function handleSaveSettings(body, req, res, user) {
-  const currentSettings = readSettingsForUser(user.id, req);
+async function handleSaveSettings(body, req, res, user) {
+  const currentSettings = await readSettingsForUserAsync(user.id, req);
   const workspaceName = String(body.workspaceName || currentSettings.workspaceName || "").trim();
   const defaultDomain = sanitizeDomainInput(String(body.defaultDomain || currentSettings.defaultDomain || "").trim(), req);
   const requestedDomains = Array.isArray(body.domains) ? body.domains : currentSettings.domains;
@@ -1437,11 +1510,31 @@ function handleSaveSettings(body, req, res, user) {
   const store = readSettingsStore().filter((item) => item.userId !== user.id);
   store.push(nextSettings);
   writeSettingsStore(store);
+  try {
+    await upsertWorkspaceSettings(user.id, {
+      workspaceName: nextSettings.workspaceName,
+      defaultDomain: nextSettings.defaultDomain,
+    });
+
+    const customHosts = nextSettings.domains.filter((domain) => domain !== publicAppDomain);
+    await removeDomainsNotIn(user.id, customHosts);
+
+    for (const host of customHosts) {
+      await upsertDomain(user.id, host, {
+        status: host === nextSettings.defaultDomain ? "ACTIVE" : "VERIFIED",
+        isActive: host === nextSettings.defaultDomain,
+        dnsTarget: publicAppDomain,
+        verifiedAt: new Date(),
+      });
+    }
+  } catch {
+    // JSON remains fallback during DB migration.
+  }
   return sendJson(res, 200, { settings: nextSettings });
 }
 
-function handleVerifyDomain(domain, req, res, user) {
-  const settings = readSettingsForUser(user.id, req);
+async function handleVerifyDomain(domain, req, res, user) {
+  const settings = await readSettingsForUserAsync(user.id, req);
   const sanitizedDomain = sanitizeDomainInput(domain, req);
 
   if (!sanitizedDomain) {

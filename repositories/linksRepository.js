@@ -25,9 +25,16 @@ async function deleteLinkById(id, userId) {
   });
 }
 
+async function deleteLinkBySlug(slug, userId) {
+  return prisma.link.deleteMany({
+    where: { slug, userId },
+  });
+}
+
 module.exports = {
   listLinksByUser,
   findLinkBySlug,
   createLink,
   deleteLinkById,
+  deleteLinkBySlug,
 };
