@@ -136,6 +136,23 @@ async function loadCurrentUser() {
   }
 }
 
+async function saveProfile(nextProfile) {
+  const response = await fetch("/api/auth/profile", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(nextProfile),
+  });
+  const payload = await response.json();
+
+  if (!response.ok) {
+    throw new Error(payload.error || "Unable to save profile");
+  }
+
+  currentUser = payload.user || currentUser;
+  applyShellMode();
+  return currentUser;
+}
+
 function applyShellMode() {
   const authMode = !currentUser || currentPage === "auth";
   body.classList.toggle("auth-screen", authMode);
@@ -795,7 +812,67 @@ async function persistDomains(domains, defaultDomain, successMessage) {
 }
 
 function renderSettingsPage() {
-  mainContent.innerHTML = `<section class="surface-card two-column"><div class="form-card"><label class="field-label" for="workspaceName">Workspace name</label><input id="workspaceName" class="url-input" type="text" value="${escapeHtml(settingsCache.workspaceName)}"><label class="field-label" for="defaultDomain">Active domain</label><select id="defaultDomain" class="url-input domain-select">${settingsCache.domains.map((domain) => `<option value="${escapeHtml(domain)}" ${domain === settingsCache.defaultDomain ? "selected" : ""}>${escapeHtml(domain)}</option>`).join("")}</select><button class="primary-action inline-action" id="saveSettingsButton">Save settings</button></div><div class="mini-card inset-card"><h3>Workspace status</h3><div class="task-list"><div class="task-item"><span class="task-check filled"></span><span>Logged in as ${escapeHtml(currentUser.email)}</span></div><div class="task-item"><span class="task-check filled"></span><span>Redirect engine ready</span></div><div class="task-item"><span class="task-check filled"></span><span>${settingsCache.domains.length} domain${settingsCache.domains.length === 1 ? "" : "s"} connected</span></div></div></div></section>`;
+  mainContent.innerHTML = `
+    <section class="surface-card">
+      <div class="surface-header">
+        <div>
+          <h2>Profile and settings</h2>
+          <p>Manage your personal profile, workspace identity, and default short-link domain.</p>
+        </div>
+      </div>
+      <div class="two-column">
+        <div class="stack-card-group">
+          <div class="form-card">
+            <h3>Profile</h3>
+            <label class="field-label" for="profileNameInput">Display name</label>
+            <input id="profileNameInput" class="url-input" type="text" value="${escapeHtml(currentUser.name)}">
+            <label class="field-label" for="profileEmail">Email</label>
+            <input id="profileEmail" class="url-input" type="text" value="${escapeHtml(currentUser.email)}" disabled>
+            <div class="profile-meta">
+              <span class="domain-status">${currentUser.emailVerified ? "Verified account" : "Email not verified"}</span>
+              ${currentUser.isAdmin ? '<span class="domain-status admin-badge">Admin access</span>' : ""}
+            </div>
+            <button class="primary-action inline-action" id="saveProfileButton">Save profile</button>
+          </div>
+          <div class="form-card">
+            <h3>Workspace</h3>
+            <label class="field-label" for="workspaceName">Workspace name</label>
+            <input id="workspaceName" class="url-input" type="text" value="${escapeHtml(settingsCache.workspaceName)}">
+            <label class="field-label" for="defaultDomain">Active domain</label>
+            <select id="defaultDomain" class="url-input domain-select">${settingsCache.domains.map((domain) => `<option value="${escapeHtml(domain)}" ${domain === settingsCache.defaultDomain ? "selected" : ""}>${escapeHtml(domain)}</option>`).join("")}</select>
+            <button class="primary-action inline-action" id="saveSettingsButton">Save settings</button>
+          </div>
+        </div>
+        <div class="mini-card inset-card profile-card">
+          <div class="profile-card-head">
+            <div class="profile-card-avatar">${escapeHtml(currentUser.name.charAt(0).toUpperCase())}</div>
+            <div>
+              <h3>${escapeHtml(currentUser.name)}</h3>
+              <p>${escapeHtml(currentUser.email)}</p>
+            </div>
+          </div>
+          <div class="task-list">
+            <div class="task-item"><span class="task-check filled"></span><span>${currentUser.emailVerified ? "Email verified" : "Email verification pending"}</span></div>
+            <div class="task-item"><span class="task-check filled"></span><span>${settingsCache.domains.length} domain${settingsCache.domains.length === 1 ? "" : "s"} connected</span></div>
+            <div class="task-item"><span class="task-check filled"></span><span>Workspace: ${escapeHtml(settingsCache.workspaceName)}</span></div>
+            <div class="task-item"><span class="task-check filled"></span><span>Plan: ${escapeHtml(billingCache.subscriptionStatus)}</span></div>
+          </div>
+        </div>
+      </div>
+    </section>
+  `;
+
+  document.getElementById("saveProfileButton").addEventListener("click", async () => {
+    try {
+      await saveProfile({
+        name: document.getElementById("profileNameInput").value.trim(),
+      });
+      renderSettingsPage();
+      showGlobalMessage("Profile updated successfully.", false);
+    } catch (error) {
+      showGlobalMessage(error.message, true);
+    }
+  });
 
   document.getElementById("saveSettingsButton").addEventListener("click", async () => {
     try {

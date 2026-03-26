@@ -17,7 +17,7 @@ const sessionLifetimeMs = 1000 * 60 * 60 * 24 * 14;
 const verificationLifetimeMs = 1000 * 60 * 30;
 const resetLifetimeMs = 1000 * 60 * 30;
 const trialLifetimeMs = 1000 * 60 * 60 * 24 * 3;
-const builtInAdminEmails = ["yogshkukadiya92@gmail.com"];
+const builtInAdminEmails = ["yogshkukadiya92@gmail.com", "yogeshkukadiya92@gmail.com"];
 
 const appRoutes = new Set([
   "/",
@@ -60,6 +60,11 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "POST" && pathname === "/api/auth/login") {
       const body = await readRequestBody(req);
       return handleLogin(body, req, res);
+    }
+
+    if (req.method === "POST" && pathname === "/api/auth/profile") {
+      const body = await readRequestBody(req);
+      return withAuth(req, res, (user) => handleUpdateProfile(body, req, res, user));
     }
 
     if (req.method === "POST" && pathname === "/api/auth/logout") {
@@ -432,6 +437,26 @@ function handleLogout(req, res) {
     "Set-Cookie": buildSessionCookie("", { maxAge: 0 }),
   });
   res.end(JSON.stringify({ success: true }));
+}
+
+function handleUpdateProfile(body, req, res, user) {
+  const users = readUsers();
+  const record = users.find((item) => item.id === user.id);
+
+  if (!record) {
+    return sendJson(res, 404, { error: "User not found." });
+  }
+
+  const nextName = String(body.name || "").trim();
+
+  if (nextName.length < 2) {
+    return sendJson(res, 400, { error: "Name must be at least 2 characters." });
+  }
+
+  record.name = nextName;
+  writeUsers(users);
+
+  return sendJson(res, 200, { user: serializeUser(record) });
 }
 
 function handleAuthMe(req, res) {
