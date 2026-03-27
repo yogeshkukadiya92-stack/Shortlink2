@@ -330,22 +330,23 @@ function normalizeLinkRules(rules) {
     }
 
     const expiresAt = String(value.expiresAt || "").trim();
+    const startsAt = String(value.startsAt || "").trim();
     const isPaused = Boolean(value.isPaused);
     const isProtected = Boolean(value.passwordHash || value.isProtected);
     const isOneTime = Boolean(value.isOneTime);
     const oneTimeUsedAt = String(value.oneTimeUsedAt || "").trim();
-    if (!expiresAt && !isPaused && !isProtected && !isOneTime) {
+    if (!startsAt && !expiresAt && !isPaused && !isProtected && !isOneTime) {
       return;
     }
 
-    normalized[cleanSlug] = { expiresAt, isPaused, isProtected, isOneTime, oneTimeUsedAt };
+    normalized[cleanSlug] = { startsAt, expiresAt, isPaused, isProtected, isOneTime, oneTimeUsedAt };
   });
 
   return normalized;
 }
 
 function getLinkRule(slug) {
-  return settingsCache.linkRules?.[slug] || { expiresAt: "", isPaused: false, isProtected: false, isOneTime: false, oneTimeUsedAt: "" };
+  return settingsCache.linkRules?.[slug] || { startsAt: "", expiresAt: "", isPaused: false, isProtected: false, isOneTime: false, oneTimeUsedAt: "" };
 }
 
 function getLinkGoal(slug) {
@@ -975,6 +976,7 @@ function renderLinksPage(links, query = "") {
         ${filtered.length ? filtered.map((link) => {
           const { goal, clicks, progress, achieved } = getGoalStatus(link);
           const rule = getLinkRule(link.slug);
+          const isScheduled = rule.startsAt && Date.now() < new Date(rule.startsAt).getTime();
           return `
             <article class="goal-card">
               <div class="goal-card-head">
@@ -982,7 +984,7 @@ function renderLinksPage(links, query = "") {
                   <strong>${escapeHtml(link.slug)}</strong>
                   <p>${escapeHtml(getLinkUrl(link))}</p>
                 </div>
-                <span class="chip-link ${achieved ? "success" : ""}">${achieved ? "Goal hit" : `${clicks} clicks`}</span>
+                <span class="chip-link ${achieved ? "success" : ""}">${isScheduled ? "Scheduled" : (achieved ? "Goal hit" : `${clicks} clicks`)}</span>
               </div>
               <div class="goal-progress">
                 <div class="goal-progress-bar"><span style="width:${progress}%"></span></div>
@@ -994,11 +996,13 @@ function renderLinksPage(links, query = "") {
                 ${goal ? `<button class="link-button secondary" type="button" data-clear-goal="${escapeHtml(link.slug)}">Clear</button>` : ""}
               </div>
               <div class="goal-action-row">
+                <input class="url-input schedule-rule-input" type="datetime-local" value="${escapeHtml(rule.startsAt || "")}" data-start-input="${escapeHtml(link.slug)}">
                 <input class="url-input goal-input" type="date" value="${escapeHtml(rule.expiresAt || "")}" data-expiry-input="${escapeHtml(link.slug)}">
                 <label class="field-toggle compact-toggle"><input type="checkbox" data-pause-input="${escapeHtml(link.slug)}" ${rule.isPaused ? "checked" : ""}><span>Pause link</span></label>
                 <label class="field-toggle compact-toggle"><input type="checkbox" data-onetime-input="${escapeHtml(link.slug)}" ${rule.isOneTime ? "checked" : ""}><span>One-time</span></label>
                 <button class="link-button secondary" type="button" data-save-rule="${escapeHtml(link.slug)}">Save rule</button>
               </div>
+              ${rule.startsAt ? `<div class="helper-copy">${isScheduled ? `Starts on ${escapeHtml(new Date(rule.startsAt).toLocaleString())}` : `Started on ${escapeHtml(new Date(rule.startsAt).toLocaleString())}`}</div>` : ""}
               ${rule.isOneTime && rule.oneTimeUsedAt ? `<div class="helper-copy">Used on ${escapeHtml(new Date(rule.oneTimeUsedAt).toLocaleString())}</div>` : ""}
               <div class="goal-action-row">
                 <input class="url-input password-rule-input" type="text" placeholder="${rule.isProtected ? "Change password" : "Protect with password"}" data-password-input="${escapeHtml(link.slug)}">
@@ -1779,9 +1783,11 @@ function bindGoalActions() {
 
   document.querySelectorAll("[data-save-rule]").forEach((button) => button.addEventListener("click", async () => {
     const slug = button.getAttribute("data-save-rule");
+    const startInput = document.querySelector(`[data-start-input="${slug}"]`);
     const expiryInput = document.querySelector(`[data-expiry-input="${slug}"]`);
     const pauseInput = document.querySelector(`[data-pause-input="${slug}"]`);
     const oneTimeInput = document.querySelector(`[data-onetime-input="${slug}"]`);
+    const startsAt = String(startInput?.value || "").trim();
     const expiresAt = String(expiryInput?.value || "").trim();
     const isPaused = Boolean(pauseInput?.checked);
     const isOneTime = Boolean(oneTimeInput?.checked);
@@ -1791,11 +1797,12 @@ function bindGoalActions() {
         ...(settingsCache.linkRules || {}),
       };
 
-      if (!expiresAt && !isPaused && !isOneTime) {
+      if (!startsAt && !expiresAt && !isPaused && !isOneTime) {
         delete nextRules[slug];
       } else {
         nextRules[slug] = {
           ...(settingsCache.linkRules?.[slug] || {}),
+          startsAt,
           expiresAt,
           isPaused,
           isOneTime,

@@ -2507,6 +2507,11 @@ svg {
   flex: 1 1 220px;
 }
 
+.schedule-rule-input {
+  min-width: 180px;
+  flex: 1 1 220px;
+}
+
 .chip-link.success,
 .analytics-tag.success {
   background: linear-gradient(135deg, #e7f8ee 0%, #d8f4e3 100%);

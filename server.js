@@ -2355,6 +2355,9 @@ async function handleRedirect(slug, req, res) {
     if (dbMatch) {
       const settings = await readSettingsForUserAsync(dbMatch.userId, req);
       const rule = settings.linkRules?.[dbMatch.slug];
+      if (rule?.startsAt && Date.now() < new Date(rule.startsAt).getTime()) {
+        return sendJson(res, 425, { error: "This short link is scheduled and is not live yet." });
+      }
       if (rule?.isPaused) {
         return sendJson(res, 410, { error: "This short link is paused." });
       }
@@ -2399,6 +2402,9 @@ async function handleRedirect(slug, req, res) {
   if (match) {
     const settings = await readSettingsForUserAsync(match.userId, req);
     const rule = settings.linkRules?.[match.slug];
+    if (rule?.startsAt && Date.now() < new Date(rule.startsAt).getTime()) {
+      return sendJson(res, 425, { error: "This short link is scheduled and is not live yet." });
+    }
     if (rule?.isPaused) {
       return sendJson(res, 410, { error: "This short link is paused." });
     }
@@ -2605,9 +2611,11 @@ function normalizeLinkRules(input, previousRules = {}) {
     }
 
     const expiresAt = String(value.expiresAt || "").trim();
+    const startsAt = String(value.startsAt || "").trim();
     const isPaused = Boolean(value.isPaused);
     const previous = previousRules?.[slug] || {};
     const nextRule = {
+      startsAt,
       expiresAt,
       isPaused,
       isOneTime: Boolean(value.isOneTime || previous.isOneTime),
@@ -2631,7 +2639,7 @@ function normalizeLinkRules(input, previousRules = {}) {
       nextRule.oneTimeUsedAt = String(value.oneTimeUsedAt || previous.oneTimeUsedAt || "");
     }
 
-    if (!expiresAt && !isPaused && !nextRule.passwordHash && !nextRule.isOneTime) {
+    if (!startsAt && !expiresAt && !isPaused && !nextRule.passwordHash && !nextRule.isOneTime) {
       continue;
     }
 
