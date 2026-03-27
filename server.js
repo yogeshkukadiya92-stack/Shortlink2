@@ -430,6 +430,7 @@ async function readSettingsForUserAsync(userId, req) {
   try {
     const dbSettings = await getDbWorkspaceSettings(userId);
     const dbDomains = await listDomainsByUser(userId);
+    const fileExtras = !dbOnlyMode ? readSettingsForUser(userId, req) : null;
 
     if (dbSettings) {
       return normalizeSettings({
@@ -440,6 +441,7 @@ async function readSettingsForUserAsync(userId, req) {
           dbSettings.defaultDomain,
           ...dbDomains.map((item) => item.host),
         ],
+        conversionGoals: fileExtras?.conversionGoals || {},
       }, req);
     }
     if (dbOnlyMode) {
@@ -1827,6 +1829,7 @@ async function handleSaveSettings(body, req, res, user) {
   const defaultDomain = sanitizeDomainInput(String(body.defaultDomain || currentSettings.defaultDomain || "").trim(), req);
   const requestedDomains = Array.isArray(body.domains) ? body.domains : currentSettings.domains;
   const domains = normalizeDomains(requestedDomains, req);
+  const conversionGoals = normalizeConversionGoals(body.conversionGoals || currentSettings.conversionGoals || {});
 
   if (!workspaceName) {
     return sendJson(res, 400, { error: "Workspace name is required." });
@@ -1847,6 +1850,7 @@ async function handleSaveSettings(body, req, res, user) {
     defaultDomain,
     domains,
     domainEntries: currentDomainEntries,
+    conversionGoals,
   }, req);
 
   if (!dbOnlyMode) {
@@ -2298,7 +2302,23 @@ function defaultSettings(req) {
     defaultDomain: fallbackDomain,
     domains: [fallbackDomain],
     domainEntries: [{ host: fallbackDomain, status: "APP_DEFAULT", isActive: true, dnsTarget: publicAppDomain, verifiedAt: null }],
+    conversionGoals: {},
   };
+}
+
+function normalizeConversionGoals(input) {
+  const goals = {};
+
+  for (const [key, value] of Object.entries(input || {})) {
+    const slug = sanitizeSlugInput(String(key || ""));
+    const goal = Math.max(0, Number(value) || 0);
+
+    if (slug && goal > 0) {
+      goals[slug] = goal;
+    }
+  }
+
+  return goals;
 }
 
 function buildDomainEntries(domains, defaultDomain, req, sourceEntries = []) {
@@ -2344,6 +2364,7 @@ function normalizeSettings(settings, req) {
     defaultDomain,
     domains,
     domainEntries,
+    conversionGoals: normalizeConversionGoals(settings?.conversionGoals || {}),
   };
 }
 

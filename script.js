@@ -28,6 +28,7 @@ let settingsCache = {
   workspaceName: "AnyLink Workspace",
   defaultDomain: getDefaultShortDomain(),
   domains: [getDefaultShortDomain()],
+  conversionGoals: {},
 };
 let billingCache = {
   subscriptionStatus: "trialing",
@@ -298,7 +299,38 @@ function normalizeSettings(settings) {
     defaultDomain,
     domains,
     domainEntries,
+    conversionGoals: normalizeConversionGoals(settings.conversionGoals || {}),
   };
+}
+
+function normalizeConversionGoals(goals) {
+  const normalized = {};
+
+  Object.entries(goals || {}).forEach(([slug, value]) => {
+    const cleanSlug = sanitizeSlug(slug);
+    const goal = Math.max(0, Number(value) || 0);
+
+    if (cleanSlug && goal > 0) {
+      normalized[cleanSlug] = goal;
+    }
+  });
+
+  return normalized;
+}
+
+function getLinkGoal(slug) {
+  return Number(settingsCache.conversionGoals?.[slug] || 0);
+}
+
+function buildGoalMarkup(link) {
+  const goal = getLinkGoal(link.slug);
+  if (!goal) {
+    return '<span class="analytics-tag">No goal set</span>';
+  }
+
+  const clicks = Number(link.totalClicks ?? link.clickCount ?? 0);
+  const progress = Math.min(100, Math.round((clicks / goal) * 100));
+  return `<span class="analytics-tag strong">Goal ${goal} · ${progress}% reached</span>`;
 }
 
 async function loadLinks() {
@@ -864,8 +896,47 @@ function renderHomePage() {
 
 function renderLinksPage(links, query = "") {
   const filtered = links.filter((link) => !query || [link.slug, link.destination, link.shortUrl].some((value) => String(value).toLowerCase().includes(query)));
-  mainContent.innerHTML = `<section class="surface-card"><div class="surface-header"><div><h2>Your short links</h2><p>Only links created inside your account appear here.</p></div><a class="chip-link" href="/home">Create another</a></div><div class="links-list">${renderLinkItems(filtered, true)}</div></section>`;
+  mainContent.innerHTML = `
+    <section class="surface-card">
+      <div class="surface-header">
+        <div>
+          <h2>Your short links</h2>
+          <p>Only links created inside your account appear here.</p>
+        </div>
+        <a class="chip-link" href="/home">Create another</a>
+      </div>
+      <div class="goal-grid">
+        ${filtered.length ? filtered.map((link) => {
+          const goal = getLinkGoal(link.slug);
+          const clicks = Number(link.clickCount || 0);
+          const progress = goal ? Math.min(100, Math.round((clicks / goal) * 100)) : 0;
+          return `
+            <article class="goal-card">
+              <div class="goal-card-head">
+                <div>
+                  <strong>${escapeHtml(link.slug)}</strong>
+                  <p>${escapeHtml(getLinkUrl(link))}</p>
+                </div>
+                <span class="chip-link">${clicks} clicks</span>
+              </div>
+              <div class="goal-progress">
+                <div class="goal-progress-bar"><span style="width:${progress}%"></span></div>
+                <span>${goal ? `${progress}% of ${goal}` : "No goal set"}</span>
+              </div>
+              <div class="goal-action-row">
+                <input class="url-input goal-input" type="number" min="1" step="1" value="${goal || ""}" placeholder="Target clicks" data-goal-input="${escapeHtml(link.slug)}">
+                <button class="link-button" type="button" data-save-goal="${escapeHtml(link.slug)}">Save goal</button>
+                ${goal ? `<button class="link-button secondary" type="button" data-clear-goal="${escapeHtml(link.slug)}">Clear</button>` : ""}
+              </div>
+            </article>
+          `;
+        }).join("") : '<div class="empty-state">No links yet. Create your first short link to start setting goals.</div>'}
+      </div>
+      <div class="links-list">${renderLinkItems(filtered, true)}</div>
+    </section>
+  `;
   wireLinkActions();
+  bindGoalActions();
 }
 
 function renderQrPage() {
@@ -1345,6 +1416,7 @@ async function renderAnalyticsPage() {
                 <span class="analytics-tag strong">${escapeHtml(link.topDevices?.[0]?.label || "No device data")}</span>
                 <span class="analytics-tag strong">${escapeHtml(link.topBrowsers?.[0]?.label || "No browser data")}</span>
                 <span class="analytics-tag strong">${escapeHtml(link.topReferrers?.[0]?.label || "Direct")}</span>
+                ${buildGoalMarkup(link)}
               </div>
               <div class="analytics-meta-grid compact-meta-grid">
                 <div><strong>Countries</strong><div class="analytics-list compact-list">${renderAnalyticsBadges(link.topCountries)}</div></div>
@@ -1574,6 +1646,55 @@ function wireLinkActions() {
       linksCache = linksCache.filter((item) => item.slug !== slug);
       renderLinksPage(linksCache, searchInput.value.trim().toLowerCase());
       showGlobalMessage(`Deleted: ${slug}`, false);
+    } catch (error) {
+      showGlobalMessage(error.message, true);
+    }
+  }));
+}
+
+function bindGoalActions() {
+  document.querySelectorAll("[data-save-goal]").forEach((button) => button.addEventListener("click", async () => {
+    const slug = button.getAttribute("data-save-goal");
+    const input = document.querySelector(`[data-goal-input="${slug}"]`);
+    const goal = Math.max(0, Number(input?.value || 0));
+
+    if (!goal) {
+      showGlobalMessage("Enter a valid target greater than 0.", true);
+      return;
+    }
+
+    try {
+      const nextGoals = {
+        ...(settingsCache.conversionGoals || {}),
+        [slug]: goal,
+      };
+      await saveSettings({
+        workspaceName: settingsCache.workspaceName,
+        defaultDomain: settingsCache.defaultDomain,
+        domains: settingsCache.domains,
+        conversionGoals: nextGoals,
+      });
+      renderLinksPage(linksCache, searchInput.value.trim().toLowerCase());
+      showGlobalMessage(`Conversion goal saved for ${slug}.`, false);
+    } catch (error) {
+      showGlobalMessage(error.message, true);
+    }
+  }));
+
+  document.querySelectorAll("[data-clear-goal]").forEach((button) => button.addEventListener("click", async () => {
+    const slug = button.getAttribute("data-clear-goal");
+
+    try {
+      const nextGoals = { ...(settingsCache.conversionGoals || {}) };
+      delete nextGoals[slug];
+      await saveSettings({
+        workspaceName: settingsCache.workspaceName,
+        defaultDomain: settingsCache.defaultDomain,
+        domains: settingsCache.domains,
+        conversionGoals: nextGoals,
+      });
+      renderLinksPage(linksCache, searchInput.value.trim().toLowerCase());
+      showGlobalMessage(`Conversion goal cleared for ${slug}.`, false);
     } catch (error) {
       showGlobalMessage(error.message, true);
     }
