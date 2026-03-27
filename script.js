@@ -1163,55 +1163,135 @@ async function renderAnalyticsPage() {
 
   try {
     const analytics = await loadAnalytics();
+    const avgClicksPerLink = analytics.totalLinks ? (analytics.totalClicks / analytics.totalLinks).toFixed(1) : "0.0";
+    const topCountry = analytics.topCountries?.[0]?.label || "No traffic yet";
+    const topDevice = analytics.topDevices?.[0]?.label || "No traffic yet";
+    const topBrowser = analytics.topBrowsers?.[0]?.label || "No traffic yet";
+    const activeDomain = settingsCache.defaultDomain || publicShortDomain;
+    const countriesReached = analytics.topCountries?.length || 0;
+    const devicesSeen = analytics.topDevices?.length || 0;
+    const bestLink = analytics.links?.[0] || null;
+    const bestLinkMarkup = bestLink
+      ? `<strong>${escapeHtml(bestLink.slug)}</strong><p>${bestLink.totalClicks} clicks on <a href="${escapeHtml(bestLink.shortUrl)}" target="_blank" rel="noreferrer">${escapeHtml(bestLink.shortUrl)}</a></p>`
+      : `<strong>No traffic yet</strong><p>Create and share a short link to start collecting performance data.</p>`;
+
     mainContent.innerHTML = `
-      <section class="stat-grid">
-        <article class="stat-card"><span>Total links</span><strong>${analytics.totalLinks}</strong></article>
-        <article class="stat-card"><span>Total clicks</span><strong>${analytics.totalClicks}</strong></article>
-        <article class="stat-card"><span>Connected domains</span><strong>${settingsCache.domains.length}</strong></article>
-      </section>
-      <section class="surface-card two-column">
-        <div class="stack-card-group">
-          <article class="mini-card inset-card">
-            <h3>Top countries</h3>
-            <div class="analytics-list">${renderAnalyticsBadges(analytics.topCountries)}</div>
+      <section class="surface-card analytics-overview-card">
+        <div class="surface-header analytics-overview-header">
+          <div>
+            <p class="eyebrow">Performance dashboard</p>
+            <h2>Traffic command center</h2>
+            <p>Track your strongest links, leading geographies, devices, and the latest visits from one clean analytics view.</p>
+          </div>
+          <div class="analytics-top-actions">
+            <span class="analytics-chip">Live domain: ${escapeHtml(activeDomain)}</span>
+            <button class="link-button secondary" id="exportAnalyticsButton" type="button">Export Excel</button>
+          </div>
+        </div>
+
+        <div class="analytics-kpi-grid">
+          <article class="analytics-kpi-card featured">
+            <span>Total clicks</span>
+            <strong>${analytics.totalClicks}</strong>
+            <p>${analytics.totalLinks} tracked short links are contributing to your traffic.</p>
           </article>
-          <article class="mini-card inset-card">
-            <h3>Top cities</h3>
-            <div class="analytics-list">${renderAnalyticsBadges(analytics.topCities)}</div>
+          <article class="analytics-kpi-card">
+            <span>Average / link</span>
+            <strong>${avgClicksPerLink}</strong>
+            <p>Average engagement across your published short links.</p>
+          </article>
+          <article class="analytics-kpi-card">
+            <span>Countries reached</span>
+            <strong>${countriesReached}</strong>
+            <p>${escapeHtml(topCountry)} is currently your strongest traffic market.</p>
+          </article>
+          <article class="analytics-kpi-card">
+            <span>Devices seen</span>
+            <strong>${devicesSeen}</strong>
+            <p>${escapeHtml(topDevice)} users are leading your click volume right now.</p>
           </article>
         </div>
-        <div class="stack-card-group">
-          <article class="mini-card inset-card">
-            <h3>Top devices</h3>
-            <div class="analytics-list">${renderAnalyticsBadges(analytics.topDevices)}</div>
+
+        <div class="analytics-spotlight-grid">
+          <article class="mini-card inset-card analytics-spotlight-card">
+            <span class="analytics-kicker">Top country</span>
+            <strong>${escapeHtml(topCountry)}</strong>
+            <p>${analytics.topCountries?.[0]?.count || 0} clicks are coming from your strongest region.</p>
           </article>
-          <article class="mini-card inset-card">
-            <h3>Top browsers & platforms</h3>
-            <div class="analytics-list">${renderAnalyticsBadges(analytics.topBrowsers)}${renderAnalyticsBadges(analytics.topPlatforms)}</div>
+          <article class="mini-card inset-card analytics-spotlight-card">
+            <span class="analytics-kicker">Top browser</span>
+            <strong>${escapeHtml(topBrowser)}</strong>
+            <p>${analytics.topBrowsers?.[0]?.count || 0} tracked visits are using this browser.</p>
+          </article>
+          <article class="mini-card inset-card analytics-spotlight-card wide">
+            <span class="analytics-kicker">Top performing link</span>
+            ${bestLinkMarkup}
           </article>
         </div>
       </section>
-      <section class="surface-card">
-        <div class="surface-header"><div><h2>Recent clicks</h2><p>Latest visits across all your links with device, location, and IP details.</p></div><button class="link-button secondary" id="exportAnalyticsButton" type="button">Export Excel</button></div>
-        <div class="admin-table">${renderClickRows(analytics.recentClicks, false)}</div>
+
+      <section class="analytics-dual-grid">
+        <article class="surface-card analytics-panel-card">
+          <div class="surface-header compact"><div><h2>Traffic distribution</h2><p>Countries and devices contributing the most clicks.</p></div></div>
+          <div class="analytics-split-grid">
+            <div>
+              <strong class="analytics-section-title">Country mix</strong>
+              <div class="chart-bars compact-chart">${renderAnalyticsBars(analytics.topCountries)}</div>
+            </div>
+            <div>
+              <strong class="analytics-section-title">Device split</strong>
+              <div class="chart-bars compact-chart">${renderAnalyticsBars(analytics.topDevices)}</div>
+            </div>
+          </div>
+        </article>
+
+        <article class="surface-card analytics-panel-card">
+          <div class="surface-header compact"><div><h2>Audience details</h2><p>Cities, browsers, and platforms behind your traffic.</p></div></div>
+          <div class="analytics-stacked-lists">
+            <div>
+              <strong class="analytics-section-title">Top cities</strong>
+              <div class="analytics-list compact-list">${renderAnalyticsBadges(analytics.topCities)}</div>
+            </div>
+            <div>
+              <strong class="analytics-section-title">Browsers</strong>
+              <div class="analytics-list compact-list">${renderAnalyticsBadges(analytics.topBrowsers)}</div>
+            </div>
+            <div>
+              <strong class="analytics-section-title">Platforms</strong>
+              <div class="analytics-list compact-list">${renderAnalyticsBadges(analytics.topPlatforms)}</div>
+            </div>
+          </div>
+        </article>
       </section>
-      <section class="surface-card">
-        <div class="surface-header"><div><h2>Per-link reports</h2><p>Every link shows clicks, country/city mix, device source, browser, and recent click history.</p></div></div>
-        <div class="analytics-report-grid">
-          ${analytics.links.length ? analytics.links.map((link) => `
-            <article class="mini-card inset-card analytics-report-card">
-              <div class="surface-header">
+
+      <section class="surface-card analytics-panel-card">
+        <div class="surface-header compact"><div><h2>Recent clicks</h2><p>Latest visits with time, device, location, referrer, and IP visibility.</p></div></div>
+        <div class="admin-table analytics-recent-table">${renderClickRows(analytics.recentClicks, false)}</div>
+      </section>
+
+      <section class="surface-card analytics-panel-card">
+        <div class="surface-header compact"><div><h2>Link performance leaderboard</h2><p>Rank your short links by traffic and inspect the audience mix for each one.</p></div></div>
+        <div class="analytics-report-grid leaderboard-grid">
+          ${analytics.links.length ? analytics.links.map((link, index) => `
+            <article class="mini-card inset-card analytics-report-card leaderboard-card">
+              <div class="analytics-report-topline">
+                <span class="analytics-rank">#${index + 1}</span>
                 <div>
                   <h3>${escapeHtml(link.slug)}</h3>
                   <p><a href="${escapeHtml(link.shortUrl)}" target="_blank" rel="noreferrer">${escapeHtml(link.shortUrl)}</a></p>
                 </div>
                 <span class="chip-link">${link.totalClicks} clicks</span>
               </div>
-              <div class="analytics-meta-grid">
-                <div><strong>Countries</strong><div class="analytics-list">${renderAnalyticsBadges(link.topCountries)}</div></div>
-                <div><strong>Cities</strong><div class="analytics-list">${renderAnalyticsBadges(link.topCities)}</div></div>
-                <div><strong>Devices</strong><div class="analytics-list">${renderAnalyticsBadges(link.topDevices)}</div></div>
-                <div><strong>Browsers</strong><div class="analytics-list">${renderAnalyticsBadges(link.topBrowsers)}</div></div>
+              <div class="analytics-summary-strip">
+                <span class="analytics-tag strong">${escapeHtml(link.topCountries?.[0]?.label || "No country data")}</span>
+                <span class="analytics-tag strong">${escapeHtml(link.topDevices?.[0]?.label || "No device data")}</span>
+                <span class="analytics-tag strong">${escapeHtml(link.topBrowsers?.[0]?.label || "No browser data")}</span>
+              </div>
+              <div class="analytics-meta-grid compact-meta-grid">
+                <div><strong>Countries</strong><div class="analytics-list compact-list">${renderAnalyticsBadges(link.topCountries)}</div></div>
+                <div><strong>Devices</strong><div class="analytics-list compact-list">${renderAnalyticsBadges(link.topDevices)}</div></div>
+                <div><strong>Cities</strong><div class="analytics-list compact-list">${renderAnalyticsBadges(link.topCities)}</div></div>
+                <div><strong>Browsers</strong><div class="analytics-list compact-list">${renderAnalyticsBadges(link.topBrowsers)}</div></div>
               </div>
               <div class="admin-table analytics-click-table">${renderClickRows(link.recentClicks, true)}</div>
             </article>
@@ -1231,362 +1311,18 @@ async function renderAnalyticsPage() {
   }
 }
 
-function renderCampaignsPage() {
-  mainContent.innerHTML = `<section class="surface-card"><div class="surface-header"><div><h2>Campaign tracker</h2><p>Keep your UTM campaigns organized in one private place.</p></div></div><div class="campaign-list"><div class="campaign-item"><strong>Summer Sale</strong><span>Email - Active</span></div><div class="campaign-item"><strong>Creator Outreach</strong><span>Social - Draft</span></div><div class="campaign-item"><strong>Retail Posters</strong><span>Offline - Active</span></div></div></section>`;
-}
-
-function renderDomainsPage() {
-  const domainEntries = settingsCache.domainEntries || settingsCache.domains.map((domain) => ({
-    host: domain,
-    status: domain === publicShortDomain ? "APP_DEFAULT" : (domain === settingsCache.defaultDomain ? "ACTIVE" : "PENDING"),
-    isActive: domain === settingsCache.defaultDomain,
-    dnsTarget: publicShortDomain,
-  }));
-
-  const managedDomainsMarkup = domainEntries.map((entry) => {
-    const domain = entry.host;
-    const isDefaultAppDomain = domain === publicShortDomain;
-    const isActive = Boolean(entry.isActive) || domain === settingsCache.defaultDomain;
-    const normalizedStatus = String(entry.status || "PENDING").toUpperCase();
-    const hostHint = domain.split(".")[0] || domain;
-    const statusLabel = isDefaultAppDomain
-      ? "App Default"
-      : (isActive ? "Active" : normalizedStatus.charAt(0) + normalizedStatus.slice(1).toLowerCase());
-
-    return `
-      <div class="managed-domain ${isActive ? "active" : ""}">
-        <div class="managed-domain-copy">
-          <strong>${escapeHtml(domain)}</strong>
-          <span>${escapeHtml(buildDomainPreview(domain))}</span>
-          ${!isDefaultAppDomain ? `<div class="dns-helper-grid"><span><strong>Type</strong>CNAME</span><span><strong>Host</strong>${escapeHtml(hostHint)}</span><span><strong>Value</strong>${escapeHtml(entry.dnsTarget || publicShortDomain)}</span></div>` : ""}
-        </div>
-        <div class="managed-domain-actions">
-          <span class="domain-status ${normalizedStatus.toLowerCase()}">${escapeHtml(statusLabel)}</span>
-          ${!isDefaultAppDomain && !isActive ? `<button class="link-button" data-activate-domain="${escapeHtml(domain)}">Set active</button>` : ""}
-          ${!isDefaultAppDomain ? `<button class="link-button secondary" data-copy-dns="${escapeHtml(domain)}">Copy DNS</button>` : ""}
-          ${!isDefaultAppDomain && normalizedStatus !== "VERIFIED" && normalizedStatus !== "ACTIVE" ? `<button class="link-button secondary" data-verify-domain="${escapeHtml(domain)}">Mark verified</button>` : ""}
-          ${!isDefaultAppDomain ? `<button class="link-button danger" data-remove-domain="${escapeHtml(domain)}">Remove</button>` : ""}
-        </div>
-      </div>
-    `;
-  }).join("");
-
-  mainContent.innerHTML = `
-    <section class="surface-card two-column">
-      <div>
-        <div class="surface-header">
-          <div>
-            <h2>Custom domains</h2>
-            <p>Your app always stays on <strong>${escapeHtml(publicShortDomain)}</strong>. Users can optionally create short links from their own connected domain.</p>
-          </div>
-          <span class="chip-link">${settingsCache.domains.length} saved</span>
-        </div>
-        <div class="managed-domain-list">${managedDomainsMarkup}</div>
-      </div>
-      <div class="stack-card-group">
-        <div class="form-card">
-          <label class="field-label" for="domainName">Add a new custom domain</label>
-          <input id="domainName" class="url-input" type="text" placeholder="go.yourbrand.com">
-          <button class="primary-action inline-action" id="addDomainButton">Add domain</button>
-          <p class="helper-copy">If no custom domain is active, new short links automatically use ${escapeHtml(publicShortDomain)}.</p>
-        </div>
-        <div class="form-card">
-          <h3>DNS setup</h3>
-          <p class="helper-copy">Create a <strong>CNAME</strong> record for your branded subdomain and point it to <strong>${escapeHtml(publicShortDomain)}</strong>.</p>
-          <div class="dns-helper-grid">
-            <span><strong>Type</strong>CNAME</span>
-            <span><strong>Host</strong>go</span>
-            <span><strong>Value</strong>${escapeHtml(publicShortDomain)}</span>
-          </div>
-          <p class="helper-copy">Example: <code>go.clientdomain.com -> ${escapeHtml(publicShortDomain)}</code></p>
-          <p class="helper-copy">After DNS is live, click <strong>Mark verified</strong> and then set that domain active for fresh links.</p>
-        </div>
-      </div>
-    </section>
-  `;
-
-  document.getElementById("addDomainButton").addEventListener("click", async () => {
-    const domain = sanitizeDomain(document.getElementById("domainName").value.trim());
-    if (!domain) return showGlobalMessage("Enter a valid domain or host.", true);
-    if (settingsCache.domains.includes(domain)) return showGlobalMessage("That domain is already added.", true);
-    await persistDomains([...settingsCache.domains, domain], settingsCache.defaultDomain, `Domain added: ${domain}. Next step: add the DNS CNAME and mark it verified.`);
-  });
-
-  document.querySelectorAll("[data-activate-domain]").forEach((button) => button.addEventListener("click", async () => {
-    const domain = button.getAttribute("data-activate-domain");
-    await persistDomains(settingsCache.domains, domain, `Active domain changed to ${domain}`);
-  }));
-
-  document.querySelectorAll("[data-remove-domain]").forEach((button) => button.addEventListener("click", async () => {
-    const domain = button.getAttribute("data-remove-domain");
-    const domains = settingsCache.domains.filter((item) => item !== domain);
-    const nextDefault = settingsCache.defaultDomain === domain ? domains[0] : settingsCache.defaultDomain;
-    await persistDomains(domains, nextDefault, `Removed domain: ${domain}`);
-  }));
-
-  document.querySelectorAll("[data-copy-dns]").forEach((button) => button.addEventListener("click", async () => {
-    const domain = button.getAttribute("data-copy-dns");
-    try {
-      await navigator.clipboard.writeText(publicShortDomain);
-      showGlobalMessage(`DNS target copied for ${domain}: ${publicShortDomain}`, false);
-    } catch {
-      showGlobalMessage(`Copy failed. Use this DNS target manually: ${publicShortDomain}`, true);
-    }
-  }));
-
-  document.querySelectorAll("[data-verify-domain]").forEach((button) => button.addEventListener("click", async () => {
-    const domain = button.getAttribute("data-verify-domain");
-    await verifyDomain(domain);
-  }));
-}
-async function persistDomains(domains, defaultDomain, successMessage) {
-  try {
-    await saveSettings({ workspaceName: settingsCache.workspaceName, domains, defaultDomain });
-    renderDomainsPage();
-    showGlobalMessage(successMessage, false);
-  } catch (error) {
-    showGlobalMessage(error.message, true);
+function renderAnalyticsBars(items) {
+  if (!items || !items.length) {
+    return '<div class="empty-state">No data yet.</div>';
   }
-}
 
-async function verifyDomain(domain) {
-  try {
-    const response = await fetch(`/api/domains/verify/${encodeURIComponent(domain)}`);
-    const payload = await response.json();
-    if (!response.ok) throw new Error(payload.error || "Unable to verify domain.");
-    const hostHint = payload.hostHint || domain.split(".")[0] || domain;
-    showGlobalMessage(`${payload.message} DNS record: ${payload.recordType || "CNAME"} ${hostHint} -> ${payload.dnsTarget || publicShortDomain}`, false);
-  } catch (error) {
-    showGlobalMessage(error.message, true);
-  }
-}
-
-function renderSettingsPage() {
-  mainContent.innerHTML = `
-    <section class="surface-card">
-      <div class="surface-header">
-        <div>
-          <h2>Profile and settings</h2>
-          <p>Manage your personal profile, workspace identity, and default short-link domain.</p>
-        </div>
-      </div>
-      <div class="two-column">
-        <div class="stack-card-group">
-          <div class="form-card">
-            <h3>Profile</h3>
-            <label class="field-label" for="profileNameInput">Display name</label>
-            <input id="profileNameInput" class="url-input" type="text" value="${escapeHtml(currentUser.name)}">
-            <label class="field-label" for="profileEmail">Email</label>
-            <input id="profileEmail" class="url-input" type="text" value="${escapeHtml(currentUser.email)}" disabled>
-            <div class="profile-meta">
-              <span class="domain-status">${currentUser.emailVerified ? "Verified account" : "Email not verified"}</span>
-              ${currentUser.isAdmin ? '<span class="domain-status admin-badge">Admin access</span>' : ""}
-            </div>
-            <button class="primary-action inline-action" id="saveProfileButton">Save profile</button>
-          </div>
-          <div class="form-card">
-            <h3>Change password</h3>
-            <label class="field-label" for="currentPasswordInput">Current password</label>
-            <div class="password-field"><input id="currentPasswordInput" class="url-input" type="password" placeholder="Enter current password"><button class="password-toggle" type="button" data-password-toggle="currentPasswordInput">Show</button></div>
-            <label class="field-label" for="newPasswordInput">New password</label>
-            <div class="password-field"><input id="newPasswordInput" class="url-input" type="password" placeholder="Minimum 6 characters"><button class="password-toggle" type="button" data-password-toggle="newPasswordInput">Show</button></div>
-            <label class="field-label" for="confirmPasswordInput">Confirm new password</label>
-            <div class="password-field"><input id="confirmPasswordInput" class="url-input" type="password" placeholder="Re-enter new password"><button class="password-toggle" type="button" data-password-toggle="confirmPasswordInput">Show</button></div>
-            <button class="primary-action inline-action" id="changePasswordButton">Update password</button>
-          </div>
-          <div class="form-card">
-            <h3>Workspace</h3>
-            <label class="field-label" for="workspaceName">Workspace name</label>
-            <input id="workspaceName" class="url-input" type="text" value="${escapeHtml(settingsCache.workspaceName)}">
-            <label class="field-label" for="defaultDomain">Active domain</label>
-            <select id="defaultDomain" class="url-input domain-select">${settingsCache.domains.map((domain) => `<option value="${escapeHtml(domain)}" ${domain === settingsCache.defaultDomain ? "selected" : ""}>${escapeHtml(domain)}</option>`).join("")}</select>
-            <button class="primary-action inline-action" id="saveSettingsButton">Save settings</button>
-          </div>
-        </div>
-        <div class="mini-card inset-card profile-card">
-          <div class="profile-card-head">
-            <div class="profile-card-avatar">${escapeHtml(currentUser.name.charAt(0).toUpperCase())}</div>
-            <div>
-              <h3>${escapeHtml(currentUser.name)}</h3>
-              <p>${escapeHtml(currentUser.email)}</p>
-            </div>
-          </div>
-          <div class="task-list">
-            <div class="task-item"><span class="task-check filled"></span><span>${currentUser.emailVerified ? "Email verified" : "Email verification pending"}</span></div>
-            <div class="task-item"><span class="task-check filled"></span><span>${settingsCache.domains.length} domain${settingsCache.domains.length === 1 ? "" : "s"} connected</span></div>
-            <div class="task-item"><span class="task-check filled"></span><span>Workspace: ${escapeHtml(settingsCache.workspaceName)}</span></div>
-            <div class="task-item"><span class="task-check filled"></span><span>Plan: ${escapeHtml(billingCache.subscriptionStatus)}</span></div>
-          </div>
-        </div>
-      </div>
-    </section>
-  `;
-
-  document.getElementById("saveProfileButton").addEventListener("click", async () => {
-    try {
-      await saveProfile({
-        name: document.getElementById("profileNameInput").value.trim(),
-      });
-      renderSettingsPage();
-      showGlobalMessage("Profile updated successfully.", false);
-    } catch (error) {
-      showGlobalMessage(error.message, true);
-    }
-  });
-
-  document.getElementById("changePasswordButton").addEventListener("click", async () => {
-    try {
-      await changePassword({
-        currentPassword: document.getElementById("currentPasswordInput").value,
-        newPassword: document.getElementById("newPasswordInput").value,
-        confirmPassword: document.getElementById("confirmPasswordInput").value,
-      });
-      document.getElementById("currentPasswordInput").value = "";
-      document.getElementById("newPasswordInput").value = "";
-      document.getElementById("confirmPasswordInput").value = "";
-      showGlobalMessage("Password updated successfully.", false);
-    } catch (error) {
-      showGlobalMessage(error.message, true);
-    }
-  });
-
-  document.getElementById("saveSettingsButton").addEventListener("click", async () => {
-    try {
-      await saveSettings({
-        workspaceName: document.getElementById("workspaceName").value.trim(),
-        defaultDomain: document.getElementById("defaultDomain").value.trim(),
-        domains: settingsCache.domains,
-      });
-      renderSettingsPage();
-      showGlobalMessage("Settings saved successfully.", false);
-    } catch (error) {
-      showGlobalMessage(error.message, true);
-    }
-  });
-
-  bindPasswordToggles();
-}
-
-function wireCreateForm() {
-  const destinationInput = document.getElementById("destination");
-  const slugInput = document.getElementById("slug");
-  const qrToggle = document.getElementById("qrToggle");
-  const resultBanner = document.getElementById("resultBanner");
-  const shortBaseLabel = document.getElementById("shortBaseLabel");
-
-  const updatePreview = () => {
-    shortBaseLabel.textContent = buildShortPreview(sanitizeSlug(slugInput.value.trim()) || "your-slug");
-  };
-
-  const createLink = async () => {
-    setInlineBanner(resultBanner, "Creating your AnyLink...", false);
-    try {
-      const response = await fetch("/api/links", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          destination: destinationInput.value.trim(),
-          slug: sanitizeSlug(slugInput.value.trim()),
-          includeQr: qrToggle.checked,
-        }),
-      });
-      const payload = await response.json();
-      if (!response.ok) return setInlineBanner(resultBanner, payload.error || "Could not create link.", true);
-
-      linksCache.unshift(payload.link);
-      if (qrToggle.checked) selectedQrSlug = payload.link.slug;
-      setInlineBanner(resultBanner, `AnyLink created: ${getLinkUrl(payload.link)}`, false);
-      destinationInput.value = "";
-      slugInput.value = "";
-      qrToggle.checked = false;
-      updatePreview();
-      const list = document.getElementById("homeLinksList");
-      if (list) {
-        list.innerHTML = renderLinkItems(linksCache.slice(0, 3), true);
-        wireLinkActions();
-      }
-    } catch (error) {
-      setInlineBanner(resultBanner, error.message, true);
-    }
-  };
-
-  document.getElementById("createLinkButton").addEventListener("click", createLink);
-  destinationInput.addEventListener("keydown", (event) => event.key === "Enter" && createLink());
-  slugInput.addEventListener("keydown", (event) => event.key === "Enter" && createLink());
-  slugInput.addEventListener("input", updatePreview);
-  updatePreview();
-}
-
-function wireLinkActions() {
-  document.querySelectorAll("[data-copy]").forEach((button) => button.addEventListener("click", async () => {
-    const shortUrl = button.getAttribute("data-copy");
-    try {
-      await navigator.clipboard.writeText(shortUrl);
-      showGlobalMessage(`Copied: ${shortUrl}`, false);
-    } catch {
-      showGlobalMessage(`Copy failed. Open this link manually: ${shortUrl}`, true);
-    }
-  }));
-
-  document.querySelectorAll("[data-delete]").forEach((button) => button.addEventListener("click", async () => {
-    const slug = button.getAttribute("data-delete");
-    try {
-      const response = await fetch(`/api/links/${encodeURIComponent(slug)}`, { method: "DELETE" });
-      const payload = await response.json();
-      if (!response.ok) throw new Error(payload.error || "Delete failed");
-      linksCache = linksCache.filter((item) => item.slug !== slug);
-      renderLinksPage(linksCache, searchInput.value.trim().toLowerCase());
-      showGlobalMessage(`Deleted: ${slug}`, false);
-    } catch (error) {
-      showGlobalMessage(error.message, true);
-    }
-  }));
-}
-
-function renderLinkItems(links, includeDelete) {
-  if (!links.length) return '<div class="empty-state">No links yet. Create your first AnyLink above.</div>';
-
-  return links.map((link) => {
-    const createdAt = new Date(link.createdAt).toLocaleString();
-    const liveUrl = getLinkUrl(link);
-    return `<div class="link-item"><div class="link-copy"><a href="${escapeHtml(liveUrl)}" target="_blank" rel="noreferrer">${escapeHtml(liveUrl)}</a><strong>${escapeHtml(link.slug)}</strong><p>${escapeHtml(link.destination)}</p><p>Created: ${escapeHtml(createdAt)}</p></div><div class="link-actions"><button class="link-button" data-copy="${escapeHtml(liveUrl)}">Copy</button><a class="link-button secondary" href="${escapeHtml(liveUrl)}" target="_blank" rel="noreferrer">Open</a><a class="link-button secondary" href="/qr-codes" data-open-qr="${escapeHtml(link.slug)}">QR</a>${includeDelete ? `<button class="link-button danger" data-delete="${escapeHtml(link.slug)}">Delete</button>` : ""}</div></div>`;
+  const maxCount = Math.max(...items.map((item) => Number(item.count || 0)), 1);
+  return items.slice(0, 5).map((item) => {
+    const ratio = Number(item.count || 0) / maxCount;
+    const height = Math.max(28, Math.round(ratio * 132));
+    return `<div class="bar-wrap"><span class="bar-value">${item.count}</span><i style="height:${height}px"></i><span class="bar-label">${escapeHtml(item.label)}</span></div>`;
   }).join("");
 }
-
-function buildShortPreview(slug) {
-  return buildDomainPreview(settingsCache.defaultDomain, slug);
-}
-
-function buildLiveLinkUrl(slug) {
-  return buildDomainPreview(settingsCache.defaultDomain, slug);
-}
-
-function getLinkUrl(link) {
-  if (link && link.shortUrl) {
-    return link.shortUrl;
-  }
-
-  return buildLiveLinkUrl(link?.slug || "");
-}
-
-function buildQrImageUrl(targetUrl) {
-  return `https://api.qrserver.com/v1/create-qr-code/?size=520x520&data=${encodeURIComponent(targetUrl)}`;
-}
-
-function getSelectedQrLink() {
-  if (selectedQrSlug) {
-    const found = linksCache.find((item) => item.slug === selectedQrSlug);
-    if (found) return found;
-  }
-  return linksCache.find((item) => item.includeQr) || linksCache[0] || null;
-}
-
-function renderQrLinkItems() {
-  if (!linksCache.length) return '<div class="empty-state">No links available yet. Create one from Home first.</div>';
-
-  return linksCache.slice(0, 6).map((link) => `<button class="qr-link-item ${link.slug === (getSelectedQrLink()?.slug || "") ? "active" : ""}" data-select-qr="${escapeHtml(link.slug)}"><strong>${escapeHtml(link.slug)}</strong><span>${escapeHtml(getLinkUrl(link))}</span></button>`).join("");
-}
-
 function renderAnalyticsBadges(items) {
   if (!items || !items.length) {
     return '<div class="empty-state">No data yet.</div>';
@@ -1679,6 +1415,7 @@ function showGlobalMessage(message, isError) {
   window.clearTimeout(showGlobalMessage.timeoutId);
   showGlobalMessage.timeoutId = window.setTimeout(() => banner.classList.remove("visible"), 2200);
 }
+
 
 
 

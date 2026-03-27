@@ -93,7 +93,7 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "POST" && pathname === "/api/auth/forgot-password") {
       const body = await readRequestBody(req);
-      return handleForgotPassword(body, req, res);
+      return await handleForgotPassword(body, req, res);
     }
 
     if (req.method === "POST" && pathname === "/api/auth/reset-password") {
@@ -103,7 +103,7 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "POST" && pathname === "/api/auth/send-verification") {
       const body = await readRequestBody(req);
-      return handleSendVerification(body, req, res);
+      return await handleSendVerification(body, req, res);
     }
 
     if (req.method === "POST" && pathname === "/api/auth/verify-email") {
