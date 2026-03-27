@@ -3,7 +3,7 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 const { URL } = require("url");
-const { createUser: createDbUser, findUserByEmail, updateUser: updateDbUser } = require("./repositories/usersRepository");
+const { createUser: createDbUser, findUserByEmail, findUserById, updateUser: updateDbUser } = require("./repositories/usersRepository");
 const { createSession: createDbSession, deleteSessionByToken: deleteDbSessionByToken, findSessionByToken } = require("./repositories/sessionsRepository");
 const { getWorkspaceSettings: getDbWorkspaceSettings, upsertWorkspaceSettings } = require("./repositories/settingsRepository");
 const { listLinksByUser, createLink: createDbLink, deleteLinkBySlug, findLinkBySlug } = require("./repositories/linksRepository");
@@ -442,6 +442,7 @@ async function readSettingsForUserAsync(userId, req) {
           ...dbDomains.map((item) => item.host),
         ],
         conversionGoals: fileExtras?.conversionGoals || {},
+        goalAlertState: fileExtras?.goalAlertState || {},
       }, req);
     }
     if (dbOnlyMode) {
@@ -1830,6 +1831,7 @@ async function handleSaveSettings(body, req, res, user) {
   const requestedDomains = Array.isArray(body.domains) ? body.domains : currentSettings.domains;
   const domains = normalizeDomains(requestedDomains, req);
   const conversionGoals = normalizeConversionGoals(body.conversionGoals || currentSettings.conversionGoals || {});
+  const goalAlertState = normalizeGoalAlertState(body.goalAlertState || currentSettings.goalAlertState || {});
 
   if (!workspaceName) {
     return sendJson(res, 400, { error: "Workspace name is required." });
@@ -1851,6 +1853,7 @@ async function handleSaveSettings(body, req, res, user) {
     domains,
     domainEntries: currentDomainEntries,
     conversionGoals,
+    goalAlertState,
   }, req);
 
   if (!dbOnlyMode) {
@@ -2136,12 +2139,86 @@ async function recordLinkVisitAsync(link, req) {
   return click;
 }
 
+async function getGoalAlertUser(userId) {
+  try {
+    const dbUser = await findUserById(userId);
+    if (dbUser) {
+      return dbUser;
+    }
+  } catch {
+    // Fall back to file storage during migration.
+  }
+
+  return readUsers().find((item) => item.id === userId) || null;
+}
+
+function shouldSendGoalAlert(settings, slug, currentClicks) {
+  const goal = Number(settings?.conversionGoals?.[slug] || 0);
+  if (!goal || currentClicks < goal) {
+    return { shouldSend: false, goal: 0 };
+  }
+
+  const alertedGoal = Number(settings?.goalAlertState?.[slug] || 0);
+  if (alertedGoal >= goal) {
+    return { shouldSend: false, goal };
+  }
+
+  return { shouldSend: true, goal };
+}
+
+function markGoalAlertSent(userId, slug, goal, req) {
+  if (dbOnlyMode) {
+    return;
+  }
+
+  const store = readSettingsStore();
+  const existing = store.find((item) => item.userId === userId) || normalizeSettings({ userId }, req);
+  const normalized = normalizeSettings({
+    ...existing,
+    goalAlertState: {
+      ...(existing.goalAlertState || {}),
+      [slug]: goal,
+    },
+  }, req);
+
+  const nextStore = store.filter((item) => item.userId !== userId);
+  nextStore.push(normalized);
+  writeSettingsStore(nextStore);
+}
+
+async function maybeSendGoalAchievementEmail(link, currentClicks, req) {
+  const settings = await readSettingsForUserAsync(link.userId, req);
+  const { shouldSend, goal } = shouldSendGoalAlert(settings, link.slug, currentClicks);
+
+  if (!shouldSend) {
+    return;
+  }
+
+  const user = await getGoalAlertUser(link.userId);
+  if (!user?.email) {
+    return;
+  }
+
+  const shortUrl = link.shortUrl || buildShortUrl(settings.defaultDomain || publicAppDomain, link.slug);
+  const emailSent = await sendTransactionalEmail({
+    to: user.email,
+    subject: `Goal achieved for ${link.slug}`,
+    html: `<div style="font-family:Segoe UI,Arial,sans-serif;line-height:1.6;color:#183153"><h2 style="margin:0 0 12px;">Conversion goal achieved</h2><p style="margin:0 0 12px;">Your short link <strong>${link.slug}</strong> has reached its conversion goal.</p><p style="margin:0 0 12px;"><strong>Current clicks:</strong> ${currentClicks}</p><p style="margin:0 0 12px;"><strong>Goal target:</strong> ${goal}</p><p style="margin:0 0 18px;"><a href="${shortUrl}" style="color:#2852e0;text-decoration:none;font-weight:700;">${shortUrl}</a></p><p style="margin:0;color:#5f7399;">Open your analytics dashboard to review the latest traffic and audience details.</p></div>`,
+    text: `Goal achieved for ${link.slug}. Current clicks: ${currentClicks}. Goal target: ${goal}. Link: ${shortUrl}`,
+  });
+
+  if (emailSent) {
+    markGoalAlertSent(link.userId, link.slug, goal, req);
+  }
+}
+
 async function handleRedirect(slug, req, res) {
   try {
     const dbMatch = await findLinkBySlug(slug);
     if (dbMatch) {
       try {
         await recordLinkVisitAsync(dbMatch, req);
+        await maybeSendGoalAchievementEmail(dbMatch, Number(dbMatch.clickCount || 0) + 1, req);
       } catch {
         // Redirect should still work even if analytics write fails.
       }
@@ -2166,6 +2243,11 @@ async function handleRedirect(slug, req, res) {
   if (match) {
     recordLinkVisit(match, req);
     writeLinks(links);
+    try {
+      await maybeSendGoalAchievementEmail(match, Number(match.analytics?.totalClicks || 0), req);
+    } catch {
+      // Redirect should still work even if goal email fails.
+    }
     res.writeHead(302, { Location: match.destination });
     res.end();
     return;
@@ -2303,6 +2385,7 @@ function defaultSettings(req) {
     domains: [fallbackDomain],
     domainEntries: [{ host: fallbackDomain, status: "APP_DEFAULT", isActive: true, dnsTarget: publicAppDomain, verifiedAt: null }],
     conversionGoals: {},
+    goalAlertState: {},
   };
 }
 
@@ -2319,6 +2402,21 @@ function normalizeConversionGoals(input) {
   }
 
   return goals;
+}
+
+function normalizeGoalAlertState(input) {
+  const alerts = {};
+
+  for (const [key, value] of Object.entries(input || {})) {
+    const slug = sanitizeSlugInput(String(key || ""));
+    const goal = Math.max(0, Number(value) || 0);
+
+    if (slug && goal > 0) {
+      alerts[slug] = goal;
+    }
+  }
+
+  return alerts;
 }
 
 function buildDomainEntries(domains, defaultDomain, req, sourceEntries = []) {
@@ -2365,6 +2463,7 @@ function normalizeSettings(settings, req) {
     domains,
     domainEntries,
     conversionGoals: normalizeConversionGoals(settings?.conversionGoals || {}),
+    goalAlertState: normalizeGoalAlertState(settings?.goalAlertState || {}),
   };
 }
 
