@@ -35,7 +35,9 @@ let billingCache = {
   subscriptionExpiresAt: 0,
   hasAccess: true,
 };
-const authQuery = new URLSearchParams(window.location.search);
+function getAuthQuery() {
+  return new URLSearchParams(window.location.search);
+}
 
 const pageMeta = {
   auth: { eyebrow: "Secure Access", title: "Sign in" },
@@ -510,6 +512,7 @@ async function runAdminAction(url, body, successMessage) {
 }
 
 function renderAuthPage() {
+  const authQuery = getAuthQuery();
   const authMode = authQuery.get("mode") || "signin";
   const token = authQuery.get("token") || "";
   const activeMode = ["signin", "signup", "forgot", "reset", "verify"].includes(authMode) ? authMode : "signin";
@@ -1622,6 +1625,9 @@ function showGlobalMessage(message, isError) {
   window.clearTimeout(showGlobalMessage.timeoutId);
   showGlobalMessage.timeoutId = window.setTimeout(() => banner.classList.remove("visible"), 2200);
 }
+
+
+
 
 
 
