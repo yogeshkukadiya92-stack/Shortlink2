@@ -1477,6 +1477,10 @@ svg {
   padding-right: 36px;
 }
 
+.analytics-date-control {
+  min-width: 158px;
+}
+
 .analytics-chip {
   display: inline-flex;
   align-items: center;

@@ -22,6 +22,8 @@ let pagesCache = [];
 let selectedQrSlug = null;
 let selectedFormId = "";
 let analyticsRange = "30d";
+let analyticsCustomStart = "";
+let analyticsCustomEnd = "";
 let settingsCache = {
   workspaceName: "AnyLink Workspace",
   defaultDomain: getDefaultShortDomain(),
@@ -311,7 +313,10 @@ async function loadLinks() {
 }
 
 async function loadAnalytics() {
-  const response = await fetch(`/api/analytics?range=${encodeURIComponent(analyticsRange)}`);
+  const customQuery = analyticsRange === "custom"
+    ? `&start=${encodeURIComponent(analyticsCustomStart || "")}&end=${encodeURIComponent(analyticsCustomEnd || "")}`
+    : "";
+  const response = await fetch(`/api/analytics?range=${encodeURIComponent(analyticsRange)}${customQuery}`);
   const payload = await response.json();
 
   if (!response.ok) {
@@ -1172,6 +1177,8 @@ async function renderAnalyticsPage() {
     const countriesReached = analytics.topCountries?.length || 0;
     const devicesSeen = analytics.topDevices?.length || 0;
     const bestLink = analytics.links?.[0] || null;
+    analyticsCustomStart = analytics.customStart || analyticsCustomStart;
+    analyticsCustomEnd = analytics.customEnd || analyticsCustomEnd;
     const bestLinkMarkup = bestLink
       ? `<strong>${escapeHtml(bestLink.slug)}</strong><p>${bestLink.totalClicks} clicks on <a href="${escapeHtml(bestLink.shortUrl)}" target="_blank" rel="noreferrer">${escapeHtml(bestLink.shortUrl)}</a></p>`
       : `<strong>No traffic yet</strong><p>Create and share a short link to start collecting performance data.</p>`;
@@ -1192,7 +1199,16 @@ async function renderAnalyticsPage() {
                 <option value="7d" ${analytics.appliedRange === "7d" ? "selected" : ""}>Last 7 days</option>
                 <option value="30d" ${analytics.appliedRange === "30d" ? "selected" : ""}>Last 30 days</option>
                 <option value="all" ${analytics.appliedRange === "all" ? "selected" : ""}>All time</option>
+                <option value="custom" ${analytics.appliedRange === "custom" ? "selected" : ""}>Custom</option>
               </select>
+            </label>
+            <label class="analytics-filter-control analytics-date-control" for="analyticsCustomStart">
+              <span>Start date</span>
+              <input id="analyticsCustomStart" class="url-input analytics-range-select" type="date" value="${escapeHtml(analytics.customStart || "")}" ${analytics.appliedRange === "custom" ? "" : "disabled"}>
+            </label>
+            <label class="analytics-filter-control analytics-date-control" for="analyticsCustomEnd">
+              <span>End date</span>
+              <input id="analyticsCustomEnd" class="url-input analytics-range-select" type="date" value="${escapeHtml(analytics.customEnd || "")}" ${analytics.appliedRange === "custom" ? "" : "disabled"}>
             </label>
             <span class="analytics-chip">Live domain: ${escapeHtml(activeDomain)}</span>
             <button class="link-button secondary" id="exportAnalyticsButton" type="button">Export Excel</button>
@@ -1270,8 +1286,17 @@ async function renderAnalyticsPage() {
               <strong class="analytics-section-title">Platforms</strong>
               <div class="analytics-list compact-list">${renderAnalyticsBadges(analytics.topPlatforms)}</div>
             </div>
+            <div>
+              <strong class="analytics-section-title">Referrers</strong>
+              <div class="analytics-list compact-list">${renderAnalyticsBadges(analytics.topReferrers)}</div>
+            </div>
           </div>
         </article>
+      </section>
+
+      <section class="surface-card analytics-panel-card">
+        <div class="surface-header compact"><div><h2>Top links chart</h2><p>Quick visual ranking of the links driving the most traffic in the selected range.</p></div></div>
+        <div class="chart-bars compact-chart">${renderTopLinkBars(analytics.links)}</div>
       </section>
 
       <section class="surface-card analytics-panel-card">
@@ -1296,12 +1321,14 @@ async function renderAnalyticsPage() {
                 <span class="analytics-tag strong">${escapeHtml(link.topCountries?.[0]?.label || "No country data")}</span>
                 <span class="analytics-tag strong">${escapeHtml(link.topDevices?.[0]?.label || "No device data")}</span>
                 <span class="analytics-tag strong">${escapeHtml(link.topBrowsers?.[0]?.label || "No browser data")}</span>
+                <span class="analytics-tag strong">${escapeHtml(link.topReferrers?.[0]?.label || "Direct")}</span>
               </div>
               <div class="analytics-meta-grid compact-meta-grid">
                 <div><strong>Countries</strong><div class="analytics-list compact-list">${renderAnalyticsBadges(link.topCountries)}</div></div>
                 <div><strong>Devices</strong><div class="analytics-list compact-list">${renderAnalyticsBadges(link.topDevices)}</div></div>
                 <div><strong>Cities</strong><div class="analytics-list compact-list">${renderAnalyticsBadges(link.topCities)}</div></div>
                 <div><strong>Browsers</strong><div class="analytics-list compact-list">${renderAnalyticsBadges(link.topBrowsers)}</div></div>
+                <div><strong>Referrers</strong><div class="analytics-list compact-list">${renderAnalyticsBadges(link.topReferrers)}</div></div>
               </div>
               <div class="admin-table analytics-click-table">${renderClickRows(link.recentClicks, true)}</div>
             </article>
@@ -1313,7 +1340,10 @@ async function renderAnalyticsPage() {
     const exportAnalyticsButton = document.getElementById("exportAnalyticsButton");
     if (exportAnalyticsButton) {
       exportAnalyticsButton.addEventListener("click", () => {
-        window.location.href = `/api/analytics/export?range=${encodeURIComponent(analyticsRange)}`;
+        const customQuery = analyticsRange === "custom"
+          ? `&start=${encodeURIComponent(analyticsCustomStart || "")}&end=${encodeURIComponent(analyticsCustomEnd || "")}`
+          : "";
+        window.location.href = `/api/analytics/export?range=${encodeURIComponent(analyticsRange)}${customQuery}`;
       });
     }
 
@@ -1321,8 +1351,31 @@ async function renderAnalyticsPage() {
     if (analyticsRangeFilter) {
       analyticsRangeFilter.addEventListener("change", async (event) => {
         analyticsRange = event.target.value || "30d";
+        const startInput = document.getElementById("analyticsCustomStart");
+        const endInput = document.getElementById("analyticsCustomEnd");
+        if (startInput) startInput.disabled = analyticsRange !== "custom";
+        if (endInput) endInput.disabled = analyticsRange !== "custom";
         await renderAnalyticsPage();
       });
+    }
+
+    const analyticsCustomStartInput = document.getElementById("analyticsCustomStart");
+    const analyticsCustomEndInput = document.getElementById("analyticsCustomEnd");
+    const applyCustomRange = async () => {
+      analyticsCustomStart = analyticsCustomStartInput?.value || "";
+      analyticsCustomEnd = analyticsCustomEndInput?.value || "";
+      analyticsRange = "custom";
+      const filter = document.getElementById("analyticsRangeFilter");
+      if (filter) filter.value = "custom";
+      await renderAnalyticsPage();
+    };
+
+    if (analyticsCustomStartInput) {
+      analyticsCustomStartInput.addEventListener("change", applyCustomRange);
+    }
+
+    if (analyticsCustomEndInput) {
+      analyticsCustomEndInput.addEventListener("change", applyCustomRange);
     }
   } catch (error) {
     mainContent.innerHTML = `<section class="surface-card"><h2>Analytics error</h2><p>${escapeHtml(error.message)}</p></section>`;
@@ -1339,6 +1392,19 @@ function renderAnalyticsBars(items) {
     const ratio = Number(item.count || 0) / maxCount;
     const height = Math.max(28, Math.round(ratio * 132));
     return `<div class="bar-wrap"><span class="bar-value">${item.count}</span><i style="height:${height}px"></i><span class="bar-label">${escapeHtml(item.label)}</span></div>`;
+  }).join("");
+}
+
+function renderTopLinkBars(links) {
+  if (!links || !links.length) {
+    return '<div class="empty-state">No link data yet.</div>';
+  }
+
+  const maxCount = Math.max(...links.map((link) => Number(link.totalClicks || 0)), 1);
+  return links.slice(0, 5).map((link) => {
+    const ratio = Number(link.totalClicks || 0) / maxCount;
+    const height = Math.max(28, Math.round(ratio * 132));
+    return `<div class="bar-wrap"><span class="bar-value">${link.totalClicks}</span><i style="height:${height}px"></i><span class="bar-label">${escapeHtml(link.slug)}</span></div>`;
   }).join("");
 }
 function renderAnalyticsBadges(items) {

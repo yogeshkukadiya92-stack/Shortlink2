@@ -1644,11 +1644,12 @@ async function buildAnalyticsReport(userId, filters = parseAnalyticsFilters()) {
             ip: click.ipAddress || "Unknown",
             country: click.country || "Unknown",
             city: click.city || "Unknown",
-          cityLabel: click.city && click.country !== "Unknown" ? (click.city + ", " + click.country) : (click.city || click.country || "Unknown"),
-          platform: click.platform || "Unknown",
-          deviceType: click.device || "Web",
+            cityLabel: click.city && click.country !== "Unknown" ? (click.city + ", " + click.country) : (click.city || click.country || "Unknown"),
+            platform: click.platform || "Unknown",
+            deviceType: click.device || "Web",
             browser: click.browser || "Unknown",
             referrer: click.referrer || "",
+            referrerLabel: click.referrer || "Direct",
             slug: link.slug,
             shortUrl: link.shortUrl,
           })), filters);
@@ -1665,11 +1666,12 @@ async function buildAnalyticsReport(userId, filters = parseAnalyticsFilters()) {
             topCities: summarizeClicks(clicks, "cityLabel"),
             topDevices: summarizeClicks(clicks, "deviceType"),
             topPlatforms: summarizeClicks(clicks, "platform"),
-          topBrowsers: summarizeClicks(clicks, "browser"),
-          recentClicks: clicks.slice(0, 8),
-          createdAt: link.createdAt instanceof Date ? link.createdAt.toISOString() : link.createdAt,
-        };
-      });
+            topBrowsers: summarizeClicks(clicks, "browser"),
+            topReferrers: summarizeClicks(clicks, "referrerLabel"),
+            recentClicks: clicks.slice(0, 8),
+            createdAt: link.createdAt instanceof Date ? link.createdAt.toISOString() : link.createdAt,
+          };
+        });
 
       const allClicks = normalizedLinks.flatMap((link) => link.recentClicks.map((click) => ({
         ...click,
@@ -1680,50 +1682,59 @@ async function buildAnalyticsReport(userId, filters = parseAnalyticsFilters()) {
         return {
           appliedRange: filters.range,
           appliedRangeLabel: filters.label,
+          customStart: filters.customStart || "",
+          customEnd: filters.customEnd || "",
           totalLinks: normalizedLinks.length,
           totalClicks: normalizedLinks.reduce((sum, link) => sum + Number(link.totalClicks || 0), 0),
           uniqueClicks: countUniqueClicks(allClicks),
           topCountries: summarizeClicks(allClicks, "country"),
           topCities: summarizeClicks(allClicks, "cityLabel"),
           topDevices: summarizeClicks(allClicks, "deviceType"),
-        topPlatforms: summarizeClicks(allClicks, "platform"),
-        topBrowsers: summarizeClicks(allClicks, "browser"),
-        recentClicks: allClicks.slice().sort((left, right) => new Date(right.clickedAt).getTime() - new Date(left.clickedAt).getTime()).slice(0, 12),
-        links: normalizedLinks.sort((left, right) => right.totalClicks - left.totalClicks || new Date(right.createdAt || 0).getTime() - new Date(left.createdAt || 0).getTime()),
-      };
-    }
+          topPlatforms: summarizeClicks(allClicks, "platform"),
+          topBrowsers: summarizeClicks(allClicks, "browser"),
+          topReferrers: summarizeClicks(allClicks.map((click) => ({ ...click, referrerLabel: click.referrer || "Direct" })), "referrerLabel"),
+          recentClicks: allClicks.slice().sort((left, right) => new Date(right.clickedAt).getTime() - new Date(left.clickedAt).getTime()).slice(0, 12),
+          links: normalizedLinks.sort((left, right) => right.totalClicks - left.totalClicks || new Date(right.createdAt || 0).getTime() - new Date(left.createdAt || 0).getTime()),
+        };
+      }
     if (dbOnlyMode) {
         return {
           appliedRange: filters.range,
           appliedRangeLabel: filters.label,
+          customStart: filters.customStart || "",
+          customEnd: filters.customEnd || "",
           totalLinks: 0,
           totalClicks: 0,
           uniqueClicks: 0,
           topCountries: [],
           topCities: [],
           topDevices: [],
-        topPlatforms: [],
-        topBrowsers: [],
-        recentClicks: [],
-        links: [],
-      };
+          topPlatforms: [],
+          topBrowsers: [],
+          topReferrers: [],
+          recentClicks: [],
+          links: [],
+        };
     }
   } catch {
     if (dbOnlyMode) {
         return {
           appliedRange: filters.range,
           appliedRangeLabel: filters.label,
+          customStart: filters.customStart || "",
+          customEnd: filters.customEnd || "",
           totalLinks: 0,
           totalClicks: 0,
           uniqueClicks: 0,
           topCountries: [],
           topCities: [],
           topDevices: [],
-        topPlatforms: [],
-        topBrowsers: [],
-        recentClicks: [],
-        links: [],
-      };
+          topPlatforms: [],
+          topBrowsers: [],
+          topReferrers: [],
+          recentClicks: [],
+          links: [],
+        };
     }
   }
 
@@ -1731,6 +1742,7 @@ async function buildAnalyticsReport(userId, filters = parseAnalyticsFilters()) {
   const totalClicks = links.reduce((sum, link) => sum + Number(link.analytics?.totalClicks || 0), 0);
     const allClicks = links.flatMap((link) => filterClicksByAnalyticsRange((Array.isArray(link.analytics?.clicks) ? link.analytics.clicks : []).map((click) => ({
       ...click,
+      referrerLabel: click.referrer || "Direct",
       slug: link.slug,
       shortUrl: link.shortUrl,
     })), filters));
@@ -1738,16 +1750,19 @@ async function buildAnalyticsReport(userId, filters = parseAnalyticsFilters()) {
     return {
       appliedRange: filters.range,
       appliedRangeLabel: filters.label,
+      customStart: filters.customStart || "",
+      customEnd: filters.customEnd || "",
       totalLinks: links.length,
       totalClicks: allClicks.length,
       uniqueClicks: countUniqueClicks(allClicks),
       topCountries: summarizeClicks(allClicks, "country"),
       topCities: summarizeClicks(allClicks, "cityLabel"),
       topDevices: summarizeClicks(allClicks, "deviceType"),
-    topPlatforms: summarizeClicks(allClicks, "platform"),
-    topBrowsers: summarizeClicks(allClicks, "browser"),
-    recentClicks: allClicks.sort((left, right) => new Date(right.clickedAt).getTime() - new Date(left.clickedAt).getTime()).slice(0, 12),
-    links: links.map((link) => ({
+      topPlatforms: summarizeClicks(allClicks, "platform"),
+      topBrowsers: summarizeClicks(allClicks, "browser"),
+      topReferrers: summarizeClicks(allClicks, "referrerLabel"),
+      recentClicks: allClicks.sort((left, right) => new Date(right.clickedAt).getTime() - new Date(left.clickedAt).getTime()).slice(0, 12),
+      links: links.map((link) => ({
       id: link.id,
         slug: link.slug,
         shortUrl: link.shortUrl,
@@ -1760,6 +1775,7 @@ async function buildAnalyticsReport(userId, filters = parseAnalyticsFilters()) {
         topDevices: summarizeClicks(filterClicksByAnalyticsRange(link.analytics?.clicks || [], filters), "deviceType"),
         topPlatforms: summarizeClicks(filterClicksByAnalyticsRange(link.analytics?.clicks || [], filters), "platform"),
         topBrowsers: summarizeClicks(filterClicksByAnalyticsRange(link.analytics?.clicks || [], filters), "browser"),
+        topReferrers: summarizeClicks(filterClicksByAnalyticsRange((link.analytics?.clicks || []).map((click) => ({ ...click, referrerLabel: click.referrer || "Direct" })), filters), "referrerLabel"),
         recentClicks: filterClicksByAnalyticsRange(link.analytics?.clicks || [], filters).slice().sort((left, right) => new Date(right.clickedAt).getTime() - new Date(left.clickedAt).getTime()).slice(0, 8),
         createdAt: link.createdAt || "",
       })).sort((left, right) => right.totalClicks - left.totalClicks || new Date(right.createdAt || 0).getTime() - new Date(left.createdAt || 0).getTime()),
@@ -2202,7 +2218,10 @@ function parseAnalyticsFilters(searchParams) {
   const range = String(searchParams?.get("range") || "30d").trim().toLowerCase();
   const now = new Date();
   let startAt = null;
+  let endAt = null;
   let label = "Last 30 days";
+  let customStart = "";
+  let customEnd = "";
 
   if (range === "today") {
     startAt = new Date(now.getFullYear(), now.getMonth(), now.getDate());
@@ -2213,26 +2232,38 @@ function parseAnalyticsFilters(searchParams) {
   } else if (range === "all") {
     startAt = null;
     label = "All time";
+  } else if (range === "custom") {
+    customStart = String(searchParams?.get("start") || "").trim();
+    customEnd = String(searchParams?.get("end") || "").trim();
+    startAt = customStart ? new Date(`${customStart}T00:00:00`) : null;
+    endAt = customEnd ? new Date(`${customEnd}T23:59:59.999`) : null;
+    label = customStart && customEnd ? `${customStart} to ${customEnd}` : "Custom range";
   } else {
     startAt = new Date(now.getTime() - (30 * 24 * 60 * 60 * 1000));
   }
 
   return {
-    range: ["today", "7d", "30d", "all"].includes(range) ? range : "30d",
+    range: ["today", "7d", "30d", "all", "custom"].includes(range) ? range : "30d",
     startAt,
+    endAt,
     label,
+    customStart,
+    customEnd,
   };
 }
 
 function filterClicksByAnalyticsRange(clicks, filters) {
-  if (!filters?.startAt) {
+  if (!filters?.startAt && !filters?.endAt) {
     return Array.isArray(clicks) ? clicks : [];
   }
 
-  const startTime = filters.startAt.getTime();
+  const startTime = filters?.startAt ? filters.startAt.getTime() : null;
+  const endTime = filters?.endAt ? filters.endAt.getTime() : null;
   return (clicks || []).filter((click) => {
     const clickedAt = new Date(click.clickedAt || click.createdAt || 0).getTime();
-    return Number.isFinite(clickedAt) && clickedAt >= startTime;
+    return Number.isFinite(clickedAt)
+      && (startTime === null || clickedAt >= startTime)
+      && (endTime === null || clickedAt <= endTime);
   });
 }
 
