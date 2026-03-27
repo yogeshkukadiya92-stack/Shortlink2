@@ -2067,3 +2067,26 @@ svg {
   min-height: 160px;
   align-content: center;
 }
+
+.domain-status.pending {
+  background: #fff3d6;
+  color: #9a6100;
+}
+
+.domain-status.verified {
+  background: #e7f8ee;
+  color: #1f7a42;
+}
+
+.domain-status.active,
+.domain-status.app_default {
+  background: #e7efff;
+  color: #2750c4;
+}
+
+.simple-steps {
+  margin: 12px 0 0;
+  padding-left: 18px;
+  color: #486389;
+  line-height: 1.8;
+}

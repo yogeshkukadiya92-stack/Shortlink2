@@ -272,11 +272,29 @@ function normalizeSettings(settings) {
 
   const requestedDefault = settings.defaultDomain || getDefaultShortDomain();
   const defaultDomain = domains.includes(requestedDefault) ? requestedDefault : getDefaultShortDomain();
+  const rawEntries = Array.isArray(settings.domainEntries) ? settings.domainEntries : [];
+  const entryMap = new Map(rawEntries.map((entry) => [entry.host, entry]));
+  const domainEntries = domains.map((host) => {
+    const existing = entryMap.get(host) || {};
+    if (host === publicShortDomain) {
+      return { host, status: "APP_DEFAULT", isActive: host === defaultDomain, dnsTarget: publicShortDomain, verifiedAt: null };
+    }
+    const isActive = host === defaultDomain;
+    const status = isActive ? "ACTIVE" : (existing.status || "PENDING");
+    return {
+      host,
+      status,
+      isActive,
+      dnsTarget: existing.dnsTarget || publicShortDomain,
+      verifiedAt: existing.verifiedAt || null,
+    };
+  });
 
   return {
     workspaceName: settings.workspaceName || "AnyLink Workspace",
     defaultDomain,
     domains,
+    domainEntries,
   };
 }
 
@@ -1218,22 +1236,35 @@ function renderCampaignsPage() {
 }
 
 function renderDomainsPage() {
-  const managedDomainsMarkup = settingsCache.domains.map((domain) => {
+  const domainEntries = settingsCache.domainEntries || settingsCache.domains.map((domain) => ({
+    host: domain,
+    status: domain === publicShortDomain ? "APP_DEFAULT" : (domain === settingsCache.defaultDomain ? "ACTIVE" : "PENDING"),
+    isActive: domain === settingsCache.defaultDomain,
+    dnsTarget: publicShortDomain,
+  }));
+
+  const managedDomainsMarkup = domainEntries.map((entry) => {
+    const domain = entry.host;
     const isDefaultAppDomain = domain === publicShortDomain;
-    const isActive = domain === settingsCache.defaultDomain;
+    const isActive = Boolean(entry.isActive) || domain === settingsCache.defaultDomain;
+    const normalizedStatus = String(entry.status || "PENDING").toUpperCase();
     const hostHint = domain.split(".")[0] || domain;
+    const statusLabel = isDefaultAppDomain
+      ? "App Default"
+      : (isActive ? "Active" : normalizedStatus.charAt(0) + normalizedStatus.slice(1).toLowerCase());
+
     return `
       <div class="managed-domain ${isActive ? "active" : ""}">
         <div class="managed-domain-copy">
           <strong>${escapeHtml(domain)}</strong>
           <span>${escapeHtml(buildDomainPreview(domain))}</span>
-          ${!isDefaultAppDomain ? `<div class="dns-helper-grid"><span><strong>Type</strong>CNAME</span><span><strong>Host</strong>${escapeHtml(hostHint)}</span><span><strong>Value</strong>${escapeHtml(publicShortDomain)}</span></div>` : ""}
+          ${!isDefaultAppDomain ? `<div class="dns-helper-grid"><span><strong>Type</strong>CNAME</span><span><strong>Host</strong>${escapeHtml(hostHint)}</span><span><strong>Value</strong>${escapeHtml(entry.dnsTarget || publicShortDomain)}</span></div>` : ""}
         </div>
         <div class="managed-domain-actions">
-          ${isDefaultAppDomain ? '<span class="domain-status">App Default</span>' : ""}
-          ${isActive ? '<span class="domain-status">Active</span>' : `<button class="link-button" data-activate-domain="${escapeHtml(domain)}">Set active</button>`}
+          <span class="domain-status ${normalizedStatus.toLowerCase()}">${escapeHtml(statusLabel)}</span>
+          ${!isDefaultAppDomain && !isActive ? `<button class="link-button" data-activate-domain="${escapeHtml(domain)}">Set active</button>` : ""}
           ${!isDefaultAppDomain ? `<button class="link-button secondary" data-copy-dns="${escapeHtml(domain)}">Copy DNS</button>` : ""}
-          ${!isDefaultAppDomain ? `<button class="link-button secondary" data-verify-domain="${escapeHtml(domain)}">Verify</button>` : ""}
+          ${!isDefaultAppDomain && normalizedStatus !== "VERIFIED" && normalizedStatus !== "ACTIVE" ? `<button class="link-button secondary" data-verify-domain="${escapeHtml(domain)}">Mark verified</button>` : ""}
           ${!isDefaultAppDomain ? `<button class="link-button danger" data-remove-domain="${escapeHtml(domain)}">Remove</button>` : ""}
         </div>
       </div>
@@ -1261,24 +1292,24 @@ function renderDomainsPage() {
         </div>
         <div class="form-card">
           <h3>DNS setup</h3>
-          <p class="helper-copy">Create a <strong>CNAME</strong> record for your custom subdomain and point it to <strong>${escapeHtml(publicShortDomain)}</strong>.</p>
+          <p class="helper-copy">Create a <strong>CNAME</strong> record for your branded subdomain and point it to <strong>${escapeHtml(publicShortDomain)}</strong>.</p>
           <div class="dns-helper-grid">
             <span><strong>Type</strong>CNAME</span>
             <span><strong>Host</strong>go</span>
             <span><strong>Value</strong>${escapeHtml(publicShortDomain)}</span>
           </div>
           <p class="helper-copy">Example: <code>go.clientdomain.com -> ${escapeHtml(publicShortDomain)}</code></p>
-          <p class="helper-copy">After DNS is connected, click <strong>Verify</strong>, test the domain in your browser, and then set it active here.</p>
+          <p class="helper-copy">After DNS is live, click <strong>Mark verified</strong> and then set that domain active for fresh links.</p>
         </div>
       </div>
     </section>
   `;
 
   document.getElementById("addDomainButton").addEventListener("click", async () => {
-      const domain = sanitizeDomain(document.getElementById("domainName").value.trim());
+    const domain = sanitizeDomain(document.getElementById("domainName").value.trim());
     if (!domain) return showGlobalMessage("Enter a valid domain or host.", true);
     if (settingsCache.domains.includes(domain)) return showGlobalMessage("That domain is already added.", true);
-    await persistDomains([...settingsCache.domains, domain], settingsCache.defaultDomain, `Domain added: ${domain}`);
+    await persistDomains([...settingsCache.domains, domain], settingsCache.defaultDomain, `Domain added: ${domain}. Next step: add the DNS CNAME and mark it verified.`);
   });
 
   document.querySelectorAll("[data-activate-domain]").forEach((button) => button.addEventListener("click", async () => {
@@ -1286,12 +1317,12 @@ function renderDomainsPage() {
     await persistDomains(settingsCache.domains, domain, `Active domain changed to ${domain}`);
   }));
 
-    document.querySelectorAll("[data-remove-domain]").forEach((button) => button.addEventListener("click", async () => {
-      const domain = button.getAttribute("data-remove-domain");
-      const domains = settingsCache.domains.filter((item) => item !== domain);
-      const nextDefault = settingsCache.defaultDomain === domain ? domains[0] : settingsCache.defaultDomain;
-      await persistDomains(domains, nextDefault, `Removed domain: ${domain}`);
-    }));
+  document.querySelectorAll("[data-remove-domain]").forEach((button) => button.addEventListener("click", async () => {
+    const domain = button.getAttribute("data-remove-domain");
+    const domains = settingsCache.domains.filter((item) => item !== domain);
+    const nextDefault = settingsCache.defaultDomain === domain ? domains[0] : settingsCache.defaultDomain;
+    await persistDomains(domains, nextDefault, `Removed domain: ${domain}`);
+  }));
 
   document.querySelectorAll("[data-copy-dns]").forEach((button) => button.addEventListener("click", async () => {
     const domain = button.getAttribute("data-copy-dns");
@@ -1308,7 +1339,6 @@ function renderDomainsPage() {
     await verifyDomain(domain);
   }));
 }
-
 async function persistDomains(domains, defaultDomain, successMessage) {
   try {
     await saveSettings({ workspaceName: settingsCache.workspaceName, domains, defaultDomain });
@@ -1649,6 +1679,8 @@ function showGlobalMessage(message, isError) {
   window.clearTimeout(showGlobalMessage.timeoutId);
   showGlobalMessage.timeoutId = window.setTimeout(() => banner.classList.remove("visible"), 2200);
 }
+
+
 
 
 

@@ -1802,11 +1802,13 @@ async function handleSaveSettings(body, req, res, user) {
     domains.unshift(defaultDomain);
   }
 
+  const currentDomainEntries = currentSettings.domainEntries || [];
   const nextSettings = normalizeSettings({
     userId: user.id,
     workspaceName,
     defaultDomain,
     domains,
+    domainEntries: currentDomainEntries,
   }, req);
 
   if (!dbOnlyMode) {
@@ -1823,12 +1825,12 @@ async function handleSaveSettings(body, req, res, user) {
     const customHosts = nextSettings.domains.filter((domain) => domain !== publicAppDomain);
     await removeDomainsNotIn(user.id, customHosts);
 
-    for (const host of customHosts) {
-      await upsertDomain(user.id, host, {
-        status: host === nextSettings.defaultDomain ? "ACTIVE" : "VERIFIED",
-        isActive: host === nextSettings.defaultDomain,
-        dnsTarget: publicAppDomain,
-        verifiedAt: new Date(),
+    for (const entry of nextSettings.domainEntries.filter((item) => item.host !== publicAppDomain)) {
+      await upsertDomain(user.id, entry.host, {
+        status: entry.status,
+        isActive: entry.isActive,
+        dnsTarget: entry.dnsTarget || publicAppDomain,
+        verifiedAt: entry.verifiedAt ? new Date(entry.verifiedAt) : null,
       });
     }
   } catch {
@@ -1852,13 +1854,53 @@ async function handleVerifyDomain(domain, req, res, user) {
     return sendJson(res, 404, { error: "Domain not found in your workspace." });
   }
 
+  const nextEntries = settings.domainEntries.map((entry) => {
+    if (entry.host !== sanitizedDomain) {
+      return entry;
+    }
+    return {
+      ...entry,
+      status: sanitizedDomain === settings.defaultDomain ? "ACTIVE" : "VERIFIED",
+      verifiedAt: new Date().toISOString(),
+      dnsTarget: publicAppDomain,
+    };
+  });
+
+  const nextSettings = normalizeSettings({
+    ...settings,
+    domainEntries: nextEntries,
+  }, req);
+
+  if (!dbOnlyMode) {
+    const store = readSettingsStore().filter((item) => item.userId !== user.id);
+    store.push(nextSettings);
+    writeSettingsStore(store);
+  }
+
+  try {
+    if (sanitizedDomain !== publicAppDomain) {
+      await upsertDomain(user.id, sanitizedDomain, {
+        status: sanitizedDomain === settings.defaultDomain ? "ACTIVE" : "VERIFIED",
+        isActive: sanitizedDomain === settings.defaultDomain,
+        dnsTarget: publicAppDomain,
+        verifiedAt: new Date(),
+      });
+    }
+  } catch {
+    if (dbOnlyMode) {
+      return sendJson(res, 500, { error: "Unable to update domain verification right now." });
+    }
+  }
+
   return sendJson(res, 200, {
     domain: sanitizedDomain,
-    verified: false,
-    message: `Automatic DNS verification is not enabled in this version yet. Add a CNAME for ${sanitizedDomain} that points to ${publicAppDomain}, wait for DNS propagation, then open the domain in your browser to confirm it resolves to your app.`,
+    verified: true,
+    status: sanitizedDomain === settings.defaultDomain ? "ACTIVE" : "VERIFIED",
+    message: `Domain marked as verified. Keep the CNAME for ${sanitizedDomain} pointed to ${publicAppDomain} so new links can use it.`,
     dnsTarget: publicAppDomain,
     recordType: "CNAME",
     hostHint: sanitizedDomain.split(".")[0] || sanitizedDomain,
+    settings: nextSettings,
   });
 }
 
@@ -2146,7 +2188,32 @@ function defaultSettings(req) {
     workspaceName: "AnyLink Workspace",
     defaultDomain: fallbackDomain,
     domains: [fallbackDomain],
+    domainEntries: [{ host: fallbackDomain, status: "APP_DEFAULT", isActive: true, dnsTarget: publicAppDomain, verifiedAt: null }],
   };
+}
+
+function buildDomainEntries(domains, defaultDomain, req, sourceEntries = []) {
+  const fallback = getDefaultShortDomain(req);
+  const sourceMap = new Map((sourceEntries || []).map((entry) => [entry.host, entry]));
+
+  return domains.map((host) => {
+    if (host === fallback) {
+      return { host, status: "APP_DEFAULT", isActive: host === defaultDomain, dnsTarget: publicAppDomain, verifiedAt: null };
+    }
+
+    const existing = sourceMap.get(host) || {};
+    const isActive = host === defaultDomain;
+    const baseStatus = String(existing.status || "PENDING").toUpperCase();
+    const status = isActive ? "ACTIVE" : (baseStatus === "ACTIVE" ? "VERIFIED" : baseStatus);
+
+    return {
+      host,
+      status,
+      isActive,
+      dnsTarget: existing.dnsTarget || publicAppDomain,
+      verifiedAt: existing.verifiedAt || null,
+    };
+  });
 }
 
 function normalizeSettings(settings, req) {
@@ -2160,11 +2227,14 @@ function normalizeSettings(settings, req) {
     domains.unshift(defaultDomain);
   }
 
+  const domainEntries = buildDomainEntries(domains, defaultDomain, req, settings?.domainEntries || []);
+
   return {
     userId: settings?.userId || "",
     workspaceName,
     defaultDomain,
     domains,
+    domainEntries,
   };
 }
 
