@@ -143,7 +143,7 @@ async function initialize() {
 
 function getCurrentPage() {
   const cleaned = window.location.pathname.replace(/^\/+|\/+$/g, "");
-  return cleaned || "home";
+  return cleaned || "auth";
 }
 
 async function loadCurrentUser() {
@@ -535,8 +535,6 @@ function renderAuthPage() {
           <label class="field-label" for="signinPassword">Password</label>
           <div class="password-field"><input class="url-input" id="signinPassword" type="password" placeholder="Enter password" required><button class="password-toggle" type="button" data-password-toggle="signinPassword">Show</button></div>
           <button class="primary-action auth-submit" type="submit">Sign in</button>
-          <button class="auth-inline-link" type="button" id="forgotToggle">Forgot password?</button>
-          <button class="auth-google-button" type="button" id="googleLoginButton">Continue with Google</button>
         </form>
         <form class="auth-form ${authMode === "signup" ? "" : "hidden"}" id="signupForm">
           <label class="field-label" for="signupName">Full name</label>
@@ -546,7 +544,6 @@ function renderAuthPage() {
           <label class="field-label" for="signupPassword">Password</label>
           <div class="password-field"><input class="url-input" id="signupPassword" type="password" placeholder="Minimum 6 characters" required><button class="password-toggle" type="button" data-password-toggle="signupPassword">Show</button></div>
           <button class="primary-action auth-submit" type="submit">Create account</button>
-          <button class="auth-google-button" type="button" id="googleSignupButton">Continue with Google</button>
         </form>
         <form class="auth-form ${authMode === "reset" ? "" : "hidden"}" id="resetForm">
           <label class="field-label" for="resetPassword">New password</label>
@@ -569,10 +566,6 @@ function renderAuthPage() {
   const resetForm = document.getElementById("resetForm");
   const forgotForm = document.getElementById("forgotForm");
   const authBanner = document.getElementById("authBanner");
-  const forgotToggle = document.getElementById("forgotToggle");
-  const backToSignin = document.getElementById("backToSignin");
-  const googleLoginButton = document.getElementById("googleLoginButton");
-  const googleSignupButton = document.getElementById("googleSignupButton");
 
   document.querySelectorAll("[data-auth-tab]").forEach((tab) => {
     tab.addEventListener("click", () => {
@@ -583,32 +576,6 @@ function renderAuthPage() {
       resetForm.classList.add("hidden");
       forgotForm.classList.add("hidden");
       authBanner.classList.add("hidden");
-    });
-  });
-
-  if (forgotToggle) {
-    forgotToggle.addEventListener("click", () => {
-      signinForm.classList.add("hidden");
-      signupForm.classList.add("hidden");
-      resetForm.classList.add("hidden");
-      forgotForm.classList.remove("hidden");
-      authBanner.classList.add("hidden");
-    });
-  }
-
-  if (backToSignin) {
-    backToSignin.addEventListener("click", () => {
-      signinForm.classList.remove("hidden");
-      forgotForm.classList.add("hidden");
-      authBanner.classList.add("hidden");
-    });
-  }
-
-  [googleLoginButton, googleSignupButton].filter(Boolean).forEach((button) => {
-    button.addEventListener("click", async () => {
-      const response = await fetch("/api/auth/google");
-      const payload = await response.json();
-      setInlineBanner(authBanner, payload.error || "Google login is not configured yet.", true);
     });
   });
 
