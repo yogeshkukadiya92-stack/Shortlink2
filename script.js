@@ -1179,6 +1179,7 @@ async function renderAnalyticsPage() {
     const bestLink = analytics.links?.[0] || null;
     analyticsCustomStart = analytics.customStart || analyticsCustomStart;
     analyticsCustomEnd = analytics.customEnd || analyticsCustomEnd;
+    const repeatClicks = Math.max(0, analytics.repeatClicks || (analytics.totalClicks - (analytics.uniqueClicks || 0)));
     const bestLinkMarkup = bestLink
       ? `<strong>${escapeHtml(bestLink.slug)}</strong><p>${bestLink.totalClicks} clicks on <a href="${escapeHtml(bestLink.shortUrl)}" target="_blank" rel="noreferrer">${escapeHtml(bestLink.shortUrl)}</a></p>`
       : `<strong>No traffic yet</strong><p>Create and share a short link to start collecting performance data.</p>`;
@@ -1227,6 +1228,11 @@ async function renderAnalyticsPage() {
             <p>Estimated distinct visitors for the selected analytics range.</p>
           </article>
           <article class="analytics-kpi-card">
+            <span>Repeat visits</span>
+            <strong>${repeatClicks}</strong>
+            <p>Returning traffic measured after unique visitors are removed from total clicks.</p>
+          </article>
+          <article class="analytics-kpi-card">
             <span>Countries reached</span>
             <strong>${countriesReached}</strong>
             <p>${escapeHtml(topCountry)} is currently your strongest traffic market.</p>
@@ -1254,6 +1260,23 @@ async function renderAnalyticsPage() {
             ${bestLinkMarkup}
           </article>
         </div>
+      </section>
+
+      <section class="analytics-dual-grid analytics-comparison-grid">
+        <article class="surface-card analytics-panel-card">
+          <div class="surface-header compact"><div><h2>Visitor split</h2><p>See how much of your traffic is new versus repeat activity.</p></div></div>
+          ${renderVisitorSplit(analytics.uniqueClicks || 0, repeatClicks)}
+        </article>
+
+        <article class="surface-card analytics-panel-card">
+          <div class="surface-header compact"><div><h2>Country comparison</h2><p>Top countries ranked against your total click volume.</p></div></div>
+          <div class="analytics-list comparison-list">${renderComparisonRows(analytics.topCountries, analytics.totalClicks)}</div>
+        </article>
+
+        <article class="surface-card analytics-panel-card">
+          <div class="surface-header compact"><div><h2>Device comparison</h2><p>Compare traffic share across mobile, desktop, and other device groups.</p></div></div>
+          <div class="analytics-list comparison-list">${renderComparisonRows(analytics.topDevices, analytics.totalClicks)}</div>
+        </article>
       </section>
 
       <section class="analytics-dual-grid">
@@ -1315,7 +1338,7 @@ async function renderAnalyticsPage() {
                   <h3>${escapeHtml(link.slug)}</h3>
                   <p><a href="${escapeHtml(link.shortUrl)}" target="_blank" rel="noreferrer">${escapeHtml(link.shortUrl)}</a></p>
                 </div>
-                <span class="chip-link">${link.totalClicks} clicks · ${link.uniqueClicks || 0} unique</span>
+                <span class="chip-link">${link.totalClicks} clicks · ${link.uniqueClicks || 0} unique · ${link.repeatClicks || 0} repeat</span>
               </div>
               <div class="analytics-summary-strip">
                 <span class="analytics-tag strong">${escapeHtml(link.topCountries?.[0]?.label || "No country data")}</span>
@@ -1405,6 +1428,51 @@ function renderTopLinkBars(links) {
     const ratio = Number(link.totalClicks || 0) / maxCount;
     const height = Math.max(28, Math.round(ratio * 132));
     return `<div class="bar-wrap"><span class="bar-value">${link.totalClicks}</span><i style="height:${height}px"></i><span class="bar-label">${escapeHtml(link.slug)}</span></div>`;
+  }).join("");
+}
+
+function renderVisitorSplit(uniqueClicks, repeatClicks) {
+  const total = Math.max(1, Number(uniqueClicks || 0) + Number(repeatClicks || 0));
+  const uniqueWidth = Math.max(10, Math.round((Number(uniqueClicks || 0) / total) * 100));
+  const repeatWidth = Math.max(10, 100 - uniqueWidth);
+
+  return `
+    <div class="visitor-split-card">
+      <div class="visitor-split-bar">
+        <span class="visitor-split-segment unique" style="width:${uniqueWidth}%"></span>
+        <span class="visitor-split-segment repeat" style="width:${repeatWidth}%"></span>
+      </div>
+      <div class="visitor-split-legend">
+        <div class="visitor-split-item">
+          <span class="split-dot unique"></span>
+          <div><strong>${uniqueClicks}</strong><span>Unique visitors</span></div>
+        </div>
+        <div class="visitor-split-item">
+          <span class="split-dot repeat"></span>
+          <div><strong>${repeatClicks}</strong><span>Repeat visits</span></div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderComparisonRows(items, total) {
+  if (!items || !items.length) {
+    return '<div class="empty-state">No comparison data yet.</div>';
+  }
+
+  const safeTotal = Math.max(1, Number(total || 0));
+  return items.slice(0, 5).map((item) => {
+    const percent = Math.max(4, Math.round((Number(item.count || 0) / safeTotal) * 100));
+    return `
+      <div class="comparison-row">
+        <div class="comparison-head">
+          <strong>${escapeHtml(item.label)}</strong>
+          <span>${item.count} clicks</span>
+        </div>
+        <div class="comparison-track"><i style="width:${percent}%"></i></div>
+      </div>
+    `;
   }).join("");
 }
 function renderAnalyticsBadges(items) {

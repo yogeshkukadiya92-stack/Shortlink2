@@ -1557,6 +1557,10 @@ svg {
   gap: 16px;
 }
 
+.analytics-comparison-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
 .analytics-panel-card {
   padding: 22px;
 }
@@ -2074,6 +2078,96 @@ svg {
 .analytics-recent-table .admin-row,
 .analytics-click-table .admin-row {
   gap: 12px;
+}
+
+.visitor-split-card {
+  display: grid;
+  gap: 16px;
+}
+
+.visitor-split-bar {
+  display: flex;
+  overflow: hidden;
+  min-height: 18px;
+  border-radius: 999px;
+  background: #edf2fb;
+}
+
+.visitor-split-segment {
+  display: block;
+  min-width: 12px;
+}
+
+.visitor-split-segment.unique,
+.split-dot.unique {
+  background: linear-gradient(135deg, #2d5ae8, #1e78ff);
+}
+
+.visitor-split-segment.repeat,
+.split-dot.repeat {
+  background: linear-gradient(135deg, #0b7f8b, #22c0a4);
+}
+
+.visitor-split-legend {
+  display: grid;
+  gap: 12px;
+}
+
+.visitor-split-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.split-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 999px;
+  flex: 0 0 12px;
+}
+
+.visitor-split-item strong {
+  display: block;
+  font-size: 1rem;
+}
+
+.visitor-split-item span {
+  color: var(--muted);
+  font-size: 0.86rem;
+}
+
+.comparison-list {
+  gap: 12px;
+}
+
+.comparison-row {
+  display: grid;
+  gap: 8px;
+}
+
+.comparison-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 0.88rem;
+}
+
+.comparison-head span {
+  color: var(--muted);
+}
+
+.comparison-track {
+  height: 10px;
+  border-radius: 999px;
+  background: #edf2fb;
+  overflow: hidden;
+}
+
+.comparison-track i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(135deg, #2d5ae8, #0b7f8b);
 }
 
 @media (max-width: 1320px) {
