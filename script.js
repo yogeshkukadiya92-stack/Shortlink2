@@ -322,15 +322,50 @@ function getLinkGoal(slug) {
   return Number(settingsCache.conversionGoals?.[slug] || 0);
 }
 
-function buildGoalMarkup(link) {
+function getGoalStatus(link) {
   const goal = getLinkGoal(link.slug);
+  const clicks = Number(link.totalClicks ?? link.clickCount ?? 0);
+  const achieved = goal > 0 && clicks >= goal;
+  const progress = goal ? Math.min(100, Math.round((clicks / goal) * 100)) : 0;
+  return { goal, clicks, achieved, progress };
+}
+
+function buildGoalMarkup(link) {
+  const { goal, clicks, achieved, progress } = getGoalStatus(link);
   if (!goal) {
     return '<span class="analytics-tag">No goal set</span>';
   }
 
-  const clicks = Number(link.totalClicks ?? link.clickCount ?? 0);
-  const progress = Math.min(100, Math.round((clicks / goal) * 100));
-  return `<span class="analytics-tag strong">Goal ${goal} · ${progress}% reached</span>`;
+  return `<span class="analytics-tag strong ${achieved ? "success" : ""}">${achieved ? `Goal achieved · ${clicks}/${goal}` : `Goal ${goal} · ${progress}% reached`}</span>`;
+}
+
+function emitGoalAlerts() {
+  const reached = linksCache
+    .map((link) => ({ link, status: getGoalStatus(link) }))
+    .filter((entry) => entry.status.achieved);
+
+  if (!reached.length) {
+    return;
+  }
+
+  try {
+    const key = "goal-achievements-shown";
+    const shown = JSON.parse(sessionStorage.getItem(key) || "[]");
+    const shownSet = new Set(Array.isArray(shown) ? shown : []);
+    const fresh = reached.filter((entry) => !shownSet.has(entry.link.slug));
+
+    if (!fresh.length) {
+      return;
+    }
+
+    fresh.forEach((entry) => shownSet.add(entry.link.slug));
+    sessionStorage.setItem(key, JSON.stringify([...shownSet]));
+
+    const labels = fresh.map((entry) => entry.link.slug).slice(0, 3).join(", ");
+    showGlobalMessage(`Goal achieved for ${labels}${fresh.length > 3 ? " and more" : ""}.`, false);
+  } catch {
+    // Ignore storage issues.
+  }
 }
 
 async function loadLinks() {
@@ -342,6 +377,7 @@ async function loadLinks() {
   }
 
   linksCache = payload.links || [];
+  emitGoalAlerts();
 }
 
 async function loadAnalytics() {
@@ -907,9 +943,7 @@ function renderLinksPage(links, query = "") {
       </div>
       <div class="goal-grid">
         ${filtered.length ? filtered.map((link) => {
-          const goal = getLinkGoal(link.slug);
-          const clicks = Number(link.clickCount || 0);
-          const progress = goal ? Math.min(100, Math.round((clicks / goal) * 100)) : 0;
+          const { goal, clicks, progress, achieved } = getGoalStatus(link);
           return `
             <article class="goal-card">
               <div class="goal-card-head">
@@ -917,11 +951,11 @@ function renderLinksPage(links, query = "") {
                   <strong>${escapeHtml(link.slug)}</strong>
                   <p>${escapeHtml(getLinkUrl(link))}</p>
                 </div>
-                <span class="chip-link">${clicks} clicks</span>
+                <span class="chip-link ${achieved ? "success" : ""}">${achieved ? "Goal hit" : `${clicks} clicks`}</span>
               </div>
               <div class="goal-progress">
                 <div class="goal-progress-bar"><span style="width:${progress}%"></span></div>
-                <span>${goal ? `${progress}% of ${goal}` : "No goal set"}</span>
+                <span>${goal ? (achieved ? `${clicks} of ${goal} reached` : `${progress}% of ${goal}`) : "No goal set"}</span>
               </div>
               <div class="goal-action-row">
                 <input class="url-input goal-input" type="number" min="1" step="1" value="${goal || ""}" placeholder="Target clicks" data-goal-input="${escapeHtml(link.slug)}">

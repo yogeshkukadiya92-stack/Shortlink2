@@ -2477,3 +2477,10 @@ svg {
   width: 120px;
   min-width: 0;
 }
+
+.chip-link.success,
+.analytics-tag.success {
+  background: linear-gradient(135deg, #e7f8ee 0%, #d8f4e3 100%);
+  color: #157348;
+  border-color: rgba(21, 115, 72, 0.18);
+}
