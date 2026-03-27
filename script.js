@@ -332,18 +332,20 @@ function normalizeLinkRules(rules) {
     const expiresAt = String(value.expiresAt || "").trim();
     const isPaused = Boolean(value.isPaused);
     const isProtected = Boolean(value.passwordHash || value.isProtected);
-    if (!expiresAt && !isPaused && !isProtected) {
+    const isOneTime = Boolean(value.isOneTime);
+    const oneTimeUsedAt = String(value.oneTimeUsedAt || "").trim();
+    if (!expiresAt && !isPaused && !isProtected && !isOneTime) {
       return;
     }
 
-    normalized[cleanSlug] = { expiresAt, isPaused, isProtected };
+    normalized[cleanSlug] = { expiresAt, isPaused, isProtected, isOneTime, oneTimeUsedAt };
   });
 
   return normalized;
 }
 
 function getLinkRule(slug) {
-  return settingsCache.linkRules?.[slug] || { expiresAt: "", isPaused: false, isProtected: false };
+  return settingsCache.linkRules?.[slug] || { expiresAt: "", isPaused: false, isProtected: false, isOneTime: false, oneTimeUsedAt: "" };
 }
 
 function getLinkGoal(slug) {
@@ -994,8 +996,10 @@ function renderLinksPage(links, query = "") {
               <div class="goal-action-row">
                 <input class="url-input goal-input" type="date" value="${escapeHtml(rule.expiresAt || "")}" data-expiry-input="${escapeHtml(link.slug)}">
                 <label class="field-toggle compact-toggle"><input type="checkbox" data-pause-input="${escapeHtml(link.slug)}" ${rule.isPaused ? "checked" : ""}><span>Pause link</span></label>
+                <label class="field-toggle compact-toggle"><input type="checkbox" data-onetime-input="${escapeHtml(link.slug)}" ${rule.isOneTime ? "checked" : ""}><span>One-time</span></label>
                 <button class="link-button secondary" type="button" data-save-rule="${escapeHtml(link.slug)}">Save rule</button>
               </div>
+              ${rule.isOneTime && rule.oneTimeUsedAt ? `<div class="helper-copy">Used on ${escapeHtml(new Date(rule.oneTimeUsedAt).toLocaleString())}</div>` : ""}
               <div class="goal-action-row">
                 <input class="url-input password-rule-input" type="text" placeholder="${rule.isProtected ? "Change password" : "Protect with password"}" data-password-input="${escapeHtml(link.slug)}">
                 <button class="link-button secondary" type="button" data-save-password="${escapeHtml(link.slug)}">${rule.isProtected ? "Update password" : "Set password"}</button>
@@ -1777,18 +1781,26 @@ function bindGoalActions() {
     const slug = button.getAttribute("data-save-rule");
     const expiryInput = document.querySelector(`[data-expiry-input="${slug}"]`);
     const pauseInput = document.querySelector(`[data-pause-input="${slug}"]`);
+    const oneTimeInput = document.querySelector(`[data-onetime-input="${slug}"]`);
     const expiresAt = String(expiryInput?.value || "").trim();
     const isPaused = Boolean(pauseInput?.checked);
+    const isOneTime = Boolean(oneTimeInput?.checked);
 
     try {
       const nextRules = {
         ...(settingsCache.linkRules || {}),
       };
 
-      if (!expiresAt && !isPaused) {
+      if (!expiresAt && !isPaused && !isOneTime) {
         delete nextRules[slug];
       } else {
-        nextRules[slug] = { expiresAt, isPaused };
+        nextRules[slug] = {
+          ...(settingsCache.linkRules?.[slug] || {}),
+          expiresAt,
+          isPaused,
+          isOneTime,
+          oneTimeUsedAt: isOneTime ? (settingsCache.linkRules?.[slug]?.oneTimeUsedAt || "") : "",
+        };
       }
 
       await saveSettings({

@@ -2227,6 +2227,31 @@ function getProtectedLinkCookieName(slug) {
   return `${protectedLinkCookiePrefix}${slug}`;
 }
 
+function markOneTimeLinkUsed(userId, slug, req) {
+  if (dbOnlyMode) {
+    return;
+  }
+
+  const store = readSettingsStore();
+  const existing = store.find((item) => item.userId === userId) || normalizeSettings({ userId }, req);
+  const previousRule = existing.linkRules?.[slug] || {};
+  const normalized = normalizeSettings({
+    ...existing,
+    linkRules: {
+      ...(existing.linkRules || {}),
+      [slug]: {
+        ...previousRule,
+        isOneTime: true,
+        oneTimeUsedAt: new Date().toISOString(),
+      },
+    },
+  }, req);
+
+  const nextStore = store.filter((item) => item.userId !== userId);
+  nextStore.push(normalized);
+  writeSettingsStore(nextStore);
+}
+
 function hasProtectedLinkAccess(req, rule, slug) {
   if (!rule?.passwordHash || !rule?.accessToken) {
     return true;
@@ -2336,6 +2361,9 @@ async function handleRedirect(slug, req, res) {
       if (rule?.expiresAt && Date.now() > new Date(rule.expiresAt).getTime()) {
         return sendJson(res, 410, { error: "This short link has expired." });
       }
+      if (rule?.isOneTime && rule?.oneTimeUsedAt) {
+        return sendJson(res, 410, { error: "This one-time link has already been used." });
+      }
       if (rule?.passwordHash && !hasProtectedLinkAccess(req, rule, dbMatch.slug)) {
         res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
         res.end(renderProtectedLinkPage(dbMatch, new URL(req.url, `http://${req.headers.host || publicAppDomain}`).searchParams.get("error") || ""));
@@ -2346,6 +2374,9 @@ async function handleRedirect(slug, req, res) {
         await maybeSendGoalAchievementEmail(dbMatch, Number(dbMatch.clickCount || 0) + 1, req);
       } catch {
         // Redirect should still work even if analytics write fails.
+      }
+      if (rule?.isOneTime) {
+        markOneTimeLinkUsed(dbMatch.userId, dbMatch.slug, req);
       }
       res.writeHead(302, { Location: dbMatch.destination });
       res.end();
@@ -2374,6 +2405,9 @@ async function handleRedirect(slug, req, res) {
     if (rule?.expiresAt && Date.now() > new Date(rule.expiresAt).getTime()) {
       return sendJson(res, 410, { error: "This short link has expired." });
     }
+    if (rule?.isOneTime && rule?.oneTimeUsedAt) {
+      return sendJson(res, 410, { error: "This one-time link has already been used." });
+    }
     if (rule?.passwordHash && !hasProtectedLinkAccess(req, rule, match.slug)) {
       res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
       res.end(renderProtectedLinkPage(match, new URL(req.url, `http://${req.headers.host || publicAppDomain}`).searchParams.get("error") || ""));
@@ -2385,6 +2419,9 @@ async function handleRedirect(slug, req, res) {
       await maybeSendGoalAchievementEmail(match, Number(match.analytics?.totalClicks || 0), req);
     } catch {
       // Redirect should still work even if goal email fails.
+    }
+    if (rule?.isOneTime) {
+      markOneTimeLinkUsed(match.userId, match.slug, req);
     }
     res.writeHead(302, { Location: match.destination });
     res.end();
@@ -2573,6 +2610,7 @@ function normalizeLinkRules(input, previousRules = {}) {
     const nextRule = {
       expiresAt,
       isPaused,
+      isOneTime: Boolean(value.isOneTime || previous.isOneTime),
     };
 
     const passwordPlain = String(value.passwordPlain || "").trim();
@@ -2589,7 +2627,11 @@ function normalizeLinkRules(input, previousRules = {}) {
       nextRule.accessToken = previous.accessToken;
     }
 
-    if (!expiresAt && !isPaused && !nextRule.passwordHash) {
+    if (value.oneTimeUsedAt || previous.oneTimeUsedAt) {
+      nextRule.oneTimeUsedAt = String(value.oneTimeUsedAt || previous.oneTimeUsedAt || "");
+    }
+
+    if (!expiresAt && !isPaused && !nextRule.passwordHash && !nextRule.isOneTime) {
       continue;
     }
 
