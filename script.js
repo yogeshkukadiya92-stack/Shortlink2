@@ -1352,6 +1352,126 @@ function renderClickRows(clicks, compact) {
   `).join("");
 }
 
+function wireCreateForm() {
+  const destinationInput = document.getElementById("destination");
+  const slugInput = document.getElementById("slug");
+  const qrToggle = document.getElementById("qrToggle");
+  const resultBanner = document.getElementById("resultBanner");
+  const shortBaseLabel = document.getElementById("shortBaseLabel");
+
+  const updatePreview = () => {
+    shortBaseLabel.textContent = buildShortPreview(sanitizeSlug(slugInput.value.trim()) || "your-slug");
+  };
+
+  const createLink = async () => {
+    setInlineBanner(resultBanner, "Creating your AnyLink...", false);
+    try {
+      const response = await fetch("/api/links", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          destination: destinationInput.value.trim(),
+          slug: sanitizeSlug(slugInput.value.trim()),
+          includeQr: qrToggle.checked,
+        }),
+      });
+      const payload = await response.json();
+      if (!response.ok) return setInlineBanner(resultBanner, payload.error || "Could not create link.", true);
+
+      linksCache.unshift(payload.link);
+      if (qrToggle.checked) selectedQrSlug = payload.link.slug;
+      setInlineBanner(resultBanner, `AnyLink created: ${getLinkUrl(payload.link)}`, false);
+      destinationInput.value = "";
+      slugInput.value = "";
+      qrToggle.checked = false;
+      updatePreview();
+      const list = document.getElementById("homeLinksList");
+      if (list) {
+        list.innerHTML = renderLinkItems(linksCache.slice(0, 3), true);
+        wireLinkActions();
+      }
+    } catch (error) {
+      setInlineBanner(resultBanner, error.message, true);
+    }
+  };
+
+  document.getElementById("createLinkButton").addEventListener("click", createLink);
+  destinationInput.addEventListener("keydown", (event) => event.key === "Enter" && createLink());
+  slugInput.addEventListener("keydown", (event) => event.key === "Enter" && createLink());
+  slugInput.addEventListener("input", updatePreview);
+  updatePreview();
+}
+
+function wireLinkActions() {
+  document.querySelectorAll("[data-copy]").forEach((button) => button.addEventListener("click", async () => {
+    const shortUrl = button.getAttribute("data-copy");
+    try {
+      await navigator.clipboard.writeText(shortUrl);
+      showGlobalMessage(`Copied: ${shortUrl}`, false);
+    } catch {
+      showGlobalMessage(`Copy failed. Open this link manually: ${shortUrl}`, true);
+    }
+  }));
+
+  document.querySelectorAll("[data-delete]").forEach((button) => button.addEventListener("click", async () => {
+    const slug = button.getAttribute("data-delete");
+    try {
+      const response = await fetch(`/api/links/${encodeURIComponent(slug)}`, { method: "DELETE" });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || "Delete failed");
+      linksCache = linksCache.filter((item) => item.slug !== slug);
+      renderLinksPage(linksCache, searchInput.value.trim().toLowerCase());
+      showGlobalMessage(`Deleted: ${slug}`, false);
+    } catch (error) {
+      showGlobalMessage(error.message, true);
+    }
+  }));
+}
+
+function renderLinkItems(links, includeDelete) {
+  if (!links.length) return '<div class="empty-state">No links yet. Create your first AnyLink above.</div>';
+
+  return links.map((link) => {
+    const createdAt = new Date(link.createdAt).toLocaleString();
+    const liveUrl = getLinkUrl(link);
+    return `<div class="link-item"><div class="link-copy"><a href="${escapeHtml(liveUrl)}" target="_blank" rel="noreferrer">${escapeHtml(liveUrl)}</a><strong>${escapeHtml(link.slug)}</strong><p>${escapeHtml(link.destination)}</p><p>Created: ${escapeHtml(createdAt)}</p></div><div class="link-actions"><button class="link-button" data-copy="${escapeHtml(liveUrl)}">Copy</button><a class="link-button secondary" href="${escapeHtml(liveUrl)}" target="_blank" rel="noreferrer">Open</a><a class="link-button secondary" href="/qr-codes" data-open-qr="${escapeHtml(link.slug)}">QR</a>${includeDelete ? `<button class="link-button danger" data-delete="${escapeHtml(link.slug)}">Delete</button>` : ""}</div></div>`;
+  }).join("");
+}
+
+function buildShortPreview(slug) {
+  return buildDomainPreview(settingsCache.defaultDomain, slug);
+}
+
+function buildLiveLinkUrl(slug) {
+  return buildDomainPreview(settingsCache.defaultDomain, slug);
+}
+
+function getLinkUrl(link) {
+  if (link && link.shortUrl) {
+    return link.shortUrl;
+  }
+
+  return buildLiveLinkUrl(link?.slug || "");
+}
+
+function buildQrImageUrl(targetUrl) {
+  return `https://api.qrserver.com/v1/create-qr-code/?size=520x520&data=${encodeURIComponent(targetUrl)}`;
+}
+
+function getSelectedQrLink() {
+  if (selectedQrSlug) {
+    const found = linksCache.find((item) => item.slug === selectedQrSlug);
+    if (found) return found;
+  }
+  return linksCache.find((item) => item.includeQr) || linksCache[0] || null;
+}
+
+function renderQrLinkItems() {
+  if (!linksCache.length) return '<div class="empty-state">No links available yet. Create one from Home first.</div>';
+
+  return linksCache.slice(0, 6).map((link) => `<button class="qr-link-item ${link.slug === (getSelectedQrLink()?.slug || "") ? "active" : ""}" data-select-qr="${escapeHtml(link.slug)}"><strong>${escapeHtml(link.slug)}</strong><span>${escapeHtml(getLinkUrl(link))}</span></button>`).join("");
+}
+
 function buildDomainPreview(domain, slug = "sample-link") {
   const localPattern = /^(localhost|127\.0\.0\.1)(:\d+)?$/i.test(domain);
   const activeHost = window.location.host;
