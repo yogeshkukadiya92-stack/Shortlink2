@@ -21,6 +21,7 @@ let linksCache = [];
 let pagesCache = [];
 let selectedQrSlug = null;
 let selectedFormId = "";
+let analyticsRange = "30d";
 let settingsCache = {
   workspaceName: "AnyLink Workspace",
   defaultDomain: getDefaultShortDomain(),
@@ -310,7 +311,7 @@ async function loadLinks() {
 }
 
 async function loadAnalytics() {
-  const response = await fetch("/api/analytics");
+  const response = await fetch(`/api/analytics?range=${encodeURIComponent(analyticsRange)}`);
   const payload = await response.json();
 
   if (!response.ok) {
@@ -1184,6 +1185,15 @@ async function renderAnalyticsPage() {
             <p>Track your strongest links, leading geographies, devices, and the latest visits from one clean analytics view.</p>
           </div>
           <div class="analytics-top-actions">
+            <label class="analytics-filter-control" for="analyticsRangeFilter">
+              <span>Range</span>
+              <select id="analyticsRangeFilter" class="url-input analytics-range-select">
+                <option value="today" ${analytics.appliedRange === "today" ? "selected" : ""}>Today</option>
+                <option value="7d" ${analytics.appliedRange === "7d" ? "selected" : ""}>Last 7 days</option>
+                <option value="30d" ${analytics.appliedRange === "30d" ? "selected" : ""}>Last 30 days</option>
+                <option value="all" ${analytics.appliedRange === "all" ? "selected" : ""}>All time</option>
+              </select>
+            </label>
             <span class="analytics-chip">Live domain: ${escapeHtml(activeDomain)}</span>
             <button class="link-button secondary" id="exportAnalyticsButton" type="button">Export Excel</button>
           </div>
@@ -1193,12 +1203,12 @@ async function renderAnalyticsPage() {
           <article class="analytics-kpi-card featured">
             <span>Total clicks</span>
             <strong>${analytics.totalClicks}</strong>
-            <p>${analytics.totalLinks} tracked short links are contributing to your traffic.</p>
+            <p>${analytics.totalLinks} tracked short links are contributing to your traffic in ${escapeHtml(analytics.appliedRangeLabel || "this range")}.</p>
           </article>
           <article class="analytics-kpi-card">
-            <span>Average / link</span>
-            <strong>${avgClicksPerLink}</strong>
-            <p>Average engagement across your published short links.</p>
+            <span>Unique visitors</span>
+            <strong>${analytics.uniqueClicks || 0}</strong>
+            <p>Estimated distinct visitors for the selected analytics range.</p>
           </article>
           <article class="analytics-kpi-card">
             <span>Countries reached</span>
@@ -1280,7 +1290,7 @@ async function renderAnalyticsPage() {
                   <h3>${escapeHtml(link.slug)}</h3>
                   <p><a href="${escapeHtml(link.shortUrl)}" target="_blank" rel="noreferrer">${escapeHtml(link.shortUrl)}</a></p>
                 </div>
-                <span class="chip-link">${link.totalClicks} clicks</span>
+                <span class="chip-link">${link.totalClicks} clicks · ${link.uniqueClicks || 0} unique</span>
               </div>
               <div class="analytics-summary-strip">
                 <span class="analytics-tag strong">${escapeHtml(link.topCountries?.[0]?.label || "No country data")}</span>
@@ -1303,7 +1313,15 @@ async function renderAnalyticsPage() {
     const exportAnalyticsButton = document.getElementById("exportAnalyticsButton");
     if (exportAnalyticsButton) {
       exportAnalyticsButton.addEventListener("click", () => {
-        window.location.href = "/api/analytics/export";
+        window.location.href = `/api/analytics/export?range=${encodeURIComponent(analyticsRange)}`;
+      });
+    }
+
+    const analyticsRangeFilter = document.getElementById("analyticsRangeFilter");
+    if (analyticsRangeFilter) {
+      analyticsRangeFilter.addEventListener("change", async (event) => {
+        analyticsRange = event.target.value || "30d";
+        await renderAnalyticsPage();
       });
     }
   } catch (error) {

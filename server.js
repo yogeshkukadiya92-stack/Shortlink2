@@ -154,12 +154,12 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === "GET" && pathname === "/api/analytics") {
-      return await withAppAccess(req, res, async (user) => sendJson(res, 200, { analytics: await buildAnalyticsReport(user.id) }));
-    }
+        return await withAppAccess(req, res, async (user) => sendJson(res, 200, { analytics: await buildAnalyticsReport(user.id, parseAnalyticsFilters(requestUrl.searchParams)) }));
+      }
 
     if (req.method === "GET" && pathname === "/api/analytics/export") {
-      return await withAppAccess(req, res, (user) => handleAnalyticsExport(req, res, user));
-    }
+        return await withAppAccess(req, res, (user) => handleAnalyticsExport(req, res, user, parseAnalyticsFilters(requestUrl.searchParams)));
+      }
 
     if (req.method === "GET" && pathname === "/api/pages") {
       return await withAppAccess(req, res, async (user) => sendJson(res, 200, { pages: await readPagesForUserAsync(user.id, req) }));
@@ -1633,37 +1633,38 @@ async function handleDeleteLink(slug, res, user) {
   return sendJson(res, 200, { success: true });
 }
 
-async function buildAnalyticsReport(userId) {
+async function buildAnalyticsReport(userId, filters = parseAnalyticsFilters()) {
   try {
-    const links = await listAnalyticsByUser(userId);
-    if (Array.isArray(links) && links.length) {
-      const normalizedLinks = links.map((link) => {
-        const clicks = (link.clickEvents || []).map((click) => ({
-          id: click.id,
-          clickedAt: click.createdAt instanceof Date ? click.createdAt.toISOString() : click.createdAt,
-          ip: click.ipAddress || "Unknown",
-          country: click.country || "Unknown",
-          city: click.city || "Unknown",
+      const links = await listAnalyticsByUser(userId);
+      if (Array.isArray(links) && links.length) {
+        const normalizedLinks = links.map((link) => {
+          const clicks = filterClicksByAnalyticsRange((link.clickEvents || []).map((click) => ({
+            id: click.id,
+            clickedAt: click.createdAt instanceof Date ? click.createdAt.toISOString() : click.createdAt,
+            ip: click.ipAddress || "Unknown",
+            country: click.country || "Unknown",
+            city: click.city || "Unknown",
           cityLabel: click.city && click.country !== "Unknown" ? (click.city + ", " + click.country) : (click.city || click.country || "Unknown"),
           platform: click.platform || "Unknown",
           deviceType: click.device || "Web",
-          browser: click.browser || "Unknown",
-          referrer: click.referrer || "",
-          slug: link.slug,
-          shortUrl: link.shortUrl,
-        }));
+            browser: click.browser || "Unknown",
+            referrer: click.referrer || "",
+            slug: link.slug,
+            shortUrl: link.shortUrl,
+          })), filters);
 
-        return {
-          id: link.id,
-          slug: link.slug,
-          shortUrl: link.shortUrl,
-          destination: link.destination,
-          totalClicks: Number(link.clickCount || clicks.length || 0),
-          lastClickedAt: link.lastClickedAt instanceof Date ? link.lastClickedAt.toISOString() : (link.lastClickedAt || ""),
-          topCountries: summarizeClicks(clicks, "country"),
-          topCities: summarizeClicks(clicks, "cityLabel"),
-          topDevices: summarizeClicks(clicks, "deviceType"),
-          topPlatforms: summarizeClicks(clicks, "platform"),
+          return {
+            id: link.id,
+            slug: link.slug,
+            shortUrl: link.shortUrl,
+            destination: link.destination,
+            totalClicks: clicks.length,
+            uniqueClicks: countUniqueClicks(clicks),
+            lastClickedAt: clicks[0]?.clickedAt || "",
+            topCountries: summarizeClicks(clicks, "country"),
+            topCities: summarizeClicks(clicks, "cityLabel"),
+            topDevices: summarizeClicks(clicks, "deviceType"),
+            topPlatforms: summarizeClicks(clicks, "platform"),
           topBrowsers: summarizeClicks(clicks, "browser"),
           recentClicks: clicks.slice(0, 8),
           createdAt: link.createdAt instanceof Date ? link.createdAt.toISOString() : link.createdAt,
@@ -1676,12 +1677,15 @@ async function buildAnalyticsReport(userId) {
         shortUrl: link.shortUrl,
       })));
 
-      return {
-        totalLinks: normalizedLinks.length,
-        totalClicks: normalizedLinks.reduce((sum, link) => sum + Number(link.totalClicks || 0), 0),
-        topCountries: summarizeClicks(allClicks, "country"),
-        topCities: summarizeClicks(allClicks, "cityLabel"),
-        topDevices: summarizeClicks(allClicks, "deviceType"),
+        return {
+          appliedRange: filters.range,
+          appliedRangeLabel: filters.label,
+          totalLinks: normalizedLinks.length,
+          totalClicks: normalizedLinks.reduce((sum, link) => sum + Number(link.totalClicks || 0), 0),
+          uniqueClicks: countUniqueClicks(allClicks),
+          topCountries: summarizeClicks(allClicks, "country"),
+          topCities: summarizeClicks(allClicks, "cityLabel"),
+          topDevices: summarizeClicks(allClicks, "deviceType"),
         topPlatforms: summarizeClicks(allClicks, "platform"),
         topBrowsers: summarizeClicks(allClicks, "browser"),
         recentClicks: allClicks.slice().sort((left, right) => new Date(right.clickedAt).getTime() - new Date(left.clickedAt).getTime()).slice(0, 12),
@@ -1689,12 +1693,15 @@ async function buildAnalyticsReport(userId) {
       };
     }
     if (dbOnlyMode) {
-      return {
-        totalLinks: 0,
-        totalClicks: 0,
-        topCountries: [],
-        topCities: [],
-        topDevices: [],
+        return {
+          appliedRange: filters.range,
+          appliedRangeLabel: filters.label,
+          totalLinks: 0,
+          totalClicks: 0,
+          uniqueClicks: 0,
+          topCountries: [],
+          topCities: [],
+          topDevices: [],
         topPlatforms: [],
         topBrowsers: [],
         recentClicks: [],
@@ -1703,12 +1710,15 @@ async function buildAnalyticsReport(userId) {
     }
   } catch {
     if (dbOnlyMode) {
-      return {
-        totalLinks: 0,
-        totalClicks: 0,
-        topCountries: [],
-        topCities: [],
-        topDevices: [],
+        return {
+          appliedRange: filters.range,
+          appliedRangeLabel: filters.label,
+          totalLinks: 0,
+          totalClicks: 0,
+          uniqueClicks: 0,
+          topCountries: [],
+          topCities: [],
+          topDevices: [],
         topPlatforms: [],
         topBrowsers: [],
         recentClicks: [],
@@ -1719,62 +1729,68 @@ async function buildAnalyticsReport(userId) {
 
   const links = readLinksForUser(userId);
   const totalClicks = links.reduce((sum, link) => sum + Number(link.analytics?.totalClicks || 0), 0);
-  const allClicks = links.flatMap((link) => (Array.isArray(link.analytics?.clicks) ? link.analytics.clicks : []).map((click) => ({
-    ...click,
-    slug: link.slug,
-    shortUrl: link.shortUrl,
-  })));
+    const allClicks = links.flatMap((link) => filterClicksByAnalyticsRange((Array.isArray(link.analytics?.clicks) ? link.analytics.clicks : []).map((click) => ({
+      ...click,
+      slug: link.slug,
+      shortUrl: link.shortUrl,
+    })), filters));
 
-  return {
-    totalLinks: links.length,
-    totalClicks,
-    topCountries: summarizeClicks(allClicks, "country"),
-    topCities: summarizeClicks(allClicks, "cityLabel"),
-    topDevices: summarizeClicks(allClicks, "deviceType"),
+    return {
+      appliedRange: filters.range,
+      appliedRangeLabel: filters.label,
+      totalLinks: links.length,
+      totalClicks: allClicks.length,
+      uniqueClicks: countUniqueClicks(allClicks),
+      topCountries: summarizeClicks(allClicks, "country"),
+      topCities: summarizeClicks(allClicks, "cityLabel"),
+      topDevices: summarizeClicks(allClicks, "deviceType"),
     topPlatforms: summarizeClicks(allClicks, "platform"),
     topBrowsers: summarizeClicks(allClicks, "browser"),
     recentClicks: allClicks.sort((left, right) => new Date(right.clickedAt).getTime() - new Date(left.clickedAt).getTime()).slice(0, 12),
     links: links.map((link) => ({
       id: link.id,
-      slug: link.slug,
-      shortUrl: link.shortUrl,
-      destination: link.destination,
-      totalClicks: Number(link.analytics?.totalClicks || 0),
-      lastClickedAt: link.analytics?.lastClickedAt || "",
-      topCountries: summarizeClicks(link.analytics?.clicks || [], "country"),
-      topCities: summarizeClicks(link.analytics?.clicks || [], "cityLabel"),
-      topDevices: summarizeClicks(link.analytics?.clicks || [], "deviceType"),
-      topPlatforms: summarizeClicks(link.analytics?.clicks || [], "platform"),
-      topBrowsers: summarizeClicks(link.analytics?.clicks || [], "browser"),
-      recentClicks: (link.analytics?.clicks || []).slice().sort((left, right) => new Date(right.clickedAt).getTime() - new Date(left.clickedAt).getTime()).slice(0, 8),
-      createdAt: link.createdAt || "",
-    })).sort((left, right) => right.totalClicks - left.totalClicks || new Date(right.createdAt || 0).getTime() - new Date(left.createdAt || 0).getTime()),
-  };
+        slug: link.slug,
+        shortUrl: link.shortUrl,
+        destination: link.destination,
+        totalClicks: filterClicksByAnalyticsRange(link.analytics?.clicks || [], filters).length,
+        uniqueClicks: countUniqueClicks(filterClicksByAnalyticsRange(link.analytics?.clicks || [], filters)),
+        lastClickedAt: filterClicksByAnalyticsRange(link.analytics?.clicks || [], filters)[0]?.clickedAt || "",
+        topCountries: summarizeClicks(filterClicksByAnalyticsRange(link.analytics?.clicks || [], filters), "country"),
+        topCities: summarizeClicks(filterClicksByAnalyticsRange(link.analytics?.clicks || [], filters), "cityLabel"),
+        topDevices: summarizeClicks(filterClicksByAnalyticsRange(link.analytics?.clicks || [], filters), "deviceType"),
+        topPlatforms: summarizeClicks(filterClicksByAnalyticsRange(link.analytics?.clicks || [], filters), "platform"),
+        topBrowsers: summarizeClicks(filterClicksByAnalyticsRange(link.analytics?.clicks || [], filters), "browser"),
+        recentClicks: filterClicksByAnalyticsRange(link.analytics?.clicks || [], filters).slice().sort((left, right) => new Date(right.clickedAt).getTime() - new Date(left.clickedAt).getTime()).slice(0, 8),
+        createdAt: link.createdAt || "",
+      })).sort((left, right) => right.totalClicks - left.totalClicks || new Date(right.createdAt || 0).getTime() - new Date(left.createdAt || 0).getTime()),
+    };
 }
 
-async function handleAnalyticsExport(req, res, user) {
-  const analytics = await buildAnalyticsReport(user.id);
-  const headers = [
-    "Slug",
-    "Short URL",
-    "Destination",
-    "Total Clicks",
-    "Last Clicked At",
-    "Top Countries",
-    "Top Cities",
+async function handleAnalyticsExport(req, res, user, filters = parseAnalyticsFilters()) {
+    const analytics = await buildAnalyticsReport(user.id, filters);
+    const headers = [
+      "Slug",
+      "Short URL",
+      "Destination",
+      "Total Clicks",
+      "Unique Clicks",
+      "Last Clicked At",
+      "Top Countries",
+      "Top Cities",
     "Top Devices",
     "Top Browsers",
     "Top Platforms",
   ];
 
   const rows = analytics.links.map((link) => [
-    link.slug || "",
-    link.shortUrl || "",
-    link.destination || "",
-    String(link.totalClicks || 0),
-    link.lastClickedAt || "",
-    formatAnalyticsExportList(link.topCountries),
-    formatAnalyticsExportList(link.topCities),
+      link.slug || "",
+      link.shortUrl || "",
+      link.destination || "",
+      String(link.totalClicks || 0),
+      String(link.uniqueClicks || 0),
+      link.lastClickedAt || "",
+      formatAnalyticsExportList(link.topCountries),
+      formatAnalyticsExportList(link.topCities),
     formatAnalyticsExportList(link.topDevices),
     formatAnalyticsExportList(link.topBrowsers),
     formatAnalyticsExportList(link.topPlatforms),
@@ -2160,8 +2176,64 @@ function summarizeClicks(clicks, key) {
 
   return [...counts.entries()]
     .map(([label, count]) => ({ label, count }))
-    .sort((left, right) => right.count - left.count)
-    .slice(0, 6);
+      .sort((left, right) => right.count - left.count)
+      .slice(0, 6);
+}
+
+function getUniqueClickKey(click) {
+  const ip = String(click?.ip || click?.ipAddress || "").trim();
+  if (ip && ip !== "Unknown") {
+    return `ip:${ip}`;
+  }
+
+  const browser = String(click?.browser || "unknown").trim().toLowerCase();
+  const platform = String(click?.platform || "unknown").trim().toLowerCase();
+  const device = String(click?.deviceType || click?.device || "unknown").trim().toLowerCase();
+  const country = String(click?.country || "unknown").trim().toLowerCase();
+  const city = String(click?.city || "unknown").trim().toLowerCase();
+  return `fp:${browser}|${platform}|${device}|${country}|${city}`;
+}
+
+function countUniqueClicks(clicks) {
+  return new Set((clicks || []).map((click) => getUniqueClickKey(click))).size;
+}
+
+function parseAnalyticsFilters(searchParams) {
+  const range = String(searchParams?.get("range") || "30d").trim().toLowerCase();
+  const now = new Date();
+  let startAt = null;
+  let label = "Last 30 days";
+
+  if (range === "today") {
+    startAt = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    label = "Today";
+  } else if (range === "7d") {
+    startAt = new Date(now.getTime() - (7 * 24 * 60 * 60 * 1000));
+    label = "Last 7 days";
+  } else if (range === "all") {
+    startAt = null;
+    label = "All time";
+  } else {
+    startAt = new Date(now.getTime() - (30 * 24 * 60 * 60 * 1000));
+  }
+
+  return {
+    range: ["today", "7d", "30d", "all"].includes(range) ? range : "30d",
+    startAt,
+    label,
+  };
+}
+
+function filterClicksByAnalyticsRange(clicks, filters) {
+  if (!filters?.startAt) {
+    return Array.isArray(clicks) ? clicks : [];
+  }
+
+  const startTime = filters.startAt.getTime();
+  return (clicks || []).filter((click) => {
+    const clickedAt = new Date(click.clickedAt || click.createdAt || 0).getTime();
+    return Number.isFinite(clickedAt) && clickedAt >= startTime;
+  });
 }
 
 function generateSlug(links) {
