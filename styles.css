@@ -2541,3 +2541,17 @@ svg {
   color: #157348;
   border-color: rgba(21, 115, 72, 0.18);
 }
+
+.recycle-bin-panel {
+  margin-top: 22px;
+  padding-top: 18px;
+  border-top: 1px solid rgba(82, 118, 200, 0.14);
+}
+
+.recycle-bin-header {
+  margin-bottom: 12px;
+}
+
+.recycle-bin-item {
+  background: rgba(252, 246, 240, 0.72);
+}

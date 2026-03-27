@@ -195,7 +195,21 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "DELETE" && pathname.startsWith("/api/links/")) {
       const slug = pathname.split("/").pop();
-      return await withAppAccess(req, res, (user) => handleDeleteLink(slug, res, user));
+      return await withAppAccess(req, res, (user) => handleDeleteLink(slug, req, res, user));
+    }
+
+    if (req.method === "GET" && pathname === "/api/trash-links") {
+      return await withAppAccess(req, res, async (user) => sendJson(res, 200, { trashLinks: await readTrashLinksForUserAsync(user.id, req) }));
+    }
+
+    if (req.method === "POST" && pathname.startsWith("/api/trash-links/") && pathname.endsWith("/restore")) {
+      const slug = pathname.split("/")[3];
+      return await withAppAccess(req, res, (user) => handleRestoreTrashLink(slug, req, res, user));
+    }
+
+    if (req.method === "DELETE" && pathname.startsWith("/api/trash-links/")) {
+      const slug = pathname.split("/").pop();
+      return await withAppAccess(req, res, (user) => handleDeleteTrashLinkForever(slug, req, res, user));
     }
 
     if (req.method === "GET" && pathname === "/api/settings") {
@@ -452,6 +466,7 @@ async function readSettingsForUserAsync(userId, req) {
         conversionGoals: fileExtras?.conversionGoals || {},
         goalAlertState: fileExtras?.goalAlertState || {},
         linkRules: fileExtras?.linkRules || {},
+        trashLinks: fileExtras?.trashLinks || [],
       }, req);
     }
     if (dbOnlyMode) {
@@ -464,6 +479,30 @@ async function readSettingsForUserAsync(userId, req) {
   }
 
   return readSettingsForUser(userId, req);
+}
+
+function writeSettingsExtras(userId, req, updater) {
+  if (dbOnlyMode) {
+    return null;
+  }
+
+  const store = readSettingsStore();
+  const existing = store.find((item) => item.userId === userId) || normalizeSettings({ userId }, req);
+  const nextPartial = updater(existing);
+  const normalized = normalizeSettings({
+    ...existing,
+    ...nextPartial,
+  }, req);
+
+  const nextStore = store.filter((item) => item.userId !== userId);
+  nextStore.push(normalized);
+  writeSettingsStore(nextStore);
+  return normalized;
+}
+
+async function readTrashLinksForUserAsync(userId, req) {
+  const settings = await readSettingsForUserAsync(userId, req);
+  return Array.isArray(settings.trashLinks) ? settings.trashLinks : [];
 }
 
 function readRequestBody(req) {
@@ -1615,34 +1654,124 @@ async function handlePublicFormSubmit(slug, body, req, res) {
   return sendJson(res, 201, { success: true, message: normalizedPage.thanksMessage });
 }
 
-async function handleDeleteLink(slug, res, user) {
+async function handleDeleteLink(slug, req, res, user) {
   const links = dbOnlyMode ? [] : readLinks();
-  const nextLinks = links.filter((item) => !(item.slug === slug && item.userId === user.id));
+  const fileMatch = links.find((item) => item.slug === slug && item.userId === user.id) || null;
+  let dbMatch = null;
 
-  if (dbOnlyMode || nextLinks.length === links.length) {
-    try {
-      const result = await deleteLinkBySlug(slug, user.id);
-      if (!result.count) {
-        return sendJson(res, 404, { error: "Link not found." });
-      }
-      return sendJson(res, 200, { success: true });
-    } catch {
-      return sendJson(res, 404, { error: "Link not found." });
+  try {
+    const found = await findLinkBySlug(slug);
+    if (found && found.userId === user.id) {
+      dbMatch = found;
     }
+  } catch {
+    dbMatch = null;
   }
 
-  if (!dbOnlyMode) {
-    writeLinks(nextLinks);
+  const linkToTrash = fileMatch || (dbMatch ? {
+    id: dbMatch.id,
+    userId: dbMatch.userId,
+    slug: dbMatch.slug,
+    destination: dbMatch.destination,
+    shortUrl: dbMatch.shortUrl,
+    includeQr: dbMatch.includeQr,
+    createdAt: dbMatch.createdAt instanceof Date ? dbMatch.createdAt.toISOString() : dbMatch.createdAt,
+    analytics: createEmptyAnalytics(),
+  } : null);
+
+  if (!linkToTrash) {
+    return sendJson(res, 404, { error: "Link not found." });
   }
+
+  const trashLinks = await readTrashLinksForUserAsync(user.id, req);
+  const trashedItem = {
+    ...linkToTrash,
+    deletedAt: new Date().toISOString(),
+  };
+
+  const nextTrashLinks = normalizeTrashLinks([
+    trashedItem,
+    ...trashLinks.filter((item) => item.slug !== slug),
+  ]);
+
+  writeSettingsExtras(user.id, req, () => ({ trashLinks: nextTrashLinks }));
+
+  if (!dbOnlyMode && fileMatch) {
+    writeLinks(links.filter((item) => !(item.slug === slug && item.userId === user.id)));
+  }
+
   try {
     await deleteLinkBySlug(slug, user.id);
   } catch {
     if (dbOnlyMode) {
       return sendJson(res, 500, { error: "Unable to complete this request right now. Please try again." });
     }
-    // JSON remains fallback during DB migration.
   }
-  return sendJson(res, 200, { success: true });
+
+  return sendJson(res, 200, { success: true, trashLink: trashedItem, trashLinks: nextTrashLinks });
+}
+
+async function handleRestoreTrashLink(slug, req, res, user) {
+  const trashLinks = await readTrashLinksForUserAsync(user.id, req);
+  const trashedLink = trashLinks.find((item) => item.slug === slug);
+
+  if (!trashedLink) {
+    return sendJson(res, 404, { error: "Deleted link not found." });
+  }
+
+  const liveLinks = await readLinksForUserAsync(user.id);
+  if (liveLinks.some((item) => item.slug === slug)) {
+    return sendJson(res, 409, { error: "That slug is already in use. Delete or rename the current link first." });
+  }
+
+  const settings = await readSettingsForUserAsync(user.id, req);
+  const restoredLink = {
+    id: trashedLink.id || Date.now(),
+    userId: user.id,
+    slug: trashedLink.slug,
+    destination: normalizeUrl(trashedLink.destination || "") || trashedLink.destination,
+    shortUrl: buildShortUrl(settings.defaultDomain || publicAppDomain, trashedLink.slug),
+    includeQr: Boolean(trashedLink.includeQr),
+    createdAt: trashedLink.createdAt || new Date().toISOString(),
+    analytics: trashedLink.analytics || createEmptyAnalytics(),
+  };
+
+  if (!dbOnlyMode) {
+    const links = readLinks();
+    links.unshift(restoredLink);
+    writeLinks(links);
+  }
+
+  try {
+    await createDbLink({
+      id: String(restoredLink.id),
+      userId: user.id,
+      slug: restoredLink.slug,
+      destination: restoredLink.destination,
+      shortUrl: restoredLink.shortUrl,
+      includeQr: restoredLink.includeQr,
+      createdAt: new Date(restoredLink.createdAt),
+    });
+  } catch {
+    if (dbOnlyMode) {
+      return sendJson(res, 500, { error: "Unable to restore this link right now. Please try again." });
+    }
+  }
+
+  const nextTrashLinks = normalizeTrashLinks(trashLinks.filter((item) => item.slug !== slug));
+  writeSettingsExtras(user.id, req, () => ({ trashLinks: nextTrashLinks }));
+  return sendJson(res, 200, { success: true, link: restoredLink, trashLinks: nextTrashLinks });
+}
+
+async function handleDeleteTrashLinkForever(slug, req, res, user) {
+  const trashLinks = await readTrashLinksForUserAsync(user.id, req);
+  if (!trashLinks.some((item) => item.slug === slug)) {
+    return sendJson(res, 404, { error: "Deleted link not found." });
+  }
+
+  const nextTrashLinks = normalizeTrashLinks(trashLinks.filter((item) => item.slug !== slug));
+  writeSettingsExtras(user.id, req, () => ({ trashLinks: nextTrashLinks }));
+  return sendJson(res, 200, { success: true, trashLinks: nextTrashLinks });
 }
 
 async function buildAnalyticsReport(userId, filters = parseAnalyticsFilters()) {
@@ -1842,6 +1971,7 @@ async function handleSaveSettings(body, req, res, user) {
   const conversionGoals = normalizeConversionGoals(body.conversionGoals || currentSettings.conversionGoals || {});
   const goalAlertState = normalizeGoalAlertState(body.goalAlertState || currentSettings.goalAlertState || {});
   const linkRules = normalizeLinkRules(body.linkRules || currentSettings.linkRules || {}, currentSettings.linkRules || {});
+  const trashLinks = normalizeTrashLinks(body.trashLinks || currentSettings.trashLinks || []);
 
   if (!workspaceName) {
     return sendJson(res, 400, { error: "Workspace name is required." });
@@ -1865,6 +1995,7 @@ async function handleSaveSettings(body, req, res, user) {
     conversionGoals,
     goalAlertState,
     linkRules,
+    trashLinks,
   }, req);
 
   if (!dbOnlyMode) {
@@ -2178,23 +2309,12 @@ function shouldSendGoalAlert(settings, slug, currentClicks) {
 }
 
 function markGoalAlertSent(userId, slug, goal, req) {
-  if (dbOnlyMode) {
-    return;
-  }
-
-  const store = readSettingsStore();
-  const existing = store.find((item) => item.userId === userId) || normalizeSettings({ userId }, req);
-  const normalized = normalizeSettings({
-    ...existing,
+  writeSettingsExtras(userId, req, (existing) => ({
     goalAlertState: {
       ...(existing.goalAlertState || {}),
       [slug]: goal,
     },
-  }, req);
-
-  const nextStore = store.filter((item) => item.userId !== userId);
-  nextStore.push(normalized);
-  writeSettingsStore(nextStore);
+  }));
 }
 
 async function maybeSendGoalAchievementEmail(link, currentClicks, req) {
@@ -2228,28 +2348,19 @@ function getProtectedLinkCookieName(slug) {
 }
 
 function markOneTimeLinkUsed(userId, slug, req) {
-  if (dbOnlyMode) {
-    return;
-  }
-
-  const store = readSettingsStore();
-  const existing = store.find((item) => item.userId === userId) || normalizeSettings({ userId }, req);
-  const previousRule = existing.linkRules?.[slug] || {};
-  const normalized = normalizeSettings({
-    ...existing,
-    linkRules: {
-      ...(existing.linkRules || {}),
-      [slug]: {
-        ...previousRule,
-        isOneTime: true,
-        oneTimeUsedAt: new Date().toISOString(),
+  writeSettingsExtras(userId, req, (existing) => {
+    const previousRule = existing.linkRules?.[slug] || {};
+    return {
+      linkRules: {
+        ...(existing.linkRules || {}),
+        [slug]: {
+          ...previousRule,
+          isOneTime: true,
+          oneTimeUsedAt: new Date().toISOString(),
+        },
       },
-    },
-  }, req);
-
-  const nextStore = store.filter((item) => item.userId !== userId);
-  nextStore.push(normalized);
-  writeSettingsStore(nextStore);
+    };
+  });
 }
 
 function hasProtectedLinkAccess(req, rule, slug) {
@@ -2568,6 +2679,7 @@ function defaultSettings(req) {
     conversionGoals: {},
     goalAlertState: {},
     linkRules: {},
+    trashLinks: [],
   };
 }
 
@@ -2649,6 +2761,39 @@ function normalizeLinkRules(input, previousRules = {}) {
   return rules;
 }
 
+function normalizeTrashLinks(input) {
+  const seen = new Set();
+  const items = [];
+
+  for (const rawItem of input || []) {
+    if (!rawItem || typeof rawItem !== "object") {
+      continue;
+    }
+
+    const slug = sanitizeSlugInput(String(rawItem.slug || ""));
+    const destination = normalizeUrl(String(rawItem.destination || "").trim());
+
+    if (!slug || !destination || seen.has(slug)) {
+      continue;
+    }
+
+    seen.add(slug);
+    items.push({
+      id: rawItem.id || `trash-${slug}`,
+      userId: rawItem.userId || "",
+      slug,
+      destination,
+      shortUrl: String(rawItem.shortUrl || ""),
+      includeQr: Boolean(rawItem.includeQr),
+      createdAt: String(rawItem.createdAt || new Date().toISOString()),
+      deletedAt: String(rawItem.deletedAt || new Date().toISOString()),
+      analytics: rawItem.analytics && typeof rawItem.analytics === "object" ? rawItem.analytics : createEmptyAnalytics(),
+    });
+  }
+
+  return items.sort((left, right) => new Date(right.deletedAt || 0).getTime() - new Date(left.deletedAt || 0).getTime());
+}
+
 function buildDomainEntries(domains, defaultDomain, req, sourceEntries = []) {
   const fallback = getDefaultShortDomain(req);
   const sourceMap = new Map((sourceEntries || []).map((entry) => [entry.host, entry]));
@@ -2695,6 +2840,7 @@ function normalizeSettings(settings, req) {
     conversionGoals: normalizeConversionGoals(settings?.conversionGoals || {}),
     goalAlertState: normalizeGoalAlertState(settings?.goalAlertState || {}),
     linkRules: normalizeLinkRules(settings?.linkRules || {}, settings?.linkRules || {}),
+    trashLinks: normalizeTrashLinks(settings?.trashLinks || []),
   };
 }
 

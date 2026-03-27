@@ -35,6 +35,7 @@ let settingsCache = {
   domains: [getDefaultShortDomain()],
   conversionGoals: {},
   linkRules: {},
+  trashLinks: [],
 };
 let billingCache = {
   subscriptionStatus: "trialing",
@@ -131,6 +132,7 @@ async function initialize() {
           workspaceName: "AnyLink Workspace",
           defaultDomain: getDefaultShortDomain(),
           domains: [getDefaultShortDomain()],
+          trashLinks: [],
         });
       }
     }
@@ -307,7 +309,38 @@ function normalizeSettings(settings) {
     domainEntries,
     conversionGoals: normalizeConversionGoals(settings.conversionGoals || {}),
     linkRules: normalizeLinkRules(settings.linkRules || {}),
+    trashLinks: normalizeTrashLinks(settings.trashLinks || []),
   };
+}
+
+function normalizeTrashLinks(items) {
+  const seen = new Set();
+
+  return (Array.isArray(items) ? items : [])
+    .map((item) => {
+      if (!item || typeof item !== "object") {
+        return null;
+      }
+
+      const slug = sanitizeSlug(item.slug || "");
+      const destination = String(item.destination || "").trim();
+      if (!slug || !destination || seen.has(slug)) {
+        return null;
+      }
+
+      seen.add(slug);
+      return {
+        id: item.id || `trash-${slug}`,
+        slug,
+        destination,
+        shortUrl: String(item.shortUrl || ""),
+        includeQr: Boolean(item.includeQr),
+        createdAt: String(item.createdAt || ""),
+        deletedAt: String(item.deletedAt || ""),
+      };
+    })
+    .filter(Boolean)
+    .sort((left, right) => new Date(right.deletedAt || 0).getTime() - new Date(left.deletedAt || 0).getTime());
 }
 
 function normalizeConversionGoals(goals) {
@@ -968,6 +1001,7 @@ function renderHomePage() {
 
 function renderLinksPage(links, query = "") {
   const filtered = links.filter((link) => !query || [link.slug, link.destination, link.shortUrl].some((value) => String(value).toLowerCase().includes(query)));
+  const trashMarkup = renderTrashLinkItems(settingsCache.trashLinks || []);
   mainContent.innerHTML = `
     <section class="surface-card">
       <div class="surface-header">
@@ -1019,6 +1053,16 @@ function renderLinksPage(links, query = "") {
         }).join("") : '<div class="empty-state">No links yet. Create your first short link to start setting goals.</div>'}
       </div>
       <div class="links-list">${renderLinkItems(filtered, true)}</div>
+      <div class="recycle-bin-panel">
+        <div class="surface-header recycle-bin-header">
+          <div>
+            <h3>Recycle Bin</h3>
+            <p>Deleted links stay here until you restore them or delete them forever.</p>
+          </div>
+          <span class="chip-link">${(settingsCache.trashLinks || []).length} item${(settingsCache.trashLinks || []).length === 1 ? "" : "s"}</span>
+        </div>
+        <div class="links-list recycle-bin-list">${trashMarkup}</div>
+      </div>
     </section>
   `;
   wireLinkActions();
@@ -1746,8 +1790,49 @@ function wireLinkActions() {
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error || "Delete failed");
       linksCache = linksCache.filter((item) => item.slug !== slug);
+      settingsCache = normalizeSettings({
+        ...settingsCache,
+        trashLinks: payload.trashLinks || settingsCache.trashLinks,
+      });
       renderLinksPage(linksCache, searchInput.value.trim().toLowerCase());
       showGlobalMessage(`Deleted: ${slug}`, false);
+    } catch (error) {
+      showGlobalMessage(error.message, true);
+    }
+  }));
+
+  document.querySelectorAll("[data-restore-link]").forEach((button) => button.addEventListener("click", async () => {
+    const slug = button.getAttribute("data-restore-link");
+    try {
+      const response = await fetch(`/api/trash-links/${encodeURIComponent(slug)}/restore`, { method: "POST" });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || "Restore failed");
+      if (payload.link) {
+        linksCache.unshift(payload.link);
+      }
+      settingsCache = normalizeSettings({
+        ...settingsCache,
+        trashLinks: payload.trashLinks || [],
+      });
+      renderLinksPage(linksCache, searchInput.value.trim().toLowerCase());
+      showGlobalMessage(`Restored: ${slug}`, false);
+    } catch (error) {
+      showGlobalMessage(error.message, true);
+    }
+  }));
+
+  document.querySelectorAll("[data-delete-forever]").forEach((button) => button.addEventListener("click", async () => {
+    const slug = button.getAttribute("data-delete-forever");
+    try {
+      const response = await fetch(`/api/trash-links/${encodeURIComponent(slug)}`, { method: "DELETE" });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || "Permanent delete failed");
+      settingsCache = normalizeSettings({
+        ...settingsCache,
+        trashLinks: payload.trashLinks || [],
+      });
+      renderLinksPage(linksCache, searchInput.value.trim().toLowerCase());
+      showGlobalMessage(`Removed forever: ${slug}`, false);
     } catch (error) {
       showGlobalMessage(error.message, true);
     }
@@ -1911,6 +1996,26 @@ function renderLinkItems(links, includeDelete) {
     const liveUrl = getLinkUrl(link);
     return `<div class="link-item"><div class="link-copy"><a href="${escapeHtml(liveUrl)}" target="_blank" rel="noreferrer">${escapeHtml(liveUrl)}</a><strong>${escapeHtml(link.slug)}</strong><p>${escapeHtml(link.destination)}</p><p>Created: ${escapeHtml(createdAt)}</p></div><div class="link-actions"><button class="link-button" data-copy="${escapeHtml(liveUrl)}">Copy</button><a class="link-button secondary" href="${escapeHtml(liveUrl)}" target="_blank" rel="noreferrer">Open</a><a class="link-button secondary" href="/qr-codes" data-open-qr="${escapeHtml(link.slug)}">QR</a>${includeDelete ? `<button class="link-button danger" data-delete="${escapeHtml(link.slug)}">Delete</button>` : ""}</div></div>`;
   }).join("");
+}
+
+function renderTrashLinkItems(items) {
+  if (!items.length) {
+    return '<div class="empty-state">Deleted links will appear here for quick recovery.</div>';
+  }
+
+  return items.map((link) => `
+    <div class="link-item recycle-bin-item">
+      <div class="link-copy">
+        <strong>${escapeHtml(link.slug)}</strong>
+        <p>${escapeHtml(link.destination)}</p>
+        <p>Deleted: ${escapeHtml(link.deletedAt ? new Date(link.deletedAt).toLocaleString() : "Recently")}</p>
+      </div>
+      <div class="link-actions">
+        <button class="link-button" type="button" data-restore-link="${escapeHtml(link.slug)}">Restore</button>
+        <button class="link-button danger" type="button" data-delete-forever="${escapeHtml(link.slug)}">Delete forever</button>
+      </div>
+    </div>
+  `).join("");
 }
 
 function buildShortPreview(slug) {
