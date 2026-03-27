@@ -29,6 +29,7 @@ let settingsCache = {
   defaultDomain: getDefaultShortDomain(),
   domains: [getDefaultShortDomain()],
   conversionGoals: {},
+  linkRules: {},
 };
 let billingCache = {
   subscriptionStatus: "trialing",
@@ -300,6 +301,7 @@ function normalizeSettings(settings) {
     domains,
     domainEntries,
     conversionGoals: normalizeConversionGoals(settings.conversionGoals || {}),
+    linkRules: normalizeLinkRules(settings.linkRules || {}),
   };
 }
 
@@ -316,6 +318,31 @@ function normalizeConversionGoals(goals) {
   });
 
   return normalized;
+}
+
+function normalizeLinkRules(rules) {
+  const normalized = {};
+
+  Object.entries(rules || {}).forEach(([slug, value]) => {
+    const cleanSlug = sanitizeSlug(slug);
+    if (!cleanSlug || !value || typeof value !== "object") {
+      return;
+    }
+
+    const expiresAt = String(value.expiresAt || "").trim();
+    const isPaused = Boolean(value.isPaused);
+    if (!expiresAt && !isPaused) {
+      return;
+    }
+
+    normalized[cleanSlug] = { expiresAt, isPaused };
+  });
+
+  return normalized;
+}
+
+function getLinkRule(slug) {
+  return settingsCache.linkRules?.[slug] || { expiresAt: "", isPaused: false };
 }
 
 function getLinkGoal(slug) {
@@ -944,6 +971,7 @@ function renderLinksPage(links, query = "") {
       <div class="goal-grid">
         ${filtered.length ? filtered.map((link) => {
           const { goal, clicks, progress, achieved } = getGoalStatus(link);
+          const rule = getLinkRule(link.slug);
           return `
             <article class="goal-card">
               <div class="goal-card-head">
@@ -961,6 +989,11 @@ function renderLinksPage(links, query = "") {
                 <input class="url-input goal-input" type="number" min="1" step="1" value="${goal || ""}" placeholder="Target clicks" data-goal-input="${escapeHtml(link.slug)}">
                 <button class="link-button" type="button" data-save-goal="${escapeHtml(link.slug)}">Save goal</button>
                 ${goal ? `<button class="link-button secondary" type="button" data-clear-goal="${escapeHtml(link.slug)}">Clear</button>` : ""}
+              </div>
+              <div class="goal-action-row">
+                <input class="url-input goal-input" type="date" value="${escapeHtml(rule.expiresAt || "")}" data-expiry-input="${escapeHtml(link.slug)}">
+                <label class="field-toggle compact-toggle"><input type="checkbox" data-pause-input="${escapeHtml(link.slug)}" ${rule.isPaused ? "checked" : ""}><span>Pause link</span></label>
+                <button class="link-button secondary" type="button" data-save-rule="${escapeHtml(link.slug)}">Save rule</button>
               </div>
             </article>
           `;
@@ -1729,6 +1762,38 @@ function bindGoalActions() {
       });
       renderLinksPage(linksCache, searchInput.value.trim().toLowerCase());
       showGlobalMessage(`Conversion goal cleared for ${slug}.`, false);
+    } catch (error) {
+      showGlobalMessage(error.message, true);
+    }
+  }));
+
+  document.querySelectorAll("[data-save-rule]").forEach((button) => button.addEventListener("click", async () => {
+    const slug = button.getAttribute("data-save-rule");
+    const expiryInput = document.querySelector(`[data-expiry-input="${slug}"]`);
+    const pauseInput = document.querySelector(`[data-pause-input="${slug}"]`);
+    const expiresAt = String(expiryInput?.value || "").trim();
+    const isPaused = Boolean(pauseInput?.checked);
+
+    try {
+      const nextRules = {
+        ...(settingsCache.linkRules || {}),
+      };
+
+      if (!expiresAt && !isPaused) {
+        delete nextRules[slug];
+      } else {
+        nextRules[slug] = { expiresAt, isPaused };
+      }
+
+      await saveSettings({
+        workspaceName: settingsCache.workspaceName,
+        defaultDomain: settingsCache.defaultDomain,
+        domains: settingsCache.domains,
+        conversionGoals: settingsCache.conversionGoals,
+        linkRules: nextRules,
+      });
+      renderLinksPage(linksCache, searchInput.value.trim().toLowerCase());
+      showGlobalMessage(`Link rule saved for ${slug}.`, false);
     } catch (error) {
       showGlobalMessage(error.message, true);
     }

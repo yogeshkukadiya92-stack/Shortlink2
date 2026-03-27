@@ -443,6 +443,7 @@ async function readSettingsForUserAsync(userId, req) {
         ],
         conversionGoals: fileExtras?.conversionGoals || {},
         goalAlertState: fileExtras?.goalAlertState || {},
+        linkRules: fileExtras?.linkRules || {},
       }, req);
     }
     if (dbOnlyMode) {
@@ -1832,6 +1833,7 @@ async function handleSaveSettings(body, req, res, user) {
   const domains = normalizeDomains(requestedDomains, req);
   const conversionGoals = normalizeConversionGoals(body.conversionGoals || currentSettings.conversionGoals || {});
   const goalAlertState = normalizeGoalAlertState(body.goalAlertState || currentSettings.goalAlertState || {});
+  const linkRules = normalizeLinkRules(body.linkRules || currentSettings.linkRules || {});
 
   if (!workspaceName) {
     return sendJson(res, 400, { error: "Workspace name is required." });
@@ -1854,6 +1856,7 @@ async function handleSaveSettings(body, req, res, user) {
     domainEntries: currentDomainEntries,
     conversionGoals,
     goalAlertState,
+    linkRules,
   }, req);
 
   if (!dbOnlyMode) {
@@ -2216,6 +2219,14 @@ async function handleRedirect(slug, req, res) {
   try {
     const dbMatch = await findLinkBySlug(slug);
     if (dbMatch) {
+      const settings = await readSettingsForUserAsync(dbMatch.userId, req);
+      const rule = settings.linkRules?.[dbMatch.slug];
+      if (rule?.isPaused) {
+        return sendJson(res, 410, { error: "This short link is paused." });
+      }
+      if (rule?.expiresAt && Date.now() > new Date(rule.expiresAt).getTime()) {
+        return sendJson(res, 410, { error: "This short link has expired." });
+      }
       try {
         await recordLinkVisitAsync(dbMatch, req);
         await maybeSendGoalAchievementEmail(dbMatch, Number(dbMatch.clickCount || 0) + 1, req);
@@ -2241,6 +2252,14 @@ async function handleRedirect(slug, req, res) {
   const match = links.find((item) => item.slug === slug);
 
   if (match) {
+    const settings = await readSettingsForUserAsync(match.userId, req);
+    const rule = settings.linkRules?.[match.slug];
+    if (rule?.isPaused) {
+      return sendJson(res, 410, { error: "This short link is paused." });
+    }
+    if (rule?.expiresAt && Date.now() > new Date(rule.expiresAt).getTime()) {
+      return sendJson(res, 410, { error: "This short link has expired." });
+    }
     recordLinkVisit(match, req);
     writeLinks(links);
     try {
@@ -2386,6 +2405,7 @@ function defaultSettings(req) {
     domainEntries: [{ host: fallbackDomain, status: "APP_DEFAULT", isActive: true, dnsTarget: publicAppDomain, verifiedAt: null }],
     conversionGoals: {},
     goalAlertState: {},
+    linkRules: {},
   };
 }
 
@@ -2417,6 +2437,30 @@ function normalizeGoalAlertState(input) {
   }
 
   return alerts;
+}
+
+function normalizeLinkRules(input) {
+  const rules = {};
+
+  for (const [key, value] of Object.entries(input || {})) {
+    const slug = sanitizeSlugInput(String(key || ""));
+    if (!slug || !value || typeof value !== "object") {
+      continue;
+    }
+
+    const expiresAt = String(value.expiresAt || "").trim();
+    const isPaused = Boolean(value.isPaused);
+    if (!expiresAt && !isPaused) {
+      continue;
+    }
+
+    rules[slug] = {
+      expiresAt,
+      isPaused,
+    };
+  }
+
+  return rules;
 }
 
 function buildDomainEntries(domains, defaultDomain, req, sourceEntries = []) {
@@ -2464,6 +2508,7 @@ function normalizeSettings(settings, req) {
     domainEntries,
     conversionGoals: normalizeConversionGoals(settings?.conversionGoals || {}),
     goalAlertState: normalizeGoalAlertState(settings?.goalAlertState || {}),
+    linkRules: normalizeLinkRules(settings?.linkRules || {}),
   };
 }
 

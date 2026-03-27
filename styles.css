@@ -2490,6 +2490,18 @@ svg {
   min-width: 0;
 }
 
+.compact-toggle {
+  margin: 0;
+  min-height: 38px;
+  padding: 0 12px;
+  border-radius: 12px;
+  background: rgba(237, 243, 255, 0.7);
+}
+
+.compact-toggle span {
+  font-size: 0.84rem;
+}
+
 .chip-link.success,
 .analytics-tag.success {
   background: linear-gradient(135deg, #e7f8ee 0%, #d8f4e3 100%);
