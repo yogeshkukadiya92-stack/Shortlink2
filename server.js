@@ -21,7 +21,9 @@ const settingsFile = path.join(dataDir, "settings.json");
 const usersFile = path.join(dataDir, "users.json");
 const sessionsFile = path.join(dataDir, "sessions.json");
 const sessionCookieName = "anylink_session";
+const protectedLinkCookiePrefix = "anylink_gate_";
 const sessionLifetimeMs = 1000 * 60 * 60 * 24 * 14;
+const protectedLinkLifetimeSeconds = 60 * 60 * 24;
 const verificationLifetimeMs = 1000 * 60 * 30;
 const resetLifetimeMs = 1000 * 60 * 30;
 const trialLifetimeMs = 1000 * 60 * 60 * 24 * 3;
@@ -208,6 +210,12 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "GET" && pathname.startsWith("/api/domains/verify/")) {
       const domain = decodeURIComponent(pathname.split("/").pop());
       return await withAppAccess(req, res, (user) => handleVerifyDomain(domain, req, res, user));
+    }
+
+    if (req.method === "POST" && pathname.startsWith("/api/unlock/")) {
+      const body = await readRequestBody(req);
+      const slug = pathname.split("/").pop();
+      return await handleUnlockProtectedLink(slug, body, req, res);
     }
 
     if (req.method === "GET" && pathname.startsWith("/forms/")) {
@@ -1833,7 +1841,7 @@ async function handleSaveSettings(body, req, res, user) {
   const domains = normalizeDomains(requestedDomains, req);
   const conversionGoals = normalizeConversionGoals(body.conversionGoals || currentSettings.conversionGoals || {});
   const goalAlertState = normalizeGoalAlertState(body.goalAlertState || currentSettings.goalAlertState || {});
-  const linkRules = normalizeLinkRules(body.linkRules || currentSettings.linkRules || {});
+  const linkRules = normalizeLinkRules(body.linkRules || currentSettings.linkRules || {}, currentSettings.linkRules || {});
 
   if (!workspaceName) {
     return sendJson(res, 400, { error: "Workspace name is required." });
@@ -2215,6 +2223,107 @@ async function maybeSendGoalAchievementEmail(link, currentClicks, req) {
   }
 }
 
+function getProtectedLinkCookieName(slug) {
+  return `${protectedLinkCookiePrefix}${slug}`;
+}
+
+function hasProtectedLinkAccess(req, rule, slug) {
+  if (!rule?.passwordHash || !rule?.accessToken) {
+    return true;
+  }
+
+  const cookies = parseCookies(req.headers.cookie || "");
+  return cookies[getProtectedLinkCookieName(slug)] === rule.accessToken;
+}
+
+function renderProtectedLinkPage(link, errorMessage = "") {
+  const shortUrl = escapeHtml(link.shortUrl || link.slug);
+  const errorBlock = errorMessage ? `<div style="margin:0 0 16px;padding:12px 14px;border-radius:14px;background:#fff1f1;color:#b42318;font-weight:600;">${escapeHtml(errorMessage)}</div>` : "";
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Protected Link | AnyLink</title>
+  <style>
+    body{margin:0;font-family:Segoe UI,Arial,sans-serif;background:linear-gradient(135deg,#eef6ff,#f9fbff);color:#17315f;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:24px}
+    .card{width:min(100%,480px);background:#fff;border:1px solid #dfe8f7;border-radius:28px;padding:30px;box-shadow:0 18px 45px rgba(45,90,232,.10)}
+    .eyebrow{margin:0 0 10px;font-size:.78rem;letter-spacing:.18em;text-transform:uppercase;color:#5d78a4}
+    h1{margin:0 0 12px;font-size:2rem;line-height:1.08}
+    p{margin:0 0 20px;color:#58719b;line-height:1.7}
+    .field{display:grid;gap:8px;margin-bottom:16px}
+    label{font-weight:700}
+    input{width:100%;box-sizing:border-box;min-height:52px;border-radius:18px;border:1px solid #bfd3fb;padding:0 16px;font-size:1rem}
+    button{width:100%;min-height:52px;border:none;border-radius:18px;background:linear-gradient(90deg,#2e57e5,#169fd0);color:#fff;font-size:1rem;font-weight:800;cursor:pointer}
+    .meta{margin-top:14px;font-size:.88rem;color:#6a81aa}
+  </style>
+</head>
+<body>
+  <main class="card">
+    <p class="eyebrow">Protected Link</p>
+    <h1>Password required</h1>
+    <p>Enter the password to continue to <strong>${shortUrl}</strong>.</p>
+    ${errorBlock}
+    <form id="unlockForm">
+      <div class="field">
+        <label for="linkPassword">Password</label>
+        <input id="linkPassword" type="password" placeholder="Enter access password" required>
+      </div>
+      <button type="submit">Unlock link</button>
+    </form>
+    <p class="meta">This destination is protected by the link owner.</p>
+  </main>
+  <script>
+    const form = document.getElementById("unlockForm");
+    const passwordInput = document.getElementById("linkPassword");
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const response = await fetch("/api/unlock/${encodeURIComponent(link.slug)}", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password: passwordInput.value })
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        window.location.replace("/${encodeURIComponent(link.slug)}?error=" + encodeURIComponent(payload.error || "Invalid password"));
+        return;
+      }
+      window.location.replace(payload.destination);
+    });
+  </script>
+</body>
+</html>`;
+}
+
+async function handleUnlockProtectedLink(slug, body, req, res) {
+  const password = String(body.password || "");
+  if (!password) {
+    return sendJson(res, 400, { error: "Password is required." });
+  }
+
+  const link = await findLinkBySlug(slug);
+  if (!link) {
+    return sendJson(res, 404, { error: "Link not found." });
+  }
+
+  const settings = await readSettingsForUserAsync(link.userId, req);
+  const rule = settings.linkRules?.[link.slug];
+  if (!rule?.passwordHash || !rule?.passwordSalt || !rule?.accessToken) {
+    return sendJson(res, 400, { error: "This link is not password protected." });
+  }
+
+  if (hashPassword(password, rule.passwordSalt) !== rule.passwordHash) {
+    return sendJson(res, 401, { error: "Incorrect password." });
+  }
+
+  res.writeHead(200, {
+    "Content-Type": "application/json; charset=utf-8",
+    "Set-Cookie": `${getProtectedLinkCookieName(link.slug)}=${rule.accessToken}; Path=/; Max-Age=${protectedLinkLifetimeSeconds}; SameSite=Lax`,
+  });
+  res.end(JSON.stringify({ success: true, destination: link.destination }));
+}
+
 async function handleRedirect(slug, req, res) {
   try {
     const dbMatch = await findLinkBySlug(slug);
@@ -2226,6 +2335,11 @@ async function handleRedirect(slug, req, res) {
       }
       if (rule?.expiresAt && Date.now() > new Date(rule.expiresAt).getTime()) {
         return sendJson(res, 410, { error: "This short link has expired." });
+      }
+      if (rule?.passwordHash && !hasProtectedLinkAccess(req, rule, dbMatch.slug)) {
+        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+        res.end(renderProtectedLinkPage(dbMatch, new URL(req.url, `http://${req.headers.host || publicAppDomain}`).searchParams.get("error") || ""));
+        return;
       }
       try {
         await recordLinkVisitAsync(dbMatch, req);
@@ -2259,6 +2373,11 @@ async function handleRedirect(slug, req, res) {
     }
     if (rule?.expiresAt && Date.now() > new Date(rule.expiresAt).getTime()) {
       return sendJson(res, 410, { error: "This short link has expired." });
+    }
+    if (rule?.passwordHash && !hasProtectedLinkAccess(req, rule, match.slug)) {
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+      res.end(renderProtectedLinkPage(match, new URL(req.url, `http://${req.headers.host || publicAppDomain}`).searchParams.get("error") || ""));
+      return;
     }
     recordLinkVisit(match, req);
     writeLinks(links);
@@ -2439,7 +2558,7 @@ function normalizeGoalAlertState(input) {
   return alerts;
 }
 
-function normalizeLinkRules(input) {
+function normalizeLinkRules(input, previousRules = {}) {
   const rules = {};
 
   for (const [key, value] of Object.entries(input || {})) {
@@ -2450,14 +2569,31 @@ function normalizeLinkRules(input) {
 
     const expiresAt = String(value.expiresAt || "").trim();
     const isPaused = Boolean(value.isPaused);
-    if (!expiresAt && !isPaused) {
-      continue;
-    }
-
-    rules[slug] = {
+    const previous = previousRules?.[slug] || {};
+    const nextRule = {
       expiresAt,
       isPaused,
     };
+
+    const passwordPlain = String(value.passwordPlain || "").trim();
+    const clearPassword = Boolean(value.clearPassword);
+
+    if (passwordPlain) {
+      const salt = crypto.randomBytes(16).toString("hex");
+      nextRule.passwordSalt = salt;
+      nextRule.passwordHash = hashPassword(passwordPlain, salt);
+      nextRule.accessToken = crypto.randomBytes(18).toString("hex");
+    } else if (!clearPassword && previous.passwordHash && previous.passwordSalt && previous.accessToken) {
+      nextRule.passwordHash = previous.passwordHash;
+      nextRule.passwordSalt = previous.passwordSalt;
+      nextRule.accessToken = previous.accessToken;
+    }
+
+    if (!expiresAt && !isPaused && !nextRule.passwordHash) {
+      continue;
+    }
+
+    rules[slug] = nextRule;
   }
 
   return rules;
@@ -2508,7 +2644,7 @@ function normalizeSettings(settings, req) {
     domainEntries,
     conversionGoals: normalizeConversionGoals(settings?.conversionGoals || {}),
     goalAlertState: normalizeGoalAlertState(settings?.goalAlertState || {}),
-    linkRules: normalizeLinkRules(settings?.linkRules || {}),
+    linkRules: normalizeLinkRules(settings?.linkRules || {}, settings?.linkRules || {}),
   };
 }
 

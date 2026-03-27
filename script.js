@@ -331,18 +331,19 @@ function normalizeLinkRules(rules) {
 
     const expiresAt = String(value.expiresAt || "").trim();
     const isPaused = Boolean(value.isPaused);
-    if (!expiresAt && !isPaused) {
+    const isProtected = Boolean(value.passwordHash || value.isProtected);
+    if (!expiresAt && !isPaused && !isProtected) {
       return;
     }
 
-    normalized[cleanSlug] = { expiresAt, isPaused };
+    normalized[cleanSlug] = { expiresAt, isPaused, isProtected };
   });
 
   return normalized;
 }
 
 function getLinkRule(slug) {
-  return settingsCache.linkRules?.[slug] || { expiresAt: "", isPaused: false };
+  return settingsCache.linkRules?.[slug] || { expiresAt: "", isPaused: false, isProtected: false };
 }
 
 function getLinkGoal(slug) {
@@ -994,6 +995,11 @@ function renderLinksPage(links, query = "") {
                 <input class="url-input goal-input" type="date" value="${escapeHtml(rule.expiresAt || "")}" data-expiry-input="${escapeHtml(link.slug)}">
                 <label class="field-toggle compact-toggle"><input type="checkbox" data-pause-input="${escapeHtml(link.slug)}" ${rule.isPaused ? "checked" : ""}><span>Pause link</span></label>
                 <button class="link-button secondary" type="button" data-save-rule="${escapeHtml(link.slug)}">Save rule</button>
+              </div>
+              <div class="goal-action-row">
+                <input class="url-input password-rule-input" type="text" placeholder="${rule.isProtected ? "Change password" : "Protect with password"}" data-password-input="${escapeHtml(link.slug)}">
+                <button class="link-button secondary" type="button" data-save-password="${escapeHtml(link.slug)}">${rule.isProtected ? "Update password" : "Set password"}</button>
+                ${rule.isProtected ? `<button class="link-button danger" type="button" data-clear-password="${escapeHtml(link.slug)}">Remove password</button>` : ""}
               </div>
             </article>
           `;
@@ -1794,6 +1800,63 @@ function bindGoalActions() {
       });
       renderLinksPage(linksCache, searchInput.value.trim().toLowerCase());
       showGlobalMessage(`Link rule saved for ${slug}.`, false);
+    } catch (error) {
+      showGlobalMessage(error.message, true);
+    }
+  }));
+
+  document.querySelectorAll("[data-save-password]").forEach((button) => button.addEventListener("click", async () => {
+    const slug = button.getAttribute("data-save-password");
+    const passwordInput = document.querySelector(`[data-password-input="${slug}"]`);
+    const passwordPlain = String(passwordInput?.value || "").trim();
+
+    if (passwordPlain.length < 4) {
+      showGlobalMessage("Password must be at least 4 characters.", true);
+      return;
+    }
+
+    try {
+      const nextRules = {
+        ...(settingsCache.linkRules || {}),
+        [slug]: {
+          ...(settingsCache.linkRules?.[slug] || {}),
+          passwordPlain,
+        },
+      };
+      await saveSettings({
+        workspaceName: settingsCache.workspaceName,
+        defaultDomain: settingsCache.defaultDomain,
+        domains: settingsCache.domains,
+        conversionGoals: settingsCache.conversionGoals,
+        linkRules: nextRules,
+      });
+      renderLinksPage(linksCache, searchInput.value.trim().toLowerCase());
+      showGlobalMessage(`Password protection saved for ${slug}.`, false);
+    } catch (error) {
+      showGlobalMessage(error.message, true);
+    }
+  }));
+
+  document.querySelectorAll("[data-clear-password]").forEach((button) => button.addEventListener("click", async () => {
+    const slug = button.getAttribute("data-clear-password");
+
+    try {
+      const nextRules = {
+        ...(settingsCache.linkRules || {}),
+        [slug]: {
+          ...(settingsCache.linkRules?.[slug] || {}),
+          clearPassword: true,
+        },
+      };
+      await saveSettings({
+        workspaceName: settingsCache.workspaceName,
+        defaultDomain: settingsCache.defaultDomain,
+        domains: settingsCache.domains,
+        conversionGoals: settingsCache.conversionGoals,
+        linkRules: nextRules,
+      });
+      renderLinksPage(linksCache, searchInput.value.trim().toLowerCase());
+      showGlobalMessage(`Password removed for ${slug}.`, false);
     } catch (error) {
       showGlobalMessage(error.message, true);
     }
