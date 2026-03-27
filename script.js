@@ -706,12 +706,18 @@ async function submitAuth(url, payload, banner) {
     currentUser = data.user;
     settingsCache = normalizeSettings(data.settings || settingsCache);
     billingCache = data.billing || billingCache;
-    if (data.verificationUrl) {
-      try {
-        sessionStorage.setItem("postSignupVerificationUrl", data.verificationUrl);
-      } catch {
-        // Ignore storage failures and continue the login flow.
+    try {
+      if (data.verificationMessage) {
+        sessionStorage.setItem("postSignupVerificationMessage", data.verificationMessage);
       }
+      if (data.verificationDelivery) {
+        sessionStorage.setItem("postSignupVerificationDelivery", data.verificationDelivery);
+      }
+      if (data.verificationUrl) {
+        sessionStorage.setItem("postSignupVerificationUrl", data.verificationUrl);
+      }
+    } catch {
+      // Ignore storage failures and continue the login flow.
     }
     window.location.href = "/home";
   } catch (error) {
@@ -759,7 +765,7 @@ function bindVerificationAction() {
         setInlineBanner(notice, payload.error || "Could not generate verification link.", true);
         return;
       }
-      setInlineBanner(notice, payload.verificationUrl ? `Verification link: ${payload.verificationUrl}` : payload.message, false);
+      setInlineBanner(notice, payload.delivery === "link" && payload.verificationUrl ? `Email is not configured yet. Use this verification link: ${payload.verificationUrl}` : payload.message, false);
     } catch (error) {
       setInlineBanner(notice, error.message, true);
     }
@@ -811,6 +817,24 @@ function renderHomePage() {
   `;
   wireCreateForm();
   bindVerificationAction();
+  try {
+    const verificationMessage = sessionStorage.getItem("postSignupVerificationMessage");
+    const verificationDelivery = sessionStorage.getItem("postSignupVerificationDelivery");
+    const verificationUrl = sessionStorage.getItem("postSignupVerificationUrl");
+    if (verificationMessage || verificationUrl) {
+      showGlobalMessage(
+        verificationDelivery === "link" && verificationUrl
+          ? `${verificationMessage || "Verification link ready."} ${verificationUrl}`
+          : (verificationMessage || "Verification email sent to your inbox."),
+        false
+      );
+      sessionStorage.removeItem("postSignupVerificationMessage");
+      sessionStorage.removeItem("postSignupVerificationDelivery");
+      sessionStorage.removeItem("postSignupVerificationUrl");
+    }
+  } catch {
+    // Ignore storage access issues.
+  }
   wireLinkActions();
 }
 
@@ -1625,6 +1649,10 @@ function showGlobalMessage(message, isError) {
   window.clearTimeout(showGlobalMessage.timeoutId);
   showGlobalMessage.timeoutId = window.setTimeout(() => banner.classList.remove("visible"), 2200);
 }
+
+
+
+
 
 
 

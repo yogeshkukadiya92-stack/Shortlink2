@@ -675,8 +675,18 @@ async function handleSignup(body, req, res) {
     // JSON remains the live fallback while DB migration rolls out.
   }
 
+  const verificationUrl = buildAuthUrl(req, "verify", user.verificationToken);
+  const verificationEmailSent = await sendTransactionalEmail({
+    to: user.email,
+    subject: "Verify your AnyLink email",
+    html: `<div style="font-family:Segoe UI,Arial,sans-serif;line-height:1.6;color:#183153"><h2 style="margin:0 0 12px;">Welcome to AnyLink</h2><p style="margin:0 0 14px;">Please verify your email to secure your account.</p><p style="margin:0 0 20px;"><a href="${verificationUrl}" style="display:inline-block;background:#2852e0;color:#ffffff;text-decoration:none;padding:12px 18px;border-radius:12px;font-weight:700;">Verify email</a></p></div>`,
+    text: `Verify your AnyLink email: ${verificationUrl}`,
+  });
+
   return await createSessionResponse(user, req, res, 201, {
-    verificationUrl: buildAuthUrl(req, "verify", user.verificationToken),
+    verificationDelivery: verificationEmailSent ? "email" : "link",
+    verificationMessage: verificationEmailSent ? "Verification email sent to your inbox." : "Email is not configured yet. Use the verification link below.",
+    verificationUrl: verificationEmailSent ? "" : verificationUrl,
   });
 }
 
@@ -2433,6 +2443,7 @@ function sendJson(res, statusCode, payload) {
   res.writeHead(statusCode, { "Content-Type": "application/json; charset=utf-8" });
   res.end(JSON.stringify(payload));
 }
+
 
 
 
