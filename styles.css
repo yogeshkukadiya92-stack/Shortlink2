@@ -1449,25 +1449,26 @@ svg {
 
 .analytics-overview-header {
   display: flex;
-  justify-content: space-between;
+  flex-direction: column;
   gap: 18px;
   align-items: flex-start;
 }
 
 .analytics-top-actions {
-  display: flex;
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   align-items: center;
-  justify-content: flex-end;
-  flex-wrap: nowrap;
-  gap: 8px;
-  white-space: nowrap;
+  justify-content: stretch;
+  width: 100%;
+  gap: 12px;
+  white-space: normal;
 }
 
 .analytics-filter-control {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  min-width: 132px;
+  min-width: 0;
 }
 
 .analytics-filter-control span {
@@ -1489,6 +1490,7 @@ svg {
 .analytics-chip {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   min-height: 38px;
   padding: 8px 12px;
   border-radius: 999px;
@@ -1496,6 +1498,10 @@ svg {
   color: #20469d;
   font-size: 0.84rem;
   font-weight: 700;
+}
+
+.analytics-overview-header > div:first-child {
+  max-width: 900px;
 }
 
 .analytics-kpi-grid {
@@ -2335,8 +2341,8 @@ svg {
   }
 
   .analytics-top-actions {
-    flex-wrap: wrap;
     justify-content: flex-start;
+    grid-template-columns: 1fr;
   }
 
   .sidebar {
