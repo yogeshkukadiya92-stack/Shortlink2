@@ -1472,6 +1472,247 @@ function renderQrLinkItems() {
   return linksCache.slice(0, 6).map((link) => `<button class="qr-link-item ${link.slug === (getSelectedQrLink()?.slug || "") ? "active" : ""}" data-select-qr="${escapeHtml(link.slug)}"><strong>${escapeHtml(link.slug)}</strong><span>${escapeHtml(getLinkUrl(link))}</span></button>`).join("");
 }
 
+function renderCampaignsPage() {
+  mainContent.innerHTML = `<section class="surface-card"><div class="surface-header"><div><h2>Campaign tracker</h2><p>Keep your UTM campaigns organized in one private place.</p></div></div><div class="campaign-list"><div class="campaign-item"><strong>Summer Sale</strong><span>Email - Active</span></div><div class="campaign-item"><strong>Creator Outreach</strong><span>Social - Draft</span></div><div class="campaign-item"><strong>Retail Posters</strong><span>Offline - Active</span></div></div></section>`;
+}
+
+function renderDomainsPage() {
+  const domainEntries = settingsCache.domainEntries || settingsCache.domains.map((domain) => ({
+    host: domain,
+    status: domain === publicShortDomain ? "APP_DEFAULT" : (domain === settingsCache.defaultDomain ? "ACTIVE" : "PENDING"),
+    isActive: domain === settingsCache.defaultDomain,
+    dnsTarget: publicShortDomain,
+  }));
+
+  const managedDomainsMarkup = domainEntries.map((entry) => {
+    const domain = entry.host;
+    const isDefaultAppDomain = domain === publicShortDomain;
+    const isActive = Boolean(entry.isActive) || domain === settingsCache.defaultDomain;
+    const normalizedStatus = String(entry.status || "PENDING").toUpperCase();
+    const hostHint = domain.split(".")[0] || domain;
+    const statusLabel = isDefaultAppDomain
+      ? "App Default"
+      : (isActive ? "Active" : normalizedStatus.charAt(0) + normalizedStatus.slice(1).toLowerCase());
+
+    return `
+      <div class="managed-domain ${isActive ? "active" : ""}">
+        <div class="managed-domain-copy">
+          <strong>${escapeHtml(domain)}</strong>
+          <span>${escapeHtml(buildDomainPreview(domain))}</span>
+          ${!isDefaultAppDomain ? `<div class="dns-helper-grid"><span><strong>Type</strong>CNAME</span><span><strong>Host</strong>${escapeHtml(hostHint)}</span><span><strong>Value</strong>${escapeHtml(entry.dnsTarget || publicShortDomain)}</span></div>` : ""}
+        </div>
+        <div class="managed-domain-actions">
+          <span class="domain-status ${normalizedStatus.toLowerCase()}">${escapeHtml(statusLabel)}</span>
+          ${!isDefaultAppDomain && !isActive ? `<button class="link-button" data-activate-domain="${escapeHtml(domain)}">Set active</button>` : ""}
+          ${!isDefaultAppDomain ? `<button class="link-button secondary" data-copy-dns="${escapeHtml(domain)}">Copy DNS</button>` : ""}
+          ${!isDefaultAppDomain && normalizedStatus !== "VERIFIED" && normalizedStatus !== "ACTIVE" ? `<button class="link-button secondary" data-verify-domain="${escapeHtml(domain)}">Mark verified</button>` : ""}
+          ${!isDefaultAppDomain ? `<button class="link-button danger" data-remove-domain="${escapeHtml(domain)}">Remove</button>` : ""}
+        </div>
+      </div>
+    `;
+  }).join("");
+
+  mainContent.innerHTML = `
+    <section class="surface-card two-column">
+      <div>
+        <div class="surface-header">
+          <div>
+            <h2>Custom domains</h2>
+            <p>Your app always stays on <strong>${escapeHtml(publicShortDomain)}</strong>. Users can optionally create short links from their own connected domain.</p>
+          </div>
+          <span class="chip-link">${settingsCache.domains.length} saved</span>
+        </div>
+        <div class="managed-domain-list">${managedDomainsMarkup}</div>
+      </div>
+      <div class="stack-card-group">
+        <div class="form-card">
+          <label class="field-label" for="domainName">Add a new custom domain</label>
+          <input id="domainName" class="url-input" type="text" placeholder="go.yourbrand.com">
+          <button class="primary-action inline-action" id="addDomainButton">Add domain</button>
+          <p class="helper-copy">If no custom domain is active, new short links automatically use ${escapeHtml(publicShortDomain)}.</p>
+        </div>
+        <div class="form-card">
+          <h3>DNS setup</h3>
+          <p class="helper-copy">Create a <strong>CNAME</strong> record for your branded subdomain and point it to <strong>${escapeHtml(publicShortDomain)}</strong>.</p>
+          <div class="dns-helper-grid">
+            <span><strong>Type</strong>CNAME</span>
+            <span><strong>Host</strong>go</span>
+            <span><strong>Value</strong>${escapeHtml(publicShortDomain)}</span>
+          </div>
+          <p class="helper-copy">Example: <code>go.clientdomain.com -> ${escapeHtml(publicShortDomain)}</code></p>
+          <p class="helper-copy">After DNS is live, click <strong>Mark verified</strong> and then set that domain active for fresh links.</p>
+        </div>
+      </div>
+    </section>
+  `;
+
+  document.getElementById("addDomainButton").addEventListener("click", async () => {
+    const domain = sanitizeDomain(document.getElementById("domainName").value.trim());
+    if (!domain) return showGlobalMessage("Enter a valid domain or host.", true);
+    if (settingsCache.domains.includes(domain)) return showGlobalMessage("That domain is already added.", true);
+    await persistDomains([...settingsCache.domains, domain], settingsCache.defaultDomain, `Domain added: ${domain}. Next step: add the DNS CNAME and mark it verified.`);
+  });
+
+  document.querySelectorAll("[data-activate-domain]").forEach((button) => button.addEventListener("click", async () => {
+    const domain = button.getAttribute("data-activate-domain");
+    await persistDomains(settingsCache.domains, domain, `Active domain changed to ${domain}`);
+  }));
+
+  document.querySelectorAll("[data-remove-domain]").forEach((button) => button.addEventListener("click", async () => {
+    const domain = button.getAttribute("data-remove-domain");
+    const domains = settingsCache.domains.filter((item) => item !== domain);
+    const nextDefault = settingsCache.defaultDomain === domain ? domains[0] : settingsCache.defaultDomain;
+    await persistDomains(domains, nextDefault, `Removed domain: ${domain}`);
+  }));
+
+  document.querySelectorAll("[data-copy-dns]").forEach((button) => button.addEventListener("click", async () => {
+    const domain = button.getAttribute("data-copy-dns");
+    try {
+      await navigator.clipboard.writeText(publicShortDomain);
+      showGlobalMessage(`DNS target copied for ${domain}: ${publicShortDomain}`, false);
+    } catch {
+      showGlobalMessage(`Copy failed. Use this DNS target manually: ${publicShortDomain}`, true);
+    }
+  }));
+
+  document.querySelectorAll("[data-verify-domain]").forEach((button) => button.addEventListener("click", async () => {
+    const domain = button.getAttribute("data-verify-domain");
+    await verifyDomain(domain);
+  }));
+}
+
+async function persistDomains(domains, defaultDomain, successMessage) {
+  try {
+    await saveSettings({ workspaceName: settingsCache.workspaceName, domains, defaultDomain });
+    renderDomainsPage();
+    showGlobalMessage(successMessage, false);
+  } catch (error) {
+    showGlobalMessage(error.message, true);
+  }
+}
+
+async function verifyDomain(domain) {
+  try {
+    const response = await fetch(`/api/domains/verify/${encodeURIComponent(domain)}`);
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || "Unable to verify domain.");
+    if (payload.settings) {
+      settingsCache = normalizeSettings(payload.settings);
+      renderDomainsPage();
+    }
+    const hostHint = payload.hostHint || domain.split(".")[0] || domain;
+    showGlobalMessage(`${payload.message} DNS record: ${payload.recordType || "CNAME"} ${hostHint} -> ${payload.dnsTarget || publicShortDomain}`, false);
+  } catch (error) {
+    showGlobalMessage(error.message, true);
+  }
+}
+
+function renderSettingsPage() {
+  mainContent.innerHTML = `
+    <section class="surface-card">
+      <div class="surface-header">
+        <div>
+          <h2>Profile and settings</h2>
+          <p>Manage your personal profile, workspace identity, and default short-link domain.</p>
+        </div>
+      </div>
+      <div class="two-column">
+        <div class="stack-card-group">
+          <div class="form-card">
+            <h3>Profile</h3>
+            <label class="field-label" for="profileNameInput">Display name</label>
+            <input id="profileNameInput" class="url-input" type="text" value="${escapeHtml(currentUser.name)}">
+            <label class="field-label" for="profileEmail">Email</label>
+            <input id="profileEmail" class="url-input" type="text" value="${escapeHtml(currentUser.email)}" disabled>
+            <div class="profile-meta">
+              <span class="domain-status">${currentUser.emailVerified ? "Verified account" : "Email not verified"}</span>
+              ${currentUser.isAdmin ? '<span class="domain-status admin-badge">Admin access</span>' : ""}
+            </div>
+            <button class="primary-action inline-action" id="saveProfileButton">Save profile</button>
+          </div>
+          <div class="form-card">
+            <h3>Change password</h3>
+            <label class="field-label" for="currentPasswordInput">Current password</label>
+            <div class="password-field"><input id="currentPasswordInput" class="url-input" type="password" placeholder="Enter current password"><button class="password-toggle" type="button" data-password-toggle="currentPasswordInput">Show</button></div>
+            <label class="field-label" for="newPasswordInput">New password</label>
+            <div class="password-field"><input id="newPasswordInput" class="url-input" type="password" placeholder="Minimum 6 characters"><button class="password-toggle" type="button" data-password-toggle="newPasswordInput">Show</button></div>
+            <label class="field-label" for="confirmPasswordInput">Confirm new password</label>
+            <div class="password-field"><input id="confirmPasswordInput" class="url-input" type="password" placeholder="Re-enter new password"><button class="password-toggle" type="button" data-password-toggle="confirmPasswordInput">Show</button></div>
+            <button class="primary-action inline-action" id="changePasswordButton">Update password</button>
+          </div>
+          <div class="form-card">
+            <h3>Workspace</h3>
+            <label class="field-label" for="workspaceName">Workspace name</label>
+            <input id="workspaceName" class="url-input" type="text" value="${escapeHtml(settingsCache.workspaceName)}">
+            <label class="field-label" for="defaultDomain">Active domain</label>
+            <select id="defaultDomain" class="url-input domain-select">${settingsCache.domains.map((domain) => `<option value="${escapeHtml(domain)}" ${domain === settingsCache.defaultDomain ? "selected" : ""}>${escapeHtml(domain)}</option>`).join("")}</select>
+            <button class="primary-action inline-action" id="saveSettingsButton">Save settings</button>
+          </div>
+        </div>
+        <div class="mini-card inset-card profile-card">
+          <div class="profile-card-head">
+            <div class="profile-card-avatar">${escapeHtml(currentUser.name.charAt(0).toUpperCase())}</div>
+            <div>
+              <h3>${escapeHtml(currentUser.name)}</h3>
+              <p>${escapeHtml(currentUser.email)}</p>
+            </div>
+          </div>
+          <div class="task-list">
+            <div class="task-item"><span class="task-check filled"></span><span>${currentUser.emailVerified ? "Email verified" : "Email verification pending"}</span></div>
+            <div class="task-item"><span class="task-check filled"></span><span>${settingsCache.domains.length} domain${settingsCache.domains.length === 1 ? "" : "s"} connected</span></div>
+            <div class="task-item"><span class="task-check filled"></span><span>Workspace: ${escapeHtml(settingsCache.workspaceName)}</span></div>
+            <div class="task-item"><span class="task-check filled"></span><span>Plan: ${escapeHtml(billingCache.subscriptionStatus)}</span></div>
+          </div>
+        </div>
+      </div>
+    </section>
+  `;
+
+  document.getElementById("saveProfileButton").addEventListener("click", async () => {
+    try {
+      await saveProfile({
+        name: document.getElementById("profileNameInput").value.trim(),
+      });
+      renderSettingsPage();
+      showGlobalMessage("Profile updated successfully.", false);
+    } catch (error) {
+      showGlobalMessage(error.message, true);
+    }
+  });
+
+  document.getElementById("changePasswordButton").addEventListener("click", async () => {
+    try {
+      await changePassword({
+        currentPassword: document.getElementById("currentPasswordInput").value,
+        newPassword: document.getElementById("newPasswordInput").value,
+        confirmPassword: document.getElementById("confirmPasswordInput").value,
+      });
+      document.getElementById("currentPasswordInput").value = "";
+      document.getElementById("newPasswordInput").value = "";
+      document.getElementById("confirmPasswordInput").value = "";
+      showGlobalMessage("Password updated successfully.", false);
+    } catch (error) {
+      showGlobalMessage(error.message, true);
+    }
+  });
+
+  document.getElementById("saveSettingsButton").addEventListener("click", async () => {
+    try {
+      await saveSettings({
+        workspaceName: document.getElementById("workspaceName").value.trim(),
+        defaultDomain: document.getElementById("defaultDomain").value.trim(),
+        domains: settingsCache.domains,
+      });
+      renderSettingsPage();
+      showGlobalMessage("Settings saved successfully.", false);
+    } catch (error) {
+      showGlobalMessage(error.message, true);
+    }
+  });
+
+  bindPasswordToggles();
+}
+
 function buildDomainPreview(domain, slug = "sample-link") {
   const localPattern = /^(localhost|127\.0\.0\.1)(:\d+)?$/i.test(domain);
   const activeHost = window.location.host;
