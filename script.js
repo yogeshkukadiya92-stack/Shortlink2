@@ -512,6 +512,51 @@ async function runAdminAction(url, body, successMessage) {
 function renderAuthPage() {
   const authMode = authQuery.get("mode") || "signin";
   const token = authQuery.get("token") || "";
+  const activeMode = ["signin", "signup", "forgot", "reset", "verify"].includes(authMode) ? authMode : "signin";
+  const isSignin = activeMode === "signin";
+  const isSignup = activeMode === "signup";
+  const isForgot = activeMode === "forgot";
+  const isReset = activeMode === "reset";
+  const isVerify = activeMode === "verify";
+
+  const authPanelMarkup = isSignup
+    ? `<form class="auth-form" id="signupForm">
+            <label class="field-label" for="signupName">Full name</label>
+            <input class="url-input" id="signupName" type="text" placeholder="Your name" required>
+            <label class="field-label" for="signupEmail">Email</label>
+            <input class="url-input" id="signupEmail" type="email" placeholder="you@example.com" required>
+            <label class="field-label" for="signupPassword">Password</label>
+            <div class="password-field"><input class="url-input" id="signupPassword" type="password" placeholder="Minimum 6 characters" required><button class="password-toggle" type="button" data-password-toggle="signupPassword">Show</button></div>
+            <button class="primary-action auth-submit" type="submit">Create account</button>
+          </form>`
+    : isForgot
+      ? `<form class="auth-form" id="forgotForm">
+            <p class="helper-copy auth-helper-copy">Enter your email and we will generate a secure password reset link for your account.</p>
+            <label class="field-label" for="forgotEmail">Email</label>
+            <input class="url-input" id="forgotEmail" type="email" placeholder="you@example.com" required>
+            <button class="primary-action auth-submit" type="submit">Send reset link</button>
+            <button class="auth-inline-link" type="button" id="backToSignin">Back to sign in</button>
+          </form>`
+      : isReset
+        ? `<form class="auth-form" id="resetForm">
+            <p class="helper-copy auth-helper-copy">Create a new password for your account.</p>
+            <label class="field-label" for="resetPassword">New password</label>
+            <div class="password-field"><input class="url-input" id="resetPassword" type="password" placeholder="Minimum 6 characters" required><button class="password-toggle" type="button" data-password-toggle="resetPassword">Show</button></div>
+            <button class="primary-action auth-submit" type="submit">Reset password</button>
+          </form>`
+        : isVerify
+          ? `<div class="auth-form auth-state-panel">
+            <p class="helper-copy auth-helper-copy">We are checking your email verification link now.</p>
+          </div>`
+          : `<form class="auth-form" id="signinForm">
+            <label class="field-label" for="signinEmail">Email</label>
+            <input class="url-input" id="signinEmail" type="email" placeholder="you@example.com" required>
+            <label class="field-label" for="signinPassword">Password</label>
+            <div class="password-field"><input class="url-input" id="signinPassword" type="password" placeholder="Enter password" required><button class="password-toggle" type="button" data-password-toggle="signinPassword">Show</button></div>
+            <button class="primary-action auth-submit" type="submit">Sign in</button>
+            <button class="auth-inline-link auth-inline-link-muted" type="button" id="forgotPasswordLink">Forgot password?</button>
+          </form>`;
+
   mainContent.innerHTML = `
     <section class="auth-shell">
       <div class="auth-card auth-copy-card">
@@ -525,37 +570,11 @@ function renderAuthPage() {
         </div>
       </div>
       <div class="auth-card auth-form-card">
-        <div class="auth-tabs">
-          <button class="auth-tab ${authMode === "signup" ? "" : "active"}" data-auth-tab="signin">Sign in</button>
-          <button class="auth-tab ${authMode === "signup" ? "active" : ""}" data-auth-tab="signup">Sign up</button>
-        </div>
-        <form class="auth-form ${authMode === "signup" || authMode === "reset" ? "hidden" : ""}" id="signinForm">
-          <label class="field-label" for="signinEmail">Email</label>
-          <input class="url-input" id="signinEmail" type="email" placeholder="you@example.com" required>
-          <label class="field-label" for="signinPassword">Password</label>
-          <div class="password-field"><input class="url-input" id="signinPassword" type="password" placeholder="Enter password" required><button class="password-toggle" type="button" data-password-toggle="signinPassword">Show</button></div>
-          <button class="primary-action auth-submit" type="submit">Sign in</button>
-        </form>
-        <form class="auth-form ${authMode === "signup" ? "" : "hidden"}" id="signupForm">
-          <label class="field-label" for="signupName">Full name</label>
-          <input class="url-input" id="signupName" type="text" placeholder="Your name" required>
-          <label class="field-label" for="signupEmail">Email</label>
-          <input class="url-input" id="signupEmail" type="email" placeholder="you@example.com" required>
-          <label class="field-label" for="signupPassword">Password</label>
-          <div class="password-field"><input class="url-input" id="signupPassword" type="password" placeholder="Minimum 6 characters" required><button class="password-toggle" type="button" data-password-toggle="signupPassword">Show</button></div>
-          <button class="primary-action auth-submit" type="submit">Create account</button>
-        </form>
-        <form class="auth-form ${authMode === "reset" ? "" : "hidden"}" id="resetForm">
-          <label class="field-label" for="resetPassword">New password</label>
-          <div class="password-field"><input class="url-input" id="resetPassword" type="password" placeholder="Minimum 6 characters" required><button class="password-toggle" type="button" data-password-toggle="resetPassword">Show</button></div>
-          <button class="primary-action auth-submit" type="submit">Reset password</button>
-        </form>
-        <form class="auth-form hidden" id="forgotForm">
-          <label class="field-label" for="forgotEmail">Email</label>
-          <input class="url-input" id="forgotEmail" type="email" placeholder="you@example.com" required>
-          <button class="primary-action auth-submit" type="submit">Generate reset link</button>
-          <button class="auth-inline-link" type="button" id="backToSignin">Back to sign in</button>
-        </form>
+        ${isReset || isVerify || isForgot ? "" : `<div class="auth-tabs">
+          <button class="auth-tab ${isSignin ? "active" : ""}" data-auth-tab="signin">Sign in</button>
+          <button class="auth-tab ${isSignup ? "active" : ""}" data-auth-tab="signup">Sign up</button>
+        </div>`}
+        ${authPanelMarkup}
         <div class="result-banner hidden" id="authBanner" aria-live="polite"></div>
       </div>
     </section>
@@ -566,20 +585,37 @@ function renderAuthPage() {
   const resetForm = document.getElementById("resetForm");
   const forgotForm = document.getElementById("forgotForm");
   const authBanner = document.getElementById("authBanner");
+  const forgotPasswordLink = document.getElementById("forgotPasswordLink");
+  const backToSignin = document.getElementById("backToSignin");
 
   document.querySelectorAll("[data-auth-tab]").forEach((tab) => {
     tab.addEventListener("click", () => {
       const mode = tab.getAttribute("data-auth-tab");
-      document.querySelectorAll("[data-auth-tab]").forEach((item) => item.classList.toggle("active", item === tab));
-      signinForm.classList.toggle("hidden", mode !== "signin");
-      signupForm.classList.toggle("hidden", mode !== "signup");
-      resetForm.classList.add("hidden");
-      forgotForm.classList.add("hidden");
-      authBanner.classList.add("hidden");
+      const nextUrl = new URL(window.location.href);
+      nextUrl.searchParams.set("mode", mode);
+      nextUrl.searchParams.delete("token");
+      window.history.replaceState({}, "", nextUrl);
+      renderAuthPage();
     });
   });
 
-  signinForm.addEventListener("submit", async (event) => {
+  forgotPasswordLink?.addEventListener("click", () => {
+    const nextUrl = new URL(window.location.href);
+    nextUrl.searchParams.set("mode", "forgot");
+    nextUrl.searchParams.delete("token");
+    window.history.replaceState({}, "", nextUrl);
+    renderAuthPage();
+  });
+
+  backToSignin?.addEventListener("click", () => {
+    const nextUrl = new URL(window.location.href);
+    nextUrl.searchParams.set("mode", "signin");
+    nextUrl.searchParams.delete("token");
+    window.history.replaceState({}, "", nextUrl);
+    renderAuthPage();
+  });
+
+  signinForm?.addEventListener("submit", async (event) => {
     event.preventDefault();
     setInlineBanner(authBanner, "Signing in...", false);
     await submitAuth("/api/auth/login", {
@@ -588,7 +624,7 @@ function renderAuthPage() {
     }, authBanner);
   });
 
-  signupForm.addEventListener("submit", async (event) => {
+  signupForm?.addEventListener("submit", async (event) => {
     event.preventDefault();
     setInlineBanner(authBanner, "Creating your account...", false);
     await submitAuth("/api/auth/signup", {
@@ -598,29 +634,27 @@ function renderAuthPage() {
     }, authBanner);
   });
 
-  if (forgotForm) {
-    forgotForm.addEventListener("submit", async (event) => {
-      event.preventDefault();
-      setInlineBanner(authBanner, "Generating reset link...", false);
-      try {
-        const response = await fetch("/api/auth/forgot-password", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ email: document.getElementById("forgotEmail").value.trim() }),
-        });
-        const payload = await response.json();
-        if (!response.ok) {
-          setInlineBanner(authBanner, payload.error || "Could not generate reset link.", true);
-          return;
-        }
-        setInlineBanner(authBanner, payload.resetUrl ? `Reset link: ${payload.resetUrl}` : payload.message, false);
-      } catch (error) {
-        setInlineBanner(authBanner, error.message, true);
+  forgotForm?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    setInlineBanner(authBanner, "Sending reset link...", false);
+    try {
+      const response = await fetch("/api/auth/forgot-password", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: document.getElementById("forgotEmail").value.trim() }),
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        setInlineBanner(authBanner, payload.error || "Could not generate reset link.", true);
+        return;
       }
-    });
-  }
+      setInlineBanner(authBanner, payload.resetUrl ? `Reset link sent. Open this link to continue: ${payload.resetUrl}` : payload.message, false);
+    } catch (error) {
+      setInlineBanner(authBanner, error.message, true);
+    }
+  });
 
-  if (resetForm && authMode === "reset" && token) {
+  if (resetForm && token) {
     setInlineBanner(authBanner, "Enter a new password to finish resetting your account.", false);
     resetForm.addEventListener("submit", async (event) => {
       event.preventDefault();
@@ -646,17 +680,12 @@ function renderAuthPage() {
     });
   }
 
-  if (authMode === "verify" && token) {
-    signinForm.classList.add("hidden");
-    signupForm.classList.add("hidden");
-    forgotForm.classList.add("hidden");
-    resetForm.classList.add("hidden");
+  if (isVerify && token) {
     verifyEmailToken(token, authBanner);
   }
 
   bindPasswordToggles();
 }
-
 async function submitAuth(url, payload, banner) {
   try {
     const response = await fetch(url, {
@@ -1593,4 +1622,5 @@ function showGlobalMessage(message, isError) {
   window.clearTimeout(showGlobalMessage.timeoutId);
   showGlobalMessage.timeoutId = window.setTimeout(() => banner.classList.remove("visible"), 2200);
 }
+
 

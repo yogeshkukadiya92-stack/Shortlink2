@@ -2053,3 +2053,17 @@ svg {
     right: 12px;
   }
 }
+
+.auth-helper-copy {
+  margin: 0 0 4px;
+}
+
+.auth-inline-link-muted {
+  margin-top: -2px;
+  color: #4562a9;
+}
+
+.auth-state-panel {
+  min-height: 160px;
+  align-content: center;
+}
