@@ -675,8 +675,11 @@ async function submitAuth(url, payload, banner) {
     settingsCache = normalizeSettings(data.settings || settingsCache);
     billingCache = data.billing || billingCache;
     if (data.verificationUrl) {
-      setInlineBanner(banner, `Account created. Verify your email: ${data.verificationUrl}`, false);
-      return;
+      try {
+        sessionStorage.setItem("postSignupVerificationUrl", data.verificationUrl);
+      } catch {
+        // Ignore storage failures and continue the login flow.
+      }
     }
     window.location.href = "/home";
   } catch (error) {
@@ -1590,3 +1593,4 @@ function showGlobalMessage(message, isError) {
   window.clearTimeout(showGlobalMessage.timeoutId);
   showGlobalMessage.timeoutId = window.setTimeout(() => banner.classList.remove("visible"), 2200);
 }
+
