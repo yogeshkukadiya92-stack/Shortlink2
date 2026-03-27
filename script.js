@@ -648,7 +648,7 @@ function renderAuthPage() {
         setInlineBanner(authBanner, payload.error || "Could not generate reset link.", true);
         return;
       }
-      setInlineBanner(authBanner, payload.resetUrl ? `Reset link sent. Open this link to continue: ${payload.resetUrl}` : payload.message, false);
+      setInlineBanner(authBanner, payload.delivery === "link" && payload.resetUrl ? `Email is not configured yet. Use this reset link: ${payload.resetUrl}` : (payload.message || "Password reset link sent to your email."), false);
     } catch (error) {
       setInlineBanner(authBanner, error.message, true);
     }
@@ -1622,5 +1622,6 @@ function showGlobalMessage(message, isError) {
   window.clearTimeout(showGlobalMessage.timeoutId);
   showGlobalMessage.timeoutId = window.setTimeout(() => banner.classList.remove("visible"), 2200);
 }
+
 
 

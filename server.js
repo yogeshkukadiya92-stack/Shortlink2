@@ -821,23 +821,36 @@ async function handleAuthMe(req, res) {
   return sendJson(res, 200, { user: serializeUser(user), billing: serializeBilling(user) });
 }
 
-function handleForgotPassword(body, req, res) {
+async function handleForgotPassword(body, req, res) {
   const email = String(body.email || "").trim().toLowerCase();
   const users = readUsers();
   const user = users.find((item) => item.email === email);
 
   if (!user) {
-    return sendJson(res, 200, { success: true, message: "If that email exists, a reset link has been created." });
+    return sendJson(res, 200, {
+      success: true,
+      delivery: "email",
+      message: "If that email exists, a password reset link has been sent.",
+    });
   }
 
   user.resetToken = createToken();
   user.resetExpiresAt = Date.now() + resetLifetimeMs;
   writeUsers(users);
 
+  const resetUrl = buildAuthUrl(req, "reset", user.resetToken);
+  const emailSent = await sendTransactionalEmail({
+    to: user.email,
+    subject: "Reset your AnyLink password",
+    html: `<div style="font-family:Segoe UI,Arial,sans-serif;line-height:1.6;color:#183153"><h2 style="margin:0 0 12px;">Reset your password</h2><p style="margin:0 0 14px;">We received a request to reset your AnyLink password.</p><p style="margin:0 0 20px;"><a href="${resetUrl}" style="display:inline-block;background:#2852e0;color:#ffffff;text-decoration:none;padding:12px 18px;border-radius:12px;font-weight:700;">Reset password</a></p><p style="margin:0;color:#5f7399;">If you did not request this, you can safely ignore this email.</p></div>`,
+    text: `Reset your AnyLink password: ${resetUrl}`,
+  });
+
   return sendJson(res, 200, {
     success: true,
-    message: "Reset link generated.",
-    resetUrl: buildAuthUrl(req, "reset", user.resetToken),
+    delivery: emailSent ? "email" : "link",
+    message: emailSent ? "Password reset link sent to your email." : "Email is not configured yet. Use the reset link below.",
+    resetUrl: emailSent ? "" : resetUrl,
   });
 }
 
@@ -864,7 +877,7 @@ function handleResetPassword(body, req, res) {
   return sendJson(res, 200, { success: true, message: "Password updated. You can sign in now." });
 }
 
-function handleSendVerification(body, req, res) {
+async function handleSendVerification(body, req, res) {
   const email = String(body.email || "").trim().toLowerCase();
   const users = readUsers();
   const user = users.find((item) => item.email === email);
@@ -881,10 +894,19 @@ function handleSendVerification(body, req, res) {
   user.verificationExpiresAt = Date.now() + verificationLifetimeMs;
   writeUsers(users);
 
+  const verificationUrl = buildAuthUrl(req, "verify", user.verificationToken);
+  const emailSent = await sendTransactionalEmail({
+    to: user.email,
+    subject: "Verify your AnyLink email",
+    html: `<div style="font-family:Segoe UI,Arial,sans-serif;line-height:1.6;color:#183153"><h2 style="margin:0 0 12px;">Verify your email</h2><p style="margin:0 0 14px;">Click the button below to confirm your AnyLink account email.</p><p style="margin:0 0 20px;"><a href="${verificationUrl}" style="display:inline-block;background:#2852e0;color:#ffffff;text-decoration:none;padding:12px 18px;border-radius:12px;font-weight:700;">Verify email</a></p></div>`,
+    text: `Verify your AnyLink email: ${verificationUrl}`,
+  });
+
   return sendJson(res, 200, {
     success: true,
-    message: "Verification link generated.",
-    verificationUrl: buildAuthUrl(req, "verify", user.verificationToken),
+    delivery: emailSent ? "email" : "link",
+    message: emailSent ? "Verification link sent to your email." : "Email is not configured yet. Use the verification link below.",
+    verificationUrl: emailSent ? "" : verificationUrl,
   });
 }
 
@@ -2310,6 +2332,48 @@ function buildAuthUrl(req, mode, token) {
   return `${protocol}://${hostHeader}/auth?mode=${encodeURIComponent(mode)}&token=${encodeURIComponent(token)}`;
 }
 
+function getEmailDeliveryConfig() {
+  const apiKey = String(process.env.RESEND_API_KEY || "").trim();
+  const from = String(process.env.EMAIL_FROM || process.env.RESEND_FROM_EMAIL || "").trim();
+  const replyTo = String(process.env.EMAIL_REPLY_TO || "").trim();
+  return {
+    apiKey,
+    from,
+    replyTo,
+    enabled: Boolean(apiKey && from),
+  };
+}
+
+async function sendTransactionalEmail({ to, subject, html, text }) {
+  const config = getEmailDeliveryConfig();
+
+  if (!config.enabled) {
+    return false;
+  }
+
+  try {
+    const response = await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${config.apiKey}`,
+      },
+      body: JSON.stringify({
+        from: config.from,
+        to: [to],
+        subject,
+        html,
+        text,
+        reply_to: config.replyTo || undefined,
+      }),
+    });
+
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
 function escapeHtml(value) {
   return String(value || "")
     .replaceAll("&", "&amp;")
@@ -2369,6 +2433,7 @@ function sendJson(res, statusCode, payload) {
   res.writeHead(statusCode, { "Content-Type": "application/json; charset=utf-8" });
   res.end(JSON.stringify(payload));
 }
+
 
 
 
