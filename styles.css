@@ -1448,6 +1448,8 @@ svg {
 }
 
 .analytics-overview-header {
+  display: flex;
+  justify-content: space-between;
   gap: 18px;
   align-items: flex-start;
 }
@@ -1456,14 +1458,16 @@ svg {
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  flex-wrap: wrap;
-  gap: 10px;
+  flex-wrap: nowrap;
+  gap: 8px;
+  white-space: nowrap;
 }
 
 .analytics-filter-control {
-  display: grid;
-  gap: 6px;
-  min-width: 150px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 132px;
 }
 
 .analytics-filter-control span {
@@ -1473,23 +1477,24 @@ svg {
 }
 
 .analytics-range-select {
-  min-height: 42px;
-  padding-right: 36px;
+  min-height: 38px;
+  padding-right: 30px;
+  font-size: 0.9rem;
 }
 
 .analytics-date-control {
-  min-width: 158px;
+  min-width: 128px;
 }
 
 .analytics-chip {
   display: inline-flex;
   align-items: center;
-  min-height: 36px;
-  padding: 8px 14px;
+  min-height: 38px;
+  padding: 8px 12px;
   border-radius: 999px;
   background: linear-gradient(135deg, rgba(37, 77, 181, 0.12), rgba(16, 150, 191, 0.12));
   color: #20469d;
-  font-size: 0.88rem;
+  font-size: 0.84rem;
   font-weight: 700;
 }
 
@@ -2330,6 +2335,7 @@ svg {
   }
 
   .analytics-top-actions {
+    flex-wrap: wrap;
     justify-content: flex-start;
   }
 
