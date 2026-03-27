@@ -28,3 +28,6 @@ npm run db:backfill
 - Existing click events and form submissions are skipped when the same IDs already exist.
 - Missing files such as `data/pages.json` are treated as empty.
 - After backfill succeeds, we can remove JSON fallback route-by-route.
+
+## Cutover
+After you confirm data is present in PostgreSQL and the app is working, set `DB_ONLY_MODE=true` in Railway to stop using JSON fallback for migrated areas.

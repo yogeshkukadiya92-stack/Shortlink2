@@ -26,6 +26,7 @@ const verificationLifetimeMs = 1000 * 60 * 30;
 const resetLifetimeMs = 1000 * 60 * 30;
 const trialLifetimeMs = 1000 * 60 * 60 * 24 * 3;
 const publicAppDomain = process.env.PUBLIC_APP_DOMAIN || "go.shortlinks.in";
+const dbOnlyMode = String(process.env.DB_ONLY_MODE || "").toLowerCase() === "true";
 const builtInAdminEmails = ["yogshkukadiya92@gmail.com", "yogeshkukadiya92@gmail.com"];
 const builtInLifetimeEmails = ["yogeshkukadiya92@gmail.com"];
 
@@ -296,8 +297,13 @@ async function readPagesForUserAsync(userId, req) {
     if (Array.isArray(pages) && pages.length) {
       return pages.map((page) => mapDbPageRecord(page, req));
     }
+    if (dbOnlyMode) {
+      return [];
+    }
   } catch {
-    // Keep JSON fallback while migration is in progress.
+    if (dbOnlyMode) {
+      return [];
+    }
   }
 
   return readPagesForUser(userId, req);
@@ -309,8 +315,13 @@ async function findNormalizedPageByIdAsync(pageId, userId, req) {
     if (page) {
       return mapDbPageRecord(page, req);
     }
+    if (dbOnlyMode) {
+      return null;
+    }
   } catch {
-    // Keep JSON fallback while migration is in progress.
+    if (dbOnlyMode) {
+      return null;
+    }
   }
 
   const stored = readPages().find((item) => item.id === pageId && item.userId === userId);
@@ -323,8 +334,13 @@ async function findNormalizedPageBySlugAsync(slug, req) {
     if (page) {
       return mapDbPageRecord(page, req);
     }
+    if (dbOnlyMode) {
+      return null;
+    }
   } catch {
-    // Keep JSON fallback while migration is in progress.
+    if (dbOnlyMode) {
+      return null;
+    }
   }
 
   const stored = readPages().find((item) => item.slug === slug);
@@ -350,8 +366,13 @@ async function readLinksForUserAsync(userId) {
         analytics: createEmptyAnalytics(),
       }));
     }
+    if (dbOnlyMode) {
+      return [];
+    }
   } catch {
-    // Keep JSON fallback while migration is in progress.
+    if (dbOnlyMode) {
+      return [];
+    }
   }
 
   return readLinksForUser(userId);
@@ -421,8 +442,13 @@ async function readSettingsForUserAsync(userId, req) {
         ],
       }, req);
     }
+    if (dbOnlyMode) {
+      return normalizeSettings({ userId }, req);
+    }
   } catch {
-    // Keep JSON fallback while migration is in progress.
+    if (dbOnlyMode) {
+      return normalizeSettings({ userId }, req);
+    }
   }
 
   return readSettingsForUser(userId, req);
@@ -518,10 +544,13 @@ async function getAuthenticatedUserAsync(req) {
       return normalizeDbUser(session.user);
     }
   } catch {
+    if (dbOnlyMode) {
+      return null;
+    }
     // Fall back to file-backed session lookup while migration is in progress.
   }
 
-  return getAuthenticatedUser(req);
+  return dbOnlyMode ? null : getAuthenticatedUser(req);
 }
 
 function buildStoredPassword(password) {
@@ -583,7 +612,7 @@ async function handleSignup(body, req, res) {
     return sendJson(res, 400, { error: "Password must be at least 6 characters." });
   }
 
-  const users = readUsers();
+  const users = dbOnlyMode ? [] : readUsers();
   let dbExistingUser = null;
 
   try {
@@ -617,9 +646,11 @@ async function handleSignup(body, req, res) {
     createdAt: new Date().toISOString(),
   };
 
-  users.push(user);
-  writeUsers(users);
-  ensureUserSettings(user.id, req);
+  if (!dbOnlyMode) {
+    users.push(user);
+    writeUsers(users);
+    ensureUserSettings(user.id, req);
+  }
   await ensureDbWorkspaceSettings(user.id, req);
 
   try {
@@ -638,6 +669,9 @@ async function handleSignup(body, req, res) {
       createdAt: new Date(user.createdAt),
     });
   } catch {
+    if (dbOnlyMode) {
+      return sendJson(res, 500, { error: "Unable to create your account right now. Please try again." });
+    }
     // JSON remains the live fallback while DB migration rolls out.
   }
 
@@ -660,11 +694,15 @@ async function handleLogin(body, req, res) {
     user = null;
   }
 
-  if (!user) {
+  if (!user && !dbOnlyMode) {
     user = readUsers().find((item) => item.email === email);
     if (!user || !verifyPassword(password, user)) {
       return sendJson(res, 401, { error: "Invalid email or password." });
     }
+  }
+
+  if (!user) {
+    return sendJson(res, 401, { error: "Invalid email or password." });
   }
 
   return await createSessionResponse(user, req, res, 200);
@@ -675,8 +713,10 @@ async function handleLogout(req, res) {
   const token = cookies[sessionCookieName];
 
   if (token) {
-    const sessions = readSessions().filter((item) => item.token !== token);
-    writeSessions(sessions);
+    if (!dbOnlyMode) {
+      const sessions = readSessions().filter((item) => item.token !== token);
+      writeSessions(sessions);
+    }
     try {
       await deleteDbSessionByToken(token);
     } catch {
@@ -692,8 +732,8 @@ async function handleLogout(req, res) {
 }
 
 async function handleUpdateProfile(body, req, res, user) {
-  const users = readUsers();
-  const record = users.find((item) => item.id === user.id);
+  const users = dbOnlyMode ? [] : readUsers();
+  const record = users.find((item) => item.id === user.id) || { ...user };
 
   if (!record) {
     return sendJson(res, 404, { error: "User not found." });
@@ -706,11 +746,16 @@ async function handleUpdateProfile(body, req, res, user) {
   }
 
   record.name = nextName;
-  writeUsers(users);
+  if (!dbOnlyMode) {
+    writeUsers(users);
+  }
 
   try {
     await updateDbUser(user.id, { name: nextName });
   } catch {
+    if (dbOnlyMode) {
+      return sendJson(res, 500, { error: "Unable to update your profile right now." });
+    }
     // Keep file-backed user as fallback until full migration is complete.
   }
 
@@ -718,8 +763,8 @@ async function handleUpdateProfile(body, req, res, user) {
 }
 
 async function handleChangePassword(body, res, user) {
-  const users = readUsers();
-  const record = users.find((item) => item.id === user.id);
+  const users = dbOnlyMode ? [] : readUsers();
+  const record = users.find((item) => item.id === user.id) || { ...user };
 
   if (!record) {
     return sendJson(res, 404, { error: "User not found." });
@@ -733,7 +778,7 @@ async function handleChangePassword(body, res, user) {
     return sendJson(res, 400, { error: "Fill in all password fields." });
   }
 
-  if (hashPassword(currentPassword, record.salt) !== record.passwordHash) {
+  if (!verifyPassword(currentPassword, record)) {
     return sendJson(res, 400, { error: "Current password is incorrect." });
   }
 
@@ -750,11 +795,16 @@ async function handleChangePassword(body, res, user) {
   record.passwordHash = combined;
   record.resetToken = "";
   record.resetExpiresAt = 0;
-  writeUsers(users);
+  if (!dbOnlyMode) {
+    writeUsers(users);
+  }
 
   try {
     await updateDbUser(user.id, { passwordHash: combined });
   } catch {
+    if (dbOnlyMode) {
+      return sendJson(res, 500, { error: "Unable to update your password right now." });
+    }
     // Keep file-backed password as fallback until full migration is complete.
   }
 
@@ -1002,7 +1052,6 @@ function handleAdminRevokeSession(sessionToken, res) {
 }
 
 async function createSessionResponse(user, req, res, statusCode, extras = {}) {
-  const sessions = readSessions().filter((item) => item.userId !== user.id);
   const token = crypto.randomBytes(32).toString("hex");
   const session = {
     token,
@@ -1011,8 +1060,11 @@ async function createSessionResponse(user, req, res, statusCode, extras = {}) {
     expiresAt: Date.now() + sessionLifetimeMs,
   };
 
-  sessions.push(session);
-  writeSessions(sessions);
+  if (!dbOnlyMode) {
+    const sessions = readSessions().filter((item) => item.userId !== user.id);
+    sessions.push(session);
+    writeSessions(sessions);
+  }
 
   try {
     await createDbSession({
@@ -1022,14 +1074,19 @@ async function createSessionResponse(user, req, res, statusCode, extras = {}) {
       createdAt: new Date(session.createdAt),
     });
   } catch {
+    if (dbOnlyMode) {
+      return sendJson(res, 500, { error: "Unable to start your session right now. Please try again." });
+    }
     // JSON session stays as fallback.
   }
+
+  const settings = await readSettingsForUserAsync(user.id, req);
 
   res.writeHead(statusCode, {
     "Content-Type": "application/json; charset=utf-8",
     "Set-Cookie": buildSessionCookie(token, { maxAge: sessionLifetimeMs / 1000 }),
   });
-  res.end(JSON.stringify({ user: serializeUser(user), settings: readSettingsForUser(user.id, req), billing: serializeBilling(user), ...extras }));
+  res.end(JSON.stringify({ user: serializeUser(user), settings, billing: serializeBilling(user), ...extras }));
 }
 
 function buildSessionCookie(value, options = {}) {
@@ -1147,14 +1204,35 @@ async function handleCreateLink(body, req, res, user) {
     return sendJson(res, 400, { error: "Please enter a valid destination URL." });
   }
 
-  const links = readLinks();
-  const slug = customSlug || generateSlug(links);
+  const links = dbOnlyMode ? await readLinksForUserAsync(user.id) : readLinks();
+  let slug = customSlug || generateSlug(links);
 
   if (!/^[a-z0-9-]{3,32}$/.test(slug)) {
     return sendJson(res, 400, { error: "Slug must be 3-32 characters and use only letters, numbers, or hyphens." });
   }
 
-  if (links.some((item) => item.slug === slug)) {
+  if (dbOnlyMode) {
+    while (!customSlug) {
+      try {
+        const exists = await findLinkBySlug(slug);
+        if (!exists) break;
+      } catch {
+        break;
+      }
+      slug = generateSlug([]);
+    }
+
+    if (customSlug) {
+      try {
+        const exists = await findLinkBySlug(slug);
+        if (exists) {
+          return sendJson(res, 409, { error: "That short link already exists. Try another custom slug." });
+        }
+      } catch {
+        // Allow DB create to be the final guard.
+      }
+    }
+  } else if (links.some((item) => item.slug === slug)) {
     return sendJson(res, 409, { error: "That short link already exists. Try another custom slug." });
   }
 
@@ -1171,8 +1249,10 @@ async function handleCreateLink(body, req, res, user) {
     analytics: createEmptyAnalytics(),
   };
 
-  links.unshift(nextLink);
-  writeLinks(links);
+  if (!dbOnlyMode) {
+    links.unshift(nextLink);
+    writeLinks(links);
+  }
   try {
     await createDbLink({
       id: String(nextLink.id),
@@ -1184,6 +1264,9 @@ async function handleCreateLink(body, req, res, user) {
       createdAt: new Date(nextLink.createdAt),
     });
   } catch {
+    if (dbOnlyMode) {
+      return sendJson(res, 500, { error: "Unable to create your link right now. Please try again." });
+    }
     // JSON remains fallback during DB migration.
   }
   sendJson(res, 201, { link: nextLink });
@@ -1208,11 +1291,11 @@ async function handleSavePage(body, req, res, user) {
   }
 
   const fields = normalizeFormFields(body.fields || {});
-  const pages = readPages();
+  const pages = dbOnlyMode ? [] : readPages();
   const existingIndex = pages.findIndex((item) => item.id === body.id && item.userId === user.id);
   const conflictingSlug = pages.find((item) => item.slug === slug && item.id !== body.id);
 
-  if (conflictingSlug) {
+  if (!dbOnlyMode && conflictingSlug) {
     return sendJson(res, 409, { error: "That form slug is already in use." });
   }
 
@@ -1255,7 +1338,9 @@ async function handleSavePage(body, req, res, user) {
     }, req));
   }
 
-  writePages(pages);
+  if (!dbOnlyMode) {
+    writePages(pages);
+  }
   const saved = pages.find((item) => item.slug === slug && item.userId === user.id);
 
   try {
@@ -1269,15 +1354,18 @@ async function handleSavePage(body, req, res, user) {
     }, serializeDbFormFields(fields));
     return sendJson(res, existingIndex >= 0 ? 200 : 201, { page: mapDbPageRecord(dbSaved, req) });
   } catch {
+    if (dbOnlyMode) {
+      return sendJson(res, 500, { error: "Unable to save this form right now. Please try again." });
+    }
     return sendJson(res, existingIndex >= 0 ? 200 : 201, { page: normalizePage(saved, req) });
   }
 }
 
 async function handleDeletePage(pageId, res, user) {
-  const pages = readPages();
+  const pages = dbOnlyMode ? [] : readPages();
   const nextPages = pages.filter((item) => !(item.id === pageId && item.userId === user.id));
 
-  if (nextPages.length === pages.length) {
+  if (dbOnlyMode || nextPages.length === pages.length) {
     try {
       const result = await deletePageById(pageId, user.id);
       if (!result.count) {
@@ -1289,10 +1377,15 @@ async function handleDeletePage(pageId, res, user) {
     }
   }
 
-  writePages(nextPages);
+  if (!dbOnlyMode) {
+    writePages(nextPages);
+  }
   try {
     await deletePageById(pageId, user.id);
   } catch {
+    if (dbOnlyMode) {
+      return sendJson(res, 500, { error: "Unable to complete this request right now. Please try again." });
+    }
     // JSON remains fallback during DB migration.
   }
   return sendJson(res, 200, { success: true });
@@ -1415,7 +1508,7 @@ async function handlePublicFormPage(slug, req, res) {
 
 async function handlePublicFormSubmit(slug, body, req, res) {
   const normalizedPage = await findNormalizedPageBySlugAsync(slug, req);
-  const pages = readPages();
+  const pages = dbOnlyMode ? [] : readPages();
   const page = pages.find((item) => item.slug === slug);
 
   if (!normalizedPage) {
@@ -1469,6 +1562,9 @@ async function handlePublicFormSubmit(slug, body, req, res) {
       }, dbAnswers);
     }
   } catch {
+    if (dbOnlyMode) {
+      return sendJson(res, 500, { error: "Unable to save this response right now. Please try again." });
+    }
     // JSON remains fallback during DB migration.
   }
 
@@ -1476,10 +1572,10 @@ async function handlePublicFormSubmit(slug, body, req, res) {
 }
 
 async function handleDeleteLink(slug, res, user) {
-  const links = readLinks();
+  const links = dbOnlyMode ? [] : readLinks();
   const nextLinks = links.filter((item) => !(item.slug === slug && item.userId === user.id));
 
-  if (nextLinks.length === links.length) {
+  if (dbOnlyMode || nextLinks.length === links.length) {
     try {
       const result = await deleteLinkBySlug(slug, user.id);
       if (!result.count) {
@@ -1491,10 +1587,15 @@ async function handleDeleteLink(slug, res, user) {
     }
   }
 
-  writeLinks(nextLinks);
+  if (!dbOnlyMode) {
+    writeLinks(nextLinks);
+  }
   try {
     await deleteLinkBySlug(slug, user.id);
   } catch {
+    if (dbOnlyMode) {
+      return sendJson(res, 500, { error: "Unable to complete this request right now. Please try again." });
+    }
     // JSON remains fallback during DB migration.
   }
   return sendJson(res, 200, { success: true });
@@ -1555,8 +1656,33 @@ async function buildAnalyticsReport(userId) {
         links: normalizedLinks.sort((left, right) => right.totalClicks - left.totalClicks || new Date(right.createdAt || 0).getTime() - new Date(left.createdAt || 0).getTime()),
       };
     }
+    if (dbOnlyMode) {
+      return {
+        totalLinks: 0,
+        totalClicks: 0,
+        topCountries: [],
+        topCities: [],
+        topDevices: [],
+        topPlatforms: [],
+        topBrowsers: [],
+        recentClicks: [],
+        links: [],
+      };
+    }
   } catch {
-    // Keep JSON fallback while migration is in progress.
+    if (dbOnlyMode) {
+      return {
+        totalLinks: 0,
+        totalClicks: 0,
+        topCountries: [],
+        topCities: [],
+        topDevices: [],
+        topPlatforms: [],
+        topBrowsers: [],
+        recentClicks: [],
+        links: [],
+      };
+    }
   }
 
   const links = readLinksForUser(userId);
@@ -1651,9 +1777,11 @@ async function handleSaveSettings(body, req, res, user) {
     domains,
   }, req);
 
-  const store = readSettingsStore().filter((item) => item.userId !== user.id);
-  store.push(nextSettings);
-  writeSettingsStore(store);
+  if (!dbOnlyMode) {
+    const store = readSettingsStore().filter((item) => item.userId !== user.id);
+    store.push(nextSettings);
+    writeSettingsStore(store);
+  }
   try {
     await upsertWorkspaceSettings(user.id, {
       workspaceName: nextSettings.workspaceName,
@@ -1672,6 +1800,9 @@ async function handleSaveSettings(body, req, res, user) {
       });
     }
   } catch {
+    if (dbOnlyMode) {
+      return sendJson(res, 500, { error: "Unable to save your settings right now. Please try again." });
+    }
     // JSON remains fallback during DB migration.
   }
   return sendJson(res, 200, { settings: nextSettings });
@@ -1902,8 +2033,15 @@ async function handleRedirect(slug, req, res) {
       res.end();
       return;
     }
+    if (dbOnlyMode) {
+      sendJson(res, 404, { error: "Not found" });
+      return;
+    }
   } catch {
-    // Keep JSON fallback while migration is in progress.
+    if (dbOnlyMode) {
+      sendJson(res, 404, { error: "Not found" });
+      return;
+    }
   }
 
   const links = readLinks();
@@ -2231,6 +2369,7 @@ function sendJson(res, statusCode, payload) {
   res.writeHead(statusCode, { "Content-Type": "application/json; charset=utf-8" });
   res.end(JSON.stringify(payload));
 }
+
 
 
 
