@@ -24,6 +24,11 @@ let selectedFormId = "";
 let analyticsRange = "30d";
 let analyticsCustomStart = "";
 let analyticsCustomEnd = "";
+let qrCustomization = {
+  foreground: "#2046d9",
+  background: "#ffffff",
+  logoText: "SL",
+};
 let settingsCache = {
   workspaceName: "AnyLink Workspace",
   defaultDomain: getDefaultShortDomain(),
@@ -1023,19 +1028,31 @@ function renderLinksPage(links, query = "") {
 function renderQrPage() {
   const sample = getSelectedQrLink();
   const qrTargetUrl = sample ? getLinkUrl(sample) : "";
-  const qrImageUrl = sample ? buildQrImageUrl(qrTargetUrl) : "";
+  const qrImageUrl = sample ? buildQrImageUrl(qrTargetUrl, qrCustomization) : "";
 
   mainContent.innerHTML = `
     <section class="surface-card two-column">
       <div>
         <div class="surface-header"><div><h2>QR Code workspace</h2><p>Generate scannable QR codes for links inside your private account.</p></div></div>
         <div class="qr-panel">
-          <div class="qr-box">${sample ? `<img class="qr-image" src="${escapeHtml(qrImageUrl)}" alt="QR code for ${escapeHtml(qrTargetUrl)}">` : `<div class="qr-grid"></div>`}</div>
+          <div class="qr-box">${sample ? `<img class="qr-image" id="qrPreviewImage" src="${escapeHtml(qrImageUrl)}" alt="QR code for ${escapeHtml(qrTargetUrl)}">` : `<div class="qr-grid"></div>`}</div>
           <div class="qr-copy">
             <strong>${sample ? escapeHtml(qrTargetUrl) : "Create a link first"}</strong>
             <p>${sample ? "Use this QR in posters, packaging, menus, business cards, or flyers." : "Once you create a link on Home, it can appear here as a QR-ready item."}</p>
+            ${sample ? `
+              <div class="qr-customizer-grid">
+                <label class="field-label qr-color-field">Foreground<input id="qrForeground" type="color" value="${escapeHtml(qrCustomization.foreground)}"></label>
+                <label class="field-label qr-color-field">Background<input id="qrBackground" type="color" value="${escapeHtml(qrCustomization.background)}"></label>
+                <label class="field-label qr-logo-field">Logo text<input id="qrLogoText" class="url-input" type="text" maxlength="3" value="${escapeHtml(qrCustomization.logoText)}" placeholder="SL"></label>
+              </div>
+            ` : ""}
             <div class="qr-action-row">
-              ${sample ? `<a class="primary-action inline-action" href="${escapeHtml(qrImageUrl)}" target="_blank" rel="noreferrer">Open QR</a><a class="link-button secondary qr-download" href="${escapeHtml(qrImageUrl)}" download="anylink-${escapeHtml(sample.slug)}-qr.png">Download</a>` : `<a class="primary-action inline-action" href="/home">Create link</a>`}
+              ${sample ? `
+                <button class="primary-action inline-action" id="openQrButton" type="button">Open QR</button>
+                <button class="link-button secondary" id="downloadQrPngButton" type="button">PNG</button>
+                <button class="link-button secondary" id="downloadQrSvgButton" type="button">SVG</button>
+                <button class="link-button secondary" id="downloadQrPdfButton" type="button">PDF</button>
+              ` : `<a class="primary-action inline-action" href="/home">Create link</a>`}
             </div>
           </div>
         </div>
@@ -1050,6 +1067,10 @@ function renderQrPage() {
       renderQrPage();
     });
   });
+
+  if (sample) {
+    bindQrCustomizer(sample, qrTargetUrl);
+  }
 }
 
 function renderPagesBuilder() {
@@ -1908,8 +1929,134 @@ function getLinkUrl(link) {
   return buildLiveLinkUrl(link?.slug || "");
 }
 
-function buildQrImageUrl(targetUrl) {
-  return `https://api.qrserver.com/v1/create-qr-code/?size=520x520&data=${encodeURIComponent(targetUrl)}`;
+function buildQrImageUrl(targetUrl, options = {}) {
+  const color = String(options.foreground || "#2046d9").replace("#", "");
+  const bgcolor = String(options.background || "#ffffff").replace("#", "");
+  return `https://api.qrserver.com/v1/create-qr-code/?size=520x520&data=${encodeURIComponent(targetUrl)}&color=${encodeURIComponent(color)}&bgcolor=${encodeURIComponent(bgcolor)}`;
+}
+
+function buildQrSvgUrl(targetUrl, options = {}) {
+  const color = String(options.foreground || "#2046d9").replace("#", "");
+  const bgcolor = String(options.background || "#ffffff").replace("#", "");
+  return `https://api.qrserver.com/v1/create-qr-code/?size=520x520&format=svg&data=${encodeURIComponent(targetUrl)}&color=${encodeURIComponent(color)}&bgcolor=${encodeURIComponent(bgcolor)}`;
+}
+
+function getQrLogoText() {
+  return String(qrCustomization.logoText || "SL").trim().slice(0, 3).toUpperCase() || "SL";
+}
+
+function downloadBlob(filename, blob) {
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1200);
+}
+
+function loadImage(src) {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.crossOrigin = "anonymous";
+    image.onload = () => resolve(image);
+    image.onerror = reject;
+    image.src = src;
+  });
+}
+
+async function buildQrCanvas(targetUrl) {
+  const canvas = document.createElement("canvas");
+  canvas.width = 520;
+  canvas.height = 520;
+  const context = canvas.getContext("2d");
+  context.fillStyle = qrCustomization.background;
+  context.fillRect(0, 0, canvas.width, canvas.height);
+
+  const qrImage = await loadImage(buildQrImageUrl(targetUrl, qrCustomization));
+  context.drawImage(qrImage, 0, 0, canvas.width, canvas.height);
+
+  const logoText = getQrLogoText();
+  if (logoText) {
+    const centerSize = 108;
+    const x = (canvas.width - centerSize) / 2;
+    const y = (canvas.height - centerSize) / 2;
+    context.fillStyle = "#ffffff";
+    context.beginPath();
+    context.roundRect(x, y, centerSize, centerSize, 26);
+    context.fill();
+    context.strokeStyle = qrCustomization.foreground;
+    context.lineWidth = 6;
+    context.stroke();
+    context.fillStyle = qrCustomization.foreground;
+    context.font = "800 44px Segoe UI";
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    context.fillText(logoText, canvas.width / 2, canvas.height / 2 + 2);
+  }
+
+  return canvas;
+}
+
+async function exportQrPng(sample, targetUrl) {
+  const canvas = await buildQrCanvas(targetUrl);
+  canvas.toBlob((blob) => blob && downloadBlob(`anylink-${sample.slug}-qr.png`, blob), "image/png");
+}
+
+async function exportQrSvg(sample, targetUrl) {
+  const qrSvg = await fetch(buildQrSvgUrl(targetUrl, qrCustomization)).then((response) => response.text());
+  const baseSvg = qrSvg.replace(/<\/svg>\s*$/i, "");
+  const logoText = getQrLogoText();
+  const overlay = logoText
+    ? `<g><rect x="206" y="206" width="108" height="108" rx="24" fill="#ffffff" stroke="${qrCustomization.foreground}" stroke-width="6"/><text x="260" y="268" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="42" font-weight="800" fill="${qrCustomization.foreground}">${escapeHtml(logoText)}</text></g>`
+    : "";
+  const finalSvg = `${baseSvg}${overlay}</svg>`;
+  downloadBlob(`anylink-${sample.slug}-qr.svg`, new Blob([finalSvg], { type: "image/svg+xml;charset=utf-8" }));
+}
+
+async function exportQrPdf(sample, targetUrl) {
+  const canvas = await buildQrCanvas(targetUrl);
+  const dataUrl = canvas.toDataURL("image/png");
+  const printWindow = window.open("", "_blank", "width=720,height=920");
+  if (!printWindow) {
+    showGlobalMessage("Pop-up blocked. Allow pop-ups to export PDF.", true);
+    return;
+  }
+  printWindow.document.write(`<!DOCTYPE html><html><head><title>QR PDF</title><style>body{font-family:Segoe UI,Arial,sans-serif;padding:32px;text-align:center}img{width:360px;height:360px;display:block;margin:0 auto 18px}h1{font-size:22px;margin:0 0 10px}p{color:#4d628c;word-break:break-all}</style></head><body><h1>${escapeHtml(sample.slug)}</h1><img src="${dataUrl}" alt="QR code"><p>${escapeHtml(targetUrl)}</p><script>window.onload=()=>setTimeout(()=>window.print(),200);<\/script></body></html>`);
+  printWindow.document.close();
+}
+
+function bindQrCustomizer(sample, targetUrl) {
+  const previewImage = document.getElementById("qrPreviewImage");
+  const foregroundInput = document.getElementById("qrForeground");
+  const backgroundInput = document.getElementById("qrBackground");
+  const logoInput = document.getElementById("qrLogoText");
+
+  const rerenderPreview = () => {
+    qrCustomization.foreground = foregroundInput.value;
+    qrCustomization.background = backgroundInput.value;
+    qrCustomization.logoText = logoInput.value.trim().slice(0, 3).toUpperCase() || "SL";
+    previewImage.src = buildQrImageUrl(targetUrl, qrCustomization);
+  };
+
+  foregroundInput?.addEventListener("input", rerenderPreview);
+  backgroundInput?.addEventListener("input", rerenderPreview);
+  logoInput?.addEventListener("input", rerenderPreview);
+
+  document.getElementById("openQrButton")?.addEventListener("click", () => {
+    window.open(buildQrImageUrl(targetUrl, qrCustomization), "_blank", "noreferrer");
+  });
+
+  document.getElementById("downloadQrPngButton")?.addEventListener("click", async () => {
+    await exportQrPng(sample, targetUrl);
+  });
+
+  document.getElementById("downloadQrSvgButton")?.addEventListener("click", async () => {
+    await exportQrSvg(sample, targetUrl);
+  });
+
+  document.getElementById("downloadQrPdfButton")?.addEventListener("click", async () => {
+    await exportQrPdf(sample, targetUrl);
+  });
 }
 
 function getSelectedQrLink() {

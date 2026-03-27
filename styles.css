@@ -1709,6 +1709,29 @@ svg {
   color: var(--muted);
 }
 
+.qr-customizer-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin: 0 0 18px;
+}
+
+.qr-color-field,
+.qr-logo-field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.qr-color-field input[type="color"] {
+  width: 100%;
+  height: 44px;
+  padding: 4px;
+  border-radius: 14px;
+  border: 1px solid #d5e0f4;
+  background: #ffffff;
+}
+
 .qr-action-row {
   display: flex;
   flex-wrap: wrap;
