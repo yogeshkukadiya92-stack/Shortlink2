@@ -1036,7 +1036,7 @@ async function handleCreateSubscription(user, req, res) {
   try {
     const currentSettings = await readSettingsForUserAsync(user.id, req);
     const periodLabel = String(process.env.RAZORPAY_SUBSCRIPTION_LABEL || "AnyLink Pro");
-    const totalCount = Math.max(1, Number(process.env.RAZORPAY_TOTAL_COUNT || 120));
+    const totalCount = Math.min(100, Math.max(1, Number(process.env.RAZORPAY_TOTAL_COUNT || 12)));
     const returnUrl = buildAbsoluteUrl(req, "/settings");
     const authHeader = Buffer.from(`${razorpayKeyId}:${razorpayKeySecret}`).toString("base64");
 
