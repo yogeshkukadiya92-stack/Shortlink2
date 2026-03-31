@@ -1951,6 +1951,10 @@ async function renderAnalyticsPage() {
               <div class="analytics-list compact-list">${renderAnalyticsBadges(analytics.topPlatforms)}</div>
             </div>
             <div>
+              <strong class="analytics-section-title">Languages</strong>
+              <div class="analytics-list compact-list">${renderAnalyticsBadges(analytics.topLanguages)}</div>
+            </div>
+            <div>
               <strong class="analytics-section-title">Referrers</strong>
               <div class="analytics-list compact-list">${renderAnalyticsBadges(analytics.topReferrers)}</div>
             </div>
@@ -1965,7 +1969,7 @@ async function renderAnalyticsPage() {
 
       <section class="surface-card analytics-panel-card">
         <div class="surface-header compact"><div><h2>Recent clicks</h2><p>Latest visits with time, device, location, referrer, and IP visibility.</p></div></div>
-        <div class="admin-table analytics-recent-table">${renderClickRows(analytics.recentClicks, false)}</div>
+        <div class="admin-table analytics-recent-table">${renderTrackedClickRows(analytics.recentClicks, false)}</div>
       </section>
 
       <section class="surface-card analytics-panel-card">
@@ -1993,9 +1997,10 @@ async function renderAnalyticsPage() {
                 <div><strong>Devices</strong><div class="analytics-list compact-list">${renderAnalyticsBadges(link.topDevices)}</div></div>
                 <div><strong>Cities</strong><div class="analytics-list compact-list">${renderAnalyticsBadges(link.topCities)}</div></div>
                 <div><strong>Browsers</strong><div class="analytics-list compact-list">${renderAnalyticsBadges(link.topBrowsers)}</div></div>
+                <div><strong>Languages</strong><div class="analytics-list compact-list">${renderAnalyticsBadges(link.topLanguages)}</div></div>
                 <div><strong>Referrers</strong><div class="analytics-list compact-list">${renderAnalyticsBadges(link.topReferrers)}</div></div>
               </div>
-              <div class="admin-table analytics-click-table">${renderClickRows(link.recentClicks, true)}</div>
+              <div class="admin-table analytics-click-table">${renderTrackedClickRows(link.recentClicks, true)}</div>
             </article>
           `).join("") : '<div class="empty-state">No analytics yet. Share a short link and visits will appear here.</div>'}
         </div>
@@ -2137,6 +2142,28 @@ function renderClickRows(clicks, compact) {
         <span>${escapeHtml(new Date(click.clickedAt).toLocaleString())}</span>
         <span>${escapeHtml(click.country || "Unknown")} • ${escapeHtml(click.city || "Unknown")}</span>
         <span>${escapeHtml(click.deviceType || "Unknown")} • ${escapeHtml(click.platform || "Unknown")} • ${escapeHtml(click.browser || "Unknown")}</span>
+      </div>
+      <div class="admin-actions analytics-actions">
+        <span class="analytics-tag">${escapeHtml(click.ip || "Unknown")}</span>
+        ${click.referrer ? `<span class="analytics-tag muted">${escapeHtml(click.referrer)}</span>` : ""}
+      </div>
+    </div>
+  `).join("");
+}
+
+function renderTrackedClickRows(clicks, compact) {
+  if (!clicks || !clicks.length) {
+    return '<div class="empty-state">No clicks recorded yet.</div>';
+  }
+
+  return clicks.map((click) => `
+    <div class="admin-row analytics-row ${compact ? "compact" : ""}">
+      <div class="admin-main">
+        ${click.slug ? `<strong>${escapeHtml(click.slug)}</strong>` : ""}
+        <span>${escapeHtml(new Date(click.clickedAt).toLocaleString())}</span>
+        <span>${escapeHtml(click.country || "Unknown")} / ${escapeHtml(click.city || "Unknown")}</span>
+        <span>${escapeHtml(click.deviceType || "Unknown")} / ${escapeHtml(click.platform || "Unknown")} / ${escapeHtml(click.browser || "Unknown")}</span>
+        <span>${escapeHtml(click.language || "Unknown")} / ${click.visitorId ? "Known visitor" : "Fingerprint estimate"}</span>
       </div>
       <div class="admin-actions analytics-actions">
         <span class="analytics-tag">${escapeHtml(click.ip || "Unknown")}</span>

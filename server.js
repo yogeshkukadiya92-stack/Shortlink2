@@ -22,8 +22,12 @@ const usersFile = path.join(dataDir, "users.json");
 const sessionsFile = path.join(dataDir, "sessions.json");
 const sessionCookieName = "anylink_session";
 const protectedLinkCookiePrefix = "anylink_gate_";
+const analyticsVisitorCookieName = "anylink_vid";
+const analyticsSessionCookieName = "anylink_vsid";
 const sessionLifetimeMs = 1000 * 60 * 60 * 24 * 14;
 const protectedLinkLifetimeSeconds = 60 * 60 * 24;
+const analyticsVisitorLifetimeSeconds = 60 * 60 * 24 * 365;
+const analyticsSessionLifetimeSeconds = 60 * 60 * 6;
 const verificationLifetimeMs = 1000 * 60 * 30;
 const resetLifetimeMs = 1000 * 60 * 30;
 const trialLifetimeMs = 1000 * 60 * 60 * 24 * 3;
@@ -1509,6 +1513,24 @@ function buildSessionCookie(value, options = {}) {
   return parts.join("; ");
 }
 
+function buildClientCookie(name, value, options = {}) {
+  const parts = [
+    `${name}=${encodeURIComponent(value)}`,
+    "Path=/",
+    "SameSite=Lax",
+  ];
+
+  if (process.env.NODE_ENV === "production") {
+    parts.push("Secure");
+  }
+
+  if (typeof options.maxAge === "number") {
+    parts.push(`Max-Age=${options.maxAge}`);
+  }
+
+  return parts.join("; ");
+}
+
 function parseCookies(cookieHeader) {
   return cookieHeader
     .split(";")
@@ -1521,6 +1543,28 @@ function parseCookies(cookieHeader) {
       accumulator[key] = decodeURIComponent(value);
       return accumulator;
     }, {});
+}
+
+function getTrackingContext(req) {
+  const cookies = parseCookies(req.headers.cookie || "");
+  const visitorId = cookies[analyticsVisitorCookieName] || crypto.randomUUID();
+  const sessionId = cookies[analyticsSessionCookieName] || crypto.randomUUID();
+  const setCookies = [];
+
+  if (!cookies[analyticsVisitorCookieName]) {
+    setCookies.push(buildClientCookie(analyticsVisitorCookieName, visitorId, { maxAge: analyticsVisitorLifetimeSeconds }));
+  }
+
+  if (!cookies[analyticsSessionCookieName]) {
+    setCookies.push(buildClientCookie(analyticsSessionCookieName, sessionId, { maxAge: analyticsSessionLifetimeSeconds }));
+  }
+
+  return {
+    visitorId,
+    sessionId,
+    setCookies,
+    language: getPreferredLanguage(req),
+  };
 }
 
 function hashPassword(password, salt) {
@@ -2191,8 +2235,10 @@ async function buildAnalyticsReport(userId, filters = parseAnalyticsFilters()) {
   try {
       const links = await listAnalyticsByUser(userId);
       if (Array.isArray(links) && links.length) {
+        const fileLinks = !dbOnlyMode ? readLinksForUser(userId) : [];
+        const fileAnalyticsMap = new Map(fileLinks.map((link) => [link.slug, Array.isArray(link.analytics?.clicks) ? link.analytics.clicks : []]));
         const normalizedLinks = links.map((link) => {
-          const clicks = filterClicksByAnalyticsRange((link.clickEvents || []).map((click) => ({
+          const dbClicks = (link.clickEvents || []).map((click) => ({
             id: click.id,
             clickedAt: click.createdAt instanceof Date ? click.createdAt.toISOString() : click.createdAt,
             ip: click.ipAddress || "Unknown",
@@ -2204,9 +2250,19 @@ async function buildAnalyticsReport(userId, filters = parseAnalyticsFilters()) {
             browser: click.browser || "Unknown",
             referrer: click.referrer || "",
             referrerLabel: click.referrer || "Direct",
+            visitorId: "",
+            sessionId: "",
+            language: "Unknown",
             slug: link.slug,
             shortUrl: link.shortUrl,
-          })), filters);
+          }));
+          const fileClicks = (fileAnalyticsMap.get(link.slug) || []).map((click) => ({
+            ...click,
+            referrerLabel: click.referrer || "Direct",
+            slug: link.slug,
+            shortUrl: link.shortUrl,
+          }));
+          const clicks = filterClicksByAnalyticsRange((fileClicks.length ? fileClicks : dbClicks), filters);
 
           return {
             id: link.id,
@@ -2222,6 +2278,7 @@ async function buildAnalyticsReport(userId, filters = parseAnalyticsFilters()) {
             topDevices: summarizeClicks(clicks, "deviceType"),
             topPlatforms: summarizeClicks(clicks, "platform"),
             topBrowsers: summarizeClicks(clicks, "browser"),
+            topLanguages: summarizeClicks(clicks, "language"),
             topReferrers: summarizeClicks(clicks, "referrerLabel"),
             recentClicks: clicks.slice(0, 8),
             createdAt: link.createdAt instanceof Date ? link.createdAt.toISOString() : link.createdAt,
@@ -2248,6 +2305,7 @@ async function buildAnalyticsReport(userId, filters = parseAnalyticsFilters()) {
           topDevices: summarizeClicks(allClicks, "deviceType"),
           topPlatforms: summarizeClicks(allClicks, "platform"),
           topBrowsers: summarizeClicks(allClicks, "browser"),
+          topLanguages: summarizeClicks(allClicks, "language"),
           topReferrers: summarizeClicks(allClicks.map((click) => ({ ...click, referrerLabel: click.referrer || "Direct" })), "referrerLabel"),
           recentClicks: allClicks.slice().sort((left, right) => new Date(right.clickedAt).getTime() - new Date(left.clickedAt).getTime()).slice(0, 12),
           links: normalizedLinks.sort((left, right) => right.totalClicks - left.totalClicks || new Date(right.createdAt || 0).getTime() - new Date(left.createdAt || 0).getTime()),
@@ -2268,6 +2326,7 @@ async function buildAnalyticsReport(userId, filters = parseAnalyticsFilters()) {
           topDevices: [],
           topPlatforms: [],
           topBrowsers: [],
+          topLanguages: [],
           topReferrers: [],
           recentClicks: [],
           links: [],
@@ -2289,6 +2348,7 @@ async function buildAnalyticsReport(userId, filters = parseAnalyticsFilters()) {
           topDevices: [],
           topPlatforms: [],
           topBrowsers: [],
+          topLanguages: [],
           topReferrers: [],
           recentClicks: [],
           links: [],
@@ -2319,6 +2379,7 @@ async function buildAnalyticsReport(userId, filters = parseAnalyticsFilters()) {
       topDevices: summarizeClicks(allClicks, "deviceType"),
       topPlatforms: summarizeClicks(allClicks, "platform"),
       topBrowsers: summarizeClicks(allClicks, "browser"),
+      topLanguages: summarizeClicks(allClicks, "language"),
       topReferrers: summarizeClicks(allClicks, "referrerLabel"),
       recentClicks: allClicks.sort((left, right) => new Date(right.clickedAt).getTime() - new Date(left.clickedAt).getTime()).slice(0, 12),
       links: links.map((link) => ({
@@ -2335,6 +2396,7 @@ async function buildAnalyticsReport(userId, filters = parseAnalyticsFilters()) {
         topDevices: summarizeClicks(filterClicksByAnalyticsRange(link.analytics?.clicks || [], filters), "deviceType"),
         topPlatforms: summarizeClicks(filterClicksByAnalyticsRange(link.analytics?.clicks || [], filters), "platform"),
         topBrowsers: summarizeClicks(filterClicksByAnalyticsRange(link.analytics?.clicks || [], filters), "browser"),
+        topLanguages: summarizeClicks(filterClicksByAnalyticsRange(link.analytics?.clicks || [], filters), "language"),
         topReferrers: summarizeClicks(filterClicksByAnalyticsRange((link.analytics?.clicks || []).map((click) => ({ ...click, referrerLabel: click.referrer || "Direct" })), filters), "referrerLabel"),
         recentClicks: filterClicksByAnalyticsRange(link.analytics?.clicks || [], filters).slice().sort((left, right) => new Date(right.clickedAt).getTime() - new Date(left.clickedAt).getTime()).slice(0, 8),
         createdAt: link.createdAt || "",
@@ -2769,7 +2831,7 @@ function createEmptyAnalytics() {
   };
 }
 
-function buildClickEvent(req) {
+function buildClickEvent(req, tracking = {}) {
   const geo = getGeoDetails(req);
   const client = parseUserAgent(req.headers["user-agent"] || "");
   return {
@@ -2783,10 +2845,13 @@ function buildClickEvent(req) {
     deviceType: client.deviceType,
     browser: client.browser,
     referrer: String(req.headers.referer || req.headers.referrer || "").trim(),
+    visitorId: tracking.visitorId || "",
+    sessionId: tracking.sessionId || "",
+    language: tracking.language || "Unknown",
   };
 }
 
-function recordLinkVisit(link, req) {
+function recordLinkVisit(link, req, tracking = {}) {
   if (!link.analytics || typeof link.analytics !== "object") {
     link.analytics = createEmptyAnalytics();
   }
@@ -2795,7 +2860,7 @@ function recordLinkVisit(link, req) {
     link.analytics.clicks = [];
   }
 
-  const click = buildClickEvent(req);
+  const click = buildClickEvent(req, tracking);
   link.analytics.totalClicks = Number(link.analytics.totalClicks || 0) + 1;
   link.analytics.lastClickedAt = click.clickedAt;
   link.analytics.clicks.unshift(click);
@@ -2804,7 +2869,7 @@ function recordLinkVisit(link, req) {
 }
 
 async function recordLinkVisitAsync(link, req) {
-  const click = buildClickEvent(req);
+  const click = buildClickEvent(req, getTrackingContext(req));
   await recordDbClickEvent(link.id, link.userId, click);
   return click;
 }
@@ -2989,6 +3054,7 @@ async function handleUnlockProtectedLink(slug, body, req, res) {
 }
 
 async function handleRedirect(slug, req, res) {
+  const tracking = getTrackingContext(req);
   try {
     const dbMatch = await findLinkBySlug(slug);
     if (dbMatch) {
@@ -3012,7 +3078,7 @@ async function handleRedirect(slug, req, res) {
         return;
       }
       try {
-        await recordLinkVisitAsync(dbMatch, req);
+        await recordDbClickEvent(dbMatch.id, dbMatch.userId, buildClickEvent(req, tracking));
         await maybeSendGoalAchievementEmail(dbMatch, Number(dbMatch.clickCount || 0) + 1, req);
       } catch {
         // Redirect should still work even if analytics write fails.
@@ -3020,7 +3086,11 @@ async function handleRedirect(slug, req, res) {
       if (rule?.isOneTime) {
         markOneTimeLinkUsed(dbMatch.userId, dbMatch.slug, req);
       }
-      res.writeHead(302, { Location: dbMatch.destination });
+      const headers = { Location: dbMatch.destination };
+      if (tracking.setCookies.length) {
+        headers["Set-Cookie"] = tracking.setCookies;
+      }
+      res.writeHead(302, headers);
       res.end();
       return;
     }
@@ -3058,7 +3128,7 @@ async function handleRedirect(slug, req, res) {
       res.end(renderProtectedLinkPage(match, new URL(req.url, `http://${req.headers.host || publicAppDomain}`).searchParams.get("error") || ""));
       return;
     }
-    recordLinkVisit(match, req);
+    recordLinkVisit(match, req, tracking);
     writeLinks(links);
     try {
       await maybeSendGoalAchievementEmail(match, Number(match.analytics?.totalClicks || 0), req);
@@ -3068,7 +3138,11 @@ async function handleRedirect(slug, req, res) {
     if (rule?.isOneTime) {
       markOneTimeLinkUsed(match.userId, match.slug, req);
     }
-    res.writeHead(302, { Location: match.destination });
+    const headers = { Location: match.destination };
+    if (tracking.setCookies.length) {
+      headers["Set-Cookie"] = tracking.setCookies;
+    }
+    res.writeHead(302, headers);
     res.end();
     return;
   }
@@ -3109,6 +3183,11 @@ function summarizeClicks(clicks, key) {
 }
 
 function getUniqueClickKey(click) {
+  const visitorId = String(click?.visitorId || "").trim();
+  if (visitorId) {
+    return `visitor:${visitorId}`;
+  }
+
   const ip = String(click?.ip || click?.ipAddress || "").trim();
   if (ip && ip !== "Unknown") {
     return `ip:${ip}`;
@@ -3463,6 +3542,20 @@ function firstHeaderValue(req, keys) {
   }
 
   return "";
+}
+
+function getPreferredLanguage(req) {
+  const header = String(req?.headers?.["accept-language"] || "").trim();
+  if (!header) {
+    return "Unknown";
+  }
+
+  const firstValue = header.split(",")[0]?.trim() || "";
+  if (!firstValue) {
+    return "Unknown";
+  }
+
+  return firstValue.split(";")[0].trim() || "Unknown";
 }
 
 function parseUserAgent(userAgent) {
