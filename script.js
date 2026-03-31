@@ -703,9 +703,7 @@ async function refreshBillingAfterPayment(silent = false) {
       sessionStorage.removeItem("anylink_pending_billing_sync");
       setInlineBanner(banner, "Subscription activated successfully.", false);
       setTimeout(() => {
-        currentPage = "home";
-        loadAppChrome();
-        renderCurrentPage();
+        window.location.replace("/home");
       }, 700);
       return;
     }
