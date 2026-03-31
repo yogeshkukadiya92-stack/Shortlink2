@@ -6,6 +6,7 @@ const pageTitle = document.getElementById("pageTitle");
 const pageEyebrow = document.getElementById("pageEyebrow");
 const searchInput = document.getElementById("searchInput");
 const logoutButton = document.getElementById("logoutButton");
+const upgradeButton = document.getElementById("upgradeButton");
 const profileName = document.querySelector(".profile-name");
 const avatar = document.querySelector(".avatar");
 const profileMenu = document.getElementById("profileMenu");
@@ -114,6 +115,22 @@ sidebarToggle.addEventListener("click", () => {
 logoutButton.addEventListener("click", async () => {
   await fetch("/api/auth/logout", { method: "POST" });
   window.location.href = "/auth";
+});
+
+upgradeButton.addEventListener("click", () => {
+  if (!currentUser) {
+    window.location.href = "/auth";
+    return;
+  }
+
+  if (billingCache.hasAccess && billingCache.subscriptionStatus !== "trialing" && !currentUser.isAdmin) {
+    window.location.href = "/settings";
+    return;
+  }
+
+  currentPage = "billing";
+  updateHeaderMeta();
+  renderBillingPage();
 });
 
 profileMenuButton.addEventListener("click", () => {
@@ -251,6 +268,7 @@ function applyShellMode() {
   body.classList.toggle("auth-screen", authMode);
   adminNavItem.classList.toggle("hidden", !(currentUser && currentUser.isAdmin));
   profileAdminLink.classList.toggle("hidden", !(currentUser && currentUser.isAdmin));
+  upgradeButton.classList.toggle("hidden", !shouldShowUpgradeButton());
 
   if (currentUser) {
     profileName.textContent = currentUser.name;
@@ -268,6 +286,12 @@ function applyShellMode() {
     profileDropdown.classList.add("hidden");
     profileMenuButton.setAttribute("aria-expanded", "false");
   }
+}
+
+function shouldShowUpgradeButton() {
+  if (!currentUser || currentPage === "auth") return false;
+  if (currentUser.isAdmin) return false;
+  return billingCache.subscriptionStatus === "trialing" || !billingCache.hasAccess;
 }
 
 function updateHeaderMeta() {
@@ -630,6 +654,8 @@ function renderPage() {
 
 function renderBillingPage() {
   const daysLeft = Math.max(0, Math.ceil((billingCache.trialRemainingMs || 0) / (1000 * 60 * 60 * 24)));
+  const subscriptionStart = formatDateDisplay(billingCache.subscriptionStartedAt);
+  const subscriptionEnd = formatDateDisplay(billingCache.subscriptionExpiresAt);
   currentPage = "billing";
   updateHeaderMeta();
   mainContent.innerHTML = `
@@ -649,6 +675,12 @@ function renderBillingPage() {
           <p class="eyebrow">Plan</p>
           <h2>Pro Subscription</h2>
           <p class="billing-copy">Trial remaining: <strong>${daysLeft}</strong> day${daysLeft === 1 ? "" : "s"}.</p>
+          ${(subscriptionStart || subscriptionEnd) ? `
+            <div class="billing-date-list">
+              ${subscriptionStart ? `<div class="billing-date-item"><span>Start date</span><strong>${escapeHtml(subscriptionStart)}</strong></div>` : ""}
+              ${subscriptionEnd ? `<div class="billing-date-item"><span>End date</span><strong>${escapeHtml(subscriptionEnd)}</strong></div>` : ""}
+            </div>
+          ` : ""}
           <button class="primary-action auth-submit" id="subscribeButton" type="button">Continue to payment</button>
           <button class="link-button secondary" id="refreshBillingButton" type="button">I already paid</button>
           <div class="result-banner hidden" id="billingBanner" aria-live="polite"></div>
@@ -2760,6 +2792,8 @@ function renderSettingsPage() {
             <div class="task-item"><span class="task-check filled"></span><span>${settingsCache.domains.length} domain${settingsCache.domains.length === 1 ? "" : "s"} connected</span></div>
             <div class="task-item"><span class="task-check filled"></span><span>Workspace: ${escapeHtml(settingsCache.workspaceName)}</span></div>
             <div class="task-item"><span class="task-check filled"></span><span>Plan: ${escapeHtml(billingCache.subscriptionStatus)}</span></div>
+            ${billingCache.subscriptionStartedAt ? `<div class="task-item"><span class="task-check filled"></span><span>Subscription start: ${escapeHtml(formatDateDisplay(billingCache.subscriptionStartedAt))}</span></div>` : ""}
+            ${billingCache.subscriptionExpiresAt ? `<div class="task-item"><span class="task-check filled"></span><span>Subscription end: ${escapeHtml(formatDateDisplay(billingCache.subscriptionExpiresAt))}</span></div>` : ""}
           </div>
         </div>
       </div>
@@ -2858,6 +2892,20 @@ function bindPasswordToggles() {
 
 function escapeHtml(value) {
   return String(value).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#39;");
+}
+
+function formatDateDisplay(value) {
+  const timestamp = Number(value || 0);
+  if (!timestamp) return "";
+  try {
+    return new Date(timestamp).toLocaleDateString("en-IN", {
+      day: "2-digit",
+      month: "short",
+      year: "numeric",
+    });
+  } catch {
+    return "";
+  }
 }
 
 function showGlobalMessage(message, isError) {
