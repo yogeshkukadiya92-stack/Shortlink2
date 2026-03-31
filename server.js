@@ -29,6 +29,7 @@ const resetLifetimeMs = 1000 * 60 * 30;
 const trialLifetimeMs = 1000 * 60 * 60 * 24 * 3;
 const publicAppDomain = process.env.PUBLIC_APP_DOMAIN || "go.shortlinks.in";
 const dbOnlyMode = String(process.env.DB_ONLY_MODE || "").toLowerCase() === "true";
+const razorpayApiBase = "https://api.razorpay.com/v1";
 const builtInAdminEmails = ["yogshkukadiya92@gmail.com", "yogeshkukadiya92@gmail.com"];
 const builtInLifetimeEmails = ["yogeshkukadiya92@gmail.com"];
 
@@ -122,7 +123,12 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === "POST" && pathname === "/api/billing/subscribe") {
-      return withAuth(req, res, (user) => handleCreateSubscription(user, res));
+      return withAuth(req, res, (user) => handleCreateSubscription(user, req, res));
+    }
+
+    if (req.method === "POST" && pathname === "/api/billing/razorpay/webhook") {
+      const rawBody = await readRawRequestBody(req);
+      return await handleRazorpayWebhook(rawBody, req, res);
     }
 
     if (req.method === "GET" && pathname === "/api/admin/overview") {
@@ -531,6 +537,23 @@ function readRequestBody(req) {
       }
     });
 
+    req.on("error", reject);
+  });
+}
+
+function readRawRequestBody(req) {
+  return new Promise((resolve, reject) => {
+    let body = "";
+
+    req.on("data", (chunk) => {
+      body += chunk;
+
+      if (body.length > 1_000_000) {
+        reject(new Error("Request body too large"));
+      }
+    });
+
+    req.on("end", () => resolve(body));
     req.on("error", reject);
   });
 }
@@ -994,16 +1017,209 @@ function handleVerifyEmail(body, req, res) {
   return sendJson(res, 200, { success: true, message: "Email verified successfully." });
 }
 
-function handleCreateSubscription(user, res) {
-  const paymentUrl = process.env.SUBSCRIPTION_PAYMENT_URL || "";
+async function handleCreateSubscription(user, req, res) {
+  const razorpayKeyId = String(process.env.RAZORPAY_KEY_ID || "").trim();
+  const razorpayKeySecret = String(process.env.RAZORPAY_KEY_SECRET || "").trim();
+  const razorpayPlanId = String(process.env.RAZORPAY_PLAN_ID || "").trim();
+  const fallbackPaymentUrl = String(process.env.SUBSCRIPTION_PAYMENT_URL || "").trim();
 
-  if (!paymentUrl) {
+  if (!razorpayKeyId || !razorpayKeySecret || !razorpayPlanId) {
+    if (fallbackPaymentUrl) {
+      return sendJson(res, 200, { paymentUrl: fallbackPaymentUrl, provider: "link" });
+    }
+
     return sendJson(res, 501, {
-      error: "Payment link is not configured yet. Set SUBSCRIPTION_PAYMENT_URL to enable live subscription checkout.",
+      error: "Razorpay is not configured yet. Set RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET, and RAZORPAY_PLAN_ID.",
     });
   }
 
-  return sendJson(res, 200, { paymentUrl });
+  try {
+    const currentSettings = await readSettingsForUserAsync(user.id, req);
+    const periodLabel = String(process.env.RAZORPAY_SUBSCRIPTION_LABEL || "AnyLink Pro");
+    const totalCount = Math.max(1, Number(process.env.RAZORPAY_TOTAL_COUNT || 120));
+    const returnUrl = buildAbsoluteUrl(req, "/settings");
+    const authHeader = Buffer.from(`${razorpayKeyId}:${razorpayKeySecret}`).toString("base64");
+
+    const response = await fetch(`${razorpayApiBase}/subscriptions`, {
+      method: "POST",
+      headers: {
+        Authorization: `Basic ${authHeader}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        plan_id: razorpayPlanId,
+        total_count: totalCount,
+        quantity: 1,
+        customer_notify: 1,
+        notes: {
+          anylink_user_id: user.id,
+          anylink_email: user.email,
+          anylink_workspace: currentSettings.workspaceName || "AnyLink Workspace",
+          anylink_return_url: returnUrl,
+          anylink_plan_label: periodLabel,
+        },
+      }),
+    });
+
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      return sendJson(res, 502, {
+        error: payload.error?.description || payload.error?.reason || "Unable to start Razorpay checkout right now.",
+      });
+    }
+
+    const paymentUrl = String(payload.short_url || "").trim();
+    if (!paymentUrl) {
+      return sendJson(res, 502, { error: "Razorpay did not return a hosted checkout URL." });
+    }
+
+    const now = Date.now();
+    if (!dbOnlyMode) {
+      const users = readUsers();
+      const fileUser = users.find((item) => item.id === user.id);
+      if (fileUser) {
+        fileUser.billingProvider = "razorpay";
+        fileUser.razorpayPlanId = razorpayPlanId;
+        fileUser.razorpaySubscriptionId = payload.id || "";
+        fileUser.razorpayCheckoutUrl = paymentUrl;
+        fileUser.razorpayCheckoutCreatedAt = now;
+        writeUsers(users);
+      }
+    }
+
+    return sendJson(res, 200, {
+      paymentUrl,
+      provider: "razorpay",
+      checkout: {
+        subscriptionId: payload.id || "",
+        status: payload.status || "created",
+      },
+    });
+  } catch {
+    if (fallbackPaymentUrl) {
+      return sendJson(res, 200, { paymentUrl: fallbackPaymentUrl, provider: "link" });
+    }
+    return sendJson(res, 500, { error: "Unable to start subscription checkout right now." });
+  }
+}
+
+async function handleRazorpayWebhook(rawBody, req, res) {
+  const webhookSecret = String(process.env.RAZORPAY_WEBHOOK_SECRET || "").trim();
+  const signature = String(req.headers["x-razorpay-signature"] || "").trim();
+
+  if (!webhookSecret) {
+    return sendJson(res, 501, { error: "Webhook secret is not configured." });
+  }
+
+  if (!signature) {
+    return sendJson(res, 401, { error: "Missing Razorpay signature." });
+  }
+
+  const expectedSignature = crypto
+    .createHmac("sha256", webhookSecret)
+    .update(rawBody)
+    .digest("hex");
+
+  const provided = Buffer.from(signature);
+  const expected = Buffer.from(expectedSignature);
+  if (provided.length !== expected.length || !crypto.timingSafeEqual(provided, expected)) {
+    return sendJson(res, 401, { error: "Invalid Razorpay signature." });
+  }
+
+  let payload = {};
+  try {
+    payload = rawBody ? JSON.parse(rawBody) : {};
+  } catch {
+    return sendJson(res, 400, { error: "Invalid webhook payload." });
+  }
+
+  const event = String(payload.event || "").trim();
+  const subscriptionEntity = payload.payload?.subscription?.entity
+    || payload.payload?.subscription?.item?.entity
+    || payload.payload?.payment?.entity?.notes
+    || {};
+  const paymentEntity = payload.payload?.payment?.entity || {};
+  const notes = {
+    ...(subscriptionEntity.notes || {}),
+    ...(paymentEntity.notes || {}),
+  };
+  const subscriptionId = String(subscriptionEntity.id || paymentEntity.subscription_id || notes.razorpay_subscription_id || "").trim();
+  const userId = String(notes.anylink_user_id || "").trim();
+
+  if (!userId) {
+    return sendJson(res, 200, { received: true, ignored: true, reason: "No AnyLink user id present in notes." });
+  }
+
+  const accessUpdate = mapRazorpayEventToBillingState(event, subscriptionEntity);
+  if (!accessUpdate) {
+    return sendJson(res, 200, { received: true, ignored: true, reason: `Unhandled event ${event}` });
+  }
+
+  await applyBillingUpdateToUser(userId, {
+    ...accessUpdate,
+    billingProvider: "razorpay",
+    razorpaySubscriptionId: subscriptionId,
+    razorpayPlanId: String(subscriptionEntity.plan_id || notes.razorpay_plan_id || "").trim(),
+    razorpayCustomerId: String(subscriptionEntity.customer_id || "").trim(),
+    razorpayStatus: String(subscriptionEntity.status || event || "").trim(),
+    razorpayLastEvent: event,
+    razorpayLastEventAt: Date.now(),
+  });
+
+  return sendJson(res, 200, { received: true, event });
+}
+
+function mapRazorpayEventToBillingState(event, subscriptionEntity = {}) {
+  const now = Date.now();
+  const currentStart = Number(subscriptionEntity.current_start || 0) * 1000 || now;
+  const currentEnd = Number(subscriptionEntity.current_end || 0) * 1000 || 0;
+  const endedAt = Number(subscriptionEntity.ended_at || 0) * 1000 || 0;
+
+  if (["subscription.activated", "subscription.charged", "subscription.resumed", "subscription.authenticated"].includes(event)) {
+    return {
+      subscriptionStatus: "active",
+      trialEndsAt: 0,
+      subscriptionStartedAt: currentStart || now,
+      subscriptionExpiresAt: currentEnd || now + 30 * 24 * 60 * 60 * 1000,
+    };
+  }
+
+  if (["subscription.completed", "subscription.cancelled", "subscription.halted", "subscription.paused"].includes(event)) {
+    return {
+      subscriptionStatus: "inactive",
+      subscriptionStartedAt: currentStart || 0,
+      subscriptionExpiresAt: endedAt || currentEnd || now,
+    };
+  }
+
+  return null;
+}
+
+async function applyBillingUpdateToUser(userId, updates) {
+  if (!dbOnlyMode) {
+    const users = readUsers();
+    const fileUser = users.find((item) => item.id === userId);
+    if (fileUser) {
+      Object.assign(fileUser, updates);
+      if (updates.subscriptionStatus === "active") {
+        fileUser.trialEndsAt = 0;
+      }
+      writeUsers(users);
+    }
+  }
+
+  try {
+    const dbUpdate = {};
+    if (updates.subscriptionStatus) dbUpdate.subscriptionStatus = String(updates.subscriptionStatus || "").toUpperCase();
+    if ("trialEndsAt" in updates) dbUpdate.trialEndsAt = updates.trialEndsAt ? new Date(Number(updates.trialEndsAt)) : null;
+    if ("subscriptionStartedAt" in updates) dbUpdate.subscriptionStartedAt = updates.subscriptionStartedAt ? new Date(Number(updates.subscriptionStartedAt)) : null;
+    if ("subscriptionExpiresAt" in updates) dbUpdate.subscriptionExpiresAt = updates.subscriptionExpiresAt ? new Date(Number(updates.subscriptionExpiresAt)) : null;
+    if (Object.keys(dbUpdate).length) {
+      await updateDbUser(userId, dbUpdate);
+    }
+  } catch {
+    // JSON remains the operational fallback until full DB billing migration lands.
+  }
 }
 
 function handleAdminOverview(res) {
@@ -3232,6 +3448,12 @@ function buildAuthUrl(req, mode, token) {
   const hostHeader = req?.headers?.host || "127.0.0.1:3000";
   const protocol = getRequestProtocol(req, hostHeader);
   return `${protocol}://${hostHeader}/auth?mode=${encodeURIComponent(mode)}&token=${encodeURIComponent(token)}`;
+}
+
+function buildAbsoluteUrl(req, pathname) {
+  const hostHeader = req?.headers?.host || "127.0.0.1:3000";
+  const protocol = getRequestProtocol(req, hostHeader);
+  return `${protocol}://${hostHeader}${pathname}`;
 }
 
 function getEmailDeliveryConfig() {
