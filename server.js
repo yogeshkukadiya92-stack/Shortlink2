@@ -1441,7 +1441,7 @@ async function handleSavePage(body, req, res, user) {
       submitLabel,
       thanksMessage,
     }, serializeDbFormFields(fields));
-    return sendJson(res, existingIndex >= 0 ? 200 : 201, { page: mapDbPageRecord(dbSaved, req) });
+    return sendJson(res, existingIndex >= 0 ? 200 : 201, { page: mapDbPageRecord(dbSaved, req, saved) });
   } catch {
     if (dbOnlyMode) {
       return sendJson(res, 500, { error: "Unable to save this form right now. Please try again." });
@@ -1521,28 +1521,60 @@ async function handlePublicFormPage(slug, req, res) {
     res.end("<!DOCTYPE html><html><body style=\"font-family:Arial,sans-serif;padding:40px;\"><h1>Form not found</h1><p>This form link is not available.</p></body></html>");
     return;
   }
-  const fieldMarkup = getEnabledFormFields(normalizedPage.fields).map((field) => {
+  const fieldMarkup = normalizeFormFields(normalizedPage.fields).map((field) => {
     const label = `<span style="font-weight:600;color:#1f356c;">${escapeHtml(field.label)}</span>`;
     const requiredAttr = field.required ? "required" : "";
     const optionsMarkup = (field.options || []).map((option) => `<option value="${escapeHtml(option)}">${escapeHtml(option)}</option>`).join("");
+    const inputBaseStyle = "padding:14px 16px;border:1px solid #d9e2f0;border-radius:14px;font:inherit;background:#fff;";
+
+    if (!isInteractiveFormFieldType(field.type)) {
+      if (field.type === "divider") {
+        return '<hr style="border:none;border-top:1px solid #dce7f7;margin:8px 0 2px;">';
+      }
+      if (field.type === "heading1") return `<h1 style="margin:0 0 6px;font-size:2rem;line-height:1.08;">${escapeHtml(field.content || field.label)}</h1>`;
+      if (field.type === "heading2") return `<h2 style="margin:0 0 6px;font-size:1.6rem;line-height:1.12;color:#17315f;">${escapeHtml(field.content || field.label)}</h2>`;
+      if (field.type === "heading3") return `<h3 style="margin:0 0 6px;font-size:1.22rem;line-height:1.2;color:#17315f;">${escapeHtml(field.content || field.label)}</h3>`;
+      if (field.type === "title") return `<div style="font-size:.82rem;letter-spacing:.16em;text-transform:uppercase;color:#6580b8;font-weight:700;">${escapeHtml(field.content || field.label)}</div>`;
+      if (field.type === "label") return `<div style="font-size:.9rem;color:#58719b;font-weight:600;">${escapeHtml(field.content || field.label)}</div>`;
+      if (field.type === "textblock") return `<p style="margin:0;color:#4e6795;font-size:1rem;line-height:1.7;">${escapeHtml(field.content || "")}</p>`;
+      if (field.type === "pagebreak") return `<div style="margin:10px 0 4px;padding:14px 18px;border-radius:16px;background:#f4f8ff;border:1px dashed #c8d8f6;color:#17315f;font-weight:700;">${escapeHtml(field.content || "Next section")}</div>`;
+      if (field.type === "image" && field.url) return `<div style="display:grid;gap:10px;"><img src="${escapeHtml(field.url)}" alt="${escapeHtml(field.label)}" style="max-width:100%;border-radius:18px;border:1px solid #dce7f7;"><span style="font-size:.88rem;color:#58719b;">${escapeHtml(field.label)}</span></div>`;
+      if (field.type === "video" && field.url) return `<div style="display:grid;gap:10px;"><video controls src="${escapeHtml(field.url)}" style="width:100%;border-radius:18px;border:1px solid #dce7f7;background:#000;"></video><span style="font-size:.88rem;color:#58719b;">${escapeHtml(field.label)}</span></div>`;
+      if (field.type === "audio" && field.url) return `<div style="display:grid;gap:10px;"><audio controls src="${escapeHtml(field.url)}" style="width:100%;"></audio><span style="font-size:.88rem;color:#58719b;">${escapeHtml(field.label)}</span></div>`;
+      if (field.type === "embed" && field.url) return `<div style="display:grid;gap:10px;"><iframe src="${escapeHtml(field.url)}" style="width:100%;min-height:280px;border:1px solid #dce7f7;border-radius:18px;background:#fff;"></iframe><span style="font-size:.88rem;color:#58719b;">${escapeHtml(field.label)}</span></div>`;
+      return "";
+    }
 
     if (field.type === "textarea") {
-      return `<label style="display:grid;gap:8px;">${label}<textarea name="${field.key}" ${requiredAttr} rows="5" style="padding:14px 16px;border:1px solid #d9e2f0;border-radius:14px;font:inherit;"></textarea></label>`;
+      return `<label style="display:grid;gap:8px;">${label}<textarea name="${field.key}" ${requiredAttr} rows="5" style="${inputBaseStyle}"></textarea></label>`;
     }
 
     if (field.type === "select") {
-      return `<label style="display:grid;gap:8px;">${label}<select name="${field.key}" ${requiredAttr} style="padding:14px 16px;border:1px solid #d9e2f0;border-radius:14px;font:inherit;background:#fff;"><option value="">Select an option</option>${optionsMarkup}</select></label>`;
+      return `<label style="display:grid;gap:8px;">${label}<select name="${field.key}" ${requiredAttr} style="${inputBaseStyle}"><option value="">Select an option</option>${optionsMarkup}</select></label>`;
+    }
+
+    if (field.type === "multiselect") {
+      return `<label style="display:grid;gap:8px;">${label}<select name="${field.key}" ${requiredAttr} multiple style="${inputBaseStyle} min-height:140px;">${optionsMarkup}</select></label>`;
     }
 
     if (field.type === "radio") {
       return `<fieldset style="display:grid;gap:10px;border:none;padding:0;margin:0;"><legend style="font-weight:600;color:#1f356c;padding:0;">${escapeHtml(field.label)}</legend>${(field.options || []).map((option) => `<label style="display:flex;align-items:center;gap:10px;padding:12px 14px;border:1px solid #d9e2f0;border-radius:14px;"><input type="radio" name="${field.key}" value="${escapeHtml(option)}" ${requiredAttr} style="width:18px;height:18px;">${escapeHtml(option)}</label>`).join("")}</fieldset>`;
     }
 
+    if (field.type === "checkbox" && field.options?.length) {
+      return `<fieldset style="display:grid;gap:10px;border:none;padding:0;margin:0;"><legend style="font-weight:600;color:#1f356c;padding:0;">${escapeHtml(field.label)}</legend>${(field.options || []).map((option) => `<label style="display:flex;align-items:center;gap:10px;padding:12px 14px;border:1px solid #d9e2f0;border-radius:14px;"><input type="checkbox" name="${field.key}" value="${escapeHtml(option)}" style="width:18px;height:18px;">${escapeHtml(option)}</label>`).join("")}</fieldset>`;
+    }
+
     if (field.type === "checkbox") {
       return `<label style="display:flex;align-items:center;gap:12px;padding:14px 16px;border:1px solid #d9e2f0;border-radius:14px;"><input type="checkbox" name="${field.key}" value="Yes" ${requiredAttr} style="width:18px;height:18px;"><span style="font-weight:600;color:#1f356c;">${escapeHtml(field.label)}</span></label>`;
     }
 
-    return `<label style="display:grid;gap:8px;">${label}<input type="${field.type}" name="${field.key}" ${requiredAttr} style="padding:14px 16px;border:1px solid #d9e2f0;border-radius:14px;font:inherit;"></label>`;
+    if (field.type === "scale") {
+      return `<label style="display:grid;gap:8px;">${label}<input type="range" name="${field.key}" min="${Number(field.min || 1)}" max="${Number(field.max || 5)}" value="${Number(field.min || 1)}" style="width:100%;"><span style="font-size:.85rem;color:#58719b;display:flex;justify-content:space-between;"><i>${Number(field.min || 1)}</i><i>${Number(field.max || 5)}</i></span></label>`;
+    }
+
+    const htmlType = mapFieldTypeToHtmlInput(field.type);
+    return `<label style="display:grid;gap:8px;">${label}<input type="${htmlType}" name="${field.key}" ${requiredAttr} style="${inputBaseStyle}"></label>`;
   }).join("");
 
   const html = `<!DOCTYPE html>
@@ -1580,12 +1612,44 @@ async function handlePublicFormPage(slug, req, res) {
       <script>
         const form = document.getElementById("publicForm");
         const status = document.getElementById("formStatus");
+        async function fileToPayload(file) {
+          return {
+            name: file.name,
+            type: file.type,
+            size: file.size
+          };
+        }
         form.addEventListener("submit", async (event) => {
           event.preventDefault();
           const formData = new FormData(form);
           const entries = {};
-          for (const [key, value] of formData.entries()) {
-            entries[key] = value;
+          for (const element of [...form.elements]) {
+            if (!element.name) continue;
+            if (element.type === "file") {
+              const file = element.files && element.files[0];
+              entries[element.name] = file ? await fileToPayload(file) : "";
+              continue;
+            }
+            if (element.tagName === "SELECT" && element.multiple) {
+              entries[element.name] = [...element.selectedOptions].map((option) => option.value);
+              continue;
+            }
+            if (element.type === "checkbox") {
+              const matching = [...form.querySelectorAll('[name="' + element.name + '"]')];
+              if (matching.length > 1) {
+                entries[element.name] = matching.filter((item) => item.checked).map((item) => item.value);
+              } else {
+                entries[element.name] = element.checked ? element.value : "";
+              }
+              continue;
+            }
+            if (element.type === "radio") {
+              if (Object.prototype.hasOwnProperty.call(entries, element.name)) continue;
+              const checked = form.querySelector('[name="' + element.name + '"]:checked');
+              entries[element.name] = checked ? checked.value : "";
+              continue;
+            }
+            entries[element.name] = element.value;
           }
           status.className = "status";
           status.style.display = "block";
@@ -1599,7 +1663,7 @@ async function handlePublicFormPage(slug, req, res) {
             const payload = await response.json();
             if (!response.ok) throw new Error(payload.error || "Unable to submit form.");
             form.reset();
-            status.textContent = payload.message || ${JSON.stringify(normalizedPage.thanksMessage)};
+            status.textContent = payload.message || ${JSON.stringify(getThankYouContent(normalizedPage))};
           } catch (error) {
             status.className = "status error";
             status.style.display = "block";
@@ -1628,9 +1692,18 @@ async function handlePublicFormSubmit(slug, body, req, res) {
 
   for (const field of getEnabledFormFields(normalizedPage.fields)) {
     const rawValue = body[field.key];
-    const value = field.type === "checkbox"
-      ? (rawValue ? "Yes" : "")
-      : String(rawValue || "").trim();
+    let value = "";
+    if (field.type === "checkbox" && Array.isArray(rawValue)) {
+      value = rawValue.join(", ");
+    } else if (field.type === "checkbox") {
+      value = rawValue ? String(rawValue).trim() : "";
+    } else if (field.type === "multiselect" && Array.isArray(rawValue)) {
+      value = rawValue.join(", ");
+    } else if (field.type === "file" && rawValue && typeof rawValue === "object") {
+      value = [rawValue.name, rawValue.type, rawValue.size ? `${rawValue.size} bytes` : ""].filter(Boolean).join(" • ");
+    } else {
+      value = String(rawValue || "").trim();
+    }
     if (field.required && !value) {
       return sendJson(res, 400, { error: field.label + " is required." });
     }
@@ -2149,7 +2222,12 @@ function sanitizeFormFieldKey(value, fallback = "field") {
 
 function normalizeFormFieldType(type) {
   const normalized = String(type || "text").trim().toLowerCase();
-  if (["email", "tel", "textarea", "select", "radio", "checkbox"].includes(normalized)) {
+  if ([
+    "email", "tel", "textarea", "select", "radio", "checkbox", "multiselect",
+    "number", "url", "file", "date", "time", "scale",
+    "pagebreak", "thankyou", "textblock", "heading1", "heading2", "heading3",
+    "divider", "title", "label", "image", "video", "audio", "embed",
+  ].includes(normalized)) {
     return normalized;
   }
   return "text";
@@ -2163,6 +2241,29 @@ function normalizeFieldOptions(options) {
   return [...new Set(rawItems
     .map((item) => String(item || "").trim())
     .filter(Boolean))];
+}
+
+function isInteractiveFormFieldType(type) {
+  return [
+    "text", "email", "tel", "textarea", "select", "radio", "checkbox", "multiselect",
+    "number", "url", "file", "date", "time", "scale",
+  ].includes(normalizeFormFieldType(type));
+}
+
+function supportsFieldOptions(type) {
+  return ["select", "radio", "checkbox", "multiselect"].includes(normalizeFormFieldType(type));
+}
+
+function supportsFieldContent(type) {
+  return ["pagebreak", "thankyou", "textblock", "heading1", "heading2", "heading3", "title", "label"].includes(normalizeFormFieldType(type));
+}
+
+function supportsFieldUrl(type) {
+  return ["image", "video", "audio", "embed"].includes(normalizeFormFieldType(type));
+}
+
+function supportsFieldScale(type) {
+  return normalizeFormFieldType(type) === "scale";
 }
 
 function normalizeFormFields(fields) {
@@ -2191,15 +2292,19 @@ function normalizeFormFields(fields) {
 
     seen.add(key);
     const type = normalizeFormFieldType(baseField.type);
-    const options = ["select", "radio"].includes(type) ? normalizeFieldOptions(baseField.options) : [];
+    const options = supportsFieldOptions(type) ? normalizeFieldOptions(baseField.options) : [];
     normalized.push({
       key,
       label: String(baseField.label || key).trim() || key,
       type,
       required: Boolean(baseField.required),
-      enabled: Boolean(baseField.enabled !== false),
+      enabled: supportsFieldContent(type) || supportsFieldUrl(type) || type === "divider" ? true : Boolean(baseField.enabled !== false),
       builtIn,
       options,
+      content: String(baseField.content || "").trim(),
+      url: String(baseField.url || "").trim(),
+      min: Number.isFinite(Number(baseField.min)) ? Number(baseField.min) : 1,
+      max: Number.isFinite(Number(baseField.max)) ? Number(baseField.max) : 5,
     });
   }
 
@@ -2220,6 +2325,22 @@ function mapInputTypeToDb(type) {
   return "TEXT";
 }
 
+function mapFieldTypeToHtmlInput(type) {
+  const normalized = normalizeFormFieldType(type);
+  if (["email", "tel", "number", "url", "date", "time", "file"].includes(normalized)) {
+    return normalized;
+  }
+  if (normalized === "scale") {
+    return "range";
+  }
+  return "text";
+}
+
+function getThankYouContent(page) {
+  const thankYouBlock = normalizeFormFields(page?.fields || []).find((field) => field.type === "thankyou" && field.content);
+  return thankYouBlock?.content || page?.thanksMessage || "Thanks, your response has been received.";
+}
+
 function serializeDbFormFields(fields) {
   return getEnabledFormFields(fields).map((field) => ({
     key: field.key,
@@ -2231,16 +2352,21 @@ function serializeDbFormFields(fields) {
 }
 
 function mapDbPageRecord(page, req, fallbackPage = null) {
-  const fallbackFieldMap = new Map(normalizeFormFields(fallbackPage?.fields || []).map((field) => [field.key, field]));
-  const fieldState = (page.fields || []).map((field) => ({
-    key: field.key,
-    label: field.label,
-    type: fallbackFieldMap.get(field.key)?.type || String(field.type || "TEXT").toLowerCase(),
-    required: Boolean(field.required),
-    enabled: field.enabled !== false,
-    builtIn: defaultFormFieldLibrary.some((item) => item.key === field.key),
-    options: fallbackFieldMap.get(field.key)?.options || [],
-  }));
+  const fieldState = Array.isArray(fallbackPage?.fields) && fallbackPage.fields.length
+    ? normalizeFormFields(fallbackPage.fields)
+    : (page.fields || []).map((field) => ({
+      key: field.key,
+      label: field.label,
+      type: String(field.type || "TEXT").toLowerCase(),
+      required: Boolean(field.required),
+      enabled: field.enabled !== false,
+      builtIn: defaultFormFieldLibrary.some((item) => item.key === field.key),
+      options: [],
+      content: "",
+      url: "",
+      min: 1,
+      max: 5,
+    }));
 
   const submissions = (page.submissions || []).map((submission) => ({
     id: submission.id,
@@ -2273,7 +2399,7 @@ function mapDbPageRecord(page, req, fallbackPage = null) {
 }
 
 function getEnabledFormFields(fields) {
-  return normalizeFormFields(fields).filter((field) => field.enabled);
+  return normalizeFormFields(fields).filter((field) => field.enabled && isInteractiveFormFieldType(field.type));
 }
 
 function normalizePage(page, req) {

@@ -21,6 +21,41 @@ const defaultFormFieldLibrary = [
   { key: "company", label: "Company", type: "text", required: false, enabled: false, builtIn: true, options: [] },
   { key: "message", label: "Message", type: "textarea", required: true, enabled: true, builtIn: true, options: [] },
 ];
+const formBlockCatalog = {
+  input: [
+    ["text", "Short answer"],
+    ["textarea", "Long answer"],
+    ["radio", "Multiple choice"],
+    ["checkbox", "Checkboxes"],
+    ["select", "Dropdown"],
+    ["multiselect", "Multi-select"],
+    ["number", "Number"],
+    ["email", "Email"],
+    ["tel", "Phone number"],
+    ["url", "Link"],
+    ["file", "File upload"],
+    ["date", "Date"],
+    ["time", "Time"],
+    ["scale", "Linear scale"],
+  ],
+  layout: [
+    ["pagebreak", "New page"],
+    ["thankyou", "Thank you page"],
+    ["textblock", "Text"],
+    ["heading1", "Heading 1"],
+    ["heading2", "Heading 2"],
+    ["heading3", "Heading 3"],
+    ["divider", "Divider"],
+    ["title", "Title"],
+    ["label", "Label"],
+  ],
+  embed: [
+    ["image", "Image"],
+    ["video", "Video"],
+    ["audio", "Audio"],
+    ["embed", "Embed anything"],
+  ],
+};
 
 let currentPage = getCurrentPage();
 let currentUser = null;
@@ -393,7 +428,12 @@ function normalizeLinkRules(rules) {
 
 function normalizeBuilderFieldType(type) {
   const normalized = String(type || "text").trim().toLowerCase();
-  return ["text", "email", "tel", "textarea", "select", "radio", "checkbox"].includes(normalized) ? normalized : "text";
+  return [
+    "text", "email", "tel", "textarea", "select", "radio", "checkbox", "multiselect",
+    "number", "url", "file", "date", "time", "scale",
+    "pagebreak", "thankyou", "textblock", "heading1", "heading2", "heading3",
+    "divider", "title", "label", "image", "video", "audio", "embed",
+  ].includes(normalized) ? normalized : "text";
 }
 
 function normalizeBuilderFieldKey(value, fallback = "field") {
@@ -403,6 +443,29 @@ function normalizeBuilderFieldKey(value, fallback = "field") {
 function normalizeBuilderFieldOptions(options) {
   const rawItems = Array.isArray(options) ? options : String(options || "").split(/\r?\n|,/);
   return [...new Set(rawItems.map((item) => String(item || "").trim()).filter(Boolean))];
+}
+
+function isInteractiveFieldType(type) {
+  return [
+    "text", "email", "tel", "textarea", "select", "radio", "checkbox",
+    "multiselect", "number", "url", "file", "date", "time", "scale",
+  ].includes(normalizeBuilderFieldType(type));
+}
+
+function supportsOptionsType(type) {
+  return ["select", "radio", "checkbox", "multiselect"].includes(normalizeBuilderFieldType(type));
+}
+
+function supportsContentType(type) {
+  return ["pagebreak", "thankyou", "textblock", "heading1", "heading2", "heading3", "title", "label"].includes(normalizeBuilderFieldType(type));
+}
+
+function supportsUrlType(type) {
+  return ["image", "video", "audio", "embed"].includes(normalizeBuilderFieldType(type));
+}
+
+function supportsScaleType(type) {
+  return normalizeBuilderFieldType(type) === "scale";
 }
 
 function normalizeFormFields(fields) {
@@ -435,9 +498,13 @@ function normalizeFormFields(fields) {
       label: String(field.label || key).trim() || key,
       type,
       required: Boolean(field.required),
-      enabled: Boolean(field.enabled !== false),
+      enabled: supportsContentType(type) || supportsUrlType(type) || type === "divider" ? true : Boolean(field.enabled !== false),
       builtIn,
-      options: ["select", "radio"].includes(type) ? normalizeBuilderFieldOptions(field.options) : [],
+      options: supportsOptionsType(type) ? normalizeBuilderFieldOptions(field.options) : [],
+      content: String(field.content || "").trim(),
+      url: String(field.url || "").trim(),
+      min: Number.isFinite(Number(field.min)) ? Number(field.min) : 1,
+      max: Number.isFinite(Number(field.max)) ? Number(field.max) : 5,
     });
   });
 
@@ -1222,9 +1289,29 @@ function renderPagesBuilder() {
           <div class="surface-header compact form-builder-header-row">
             <div>
               <h3>Fields</h3>
-              <p>Mix built-in and custom fields to shape the form exactly the way you want.</p>
+              <p>Mix input, layout, and embed blocks to shape the form exactly the way you want.</p>
             </div>
             <button class="link-button secondary" id="addCustomFieldButton" type="button">Add custom field</button>
+          </div>
+          <div class="block-palette-grid">
+            <div class="block-palette-group">
+              <strong>Input blocks</strong>
+              <div class="block-palette-list">
+                ${formBlockCatalog.input.map(([type, label]) => `<button class="block-palette-item" type="button" data-add-block="${type}">${escapeHtml(label)}</button>`).join("")}
+              </div>
+            </div>
+            <div class="block-palette-group">
+              <strong>Layout blocks</strong>
+              <div class="block-palette-list">
+                ${formBlockCatalog.layout.map(([type, label]) => `<button class="block-palette-item" type="button" data-add-block="${type}">${escapeHtml(label)}</button>`).join("")}
+              </div>
+            </div>
+            <div class="block-palette-group">
+              <strong>Embed blocks</strong>
+              <div class="block-palette-list">
+                ${formBlockCatalog.embed.map(([type, label]) => `<button class="block-palette-item" type="button" data-add-block="${type}">${escapeHtml(label)}</button>`).join("")}
+              </div>
+            </div>
           </div>
           <div class="builder-field-list" id="builderFieldList">
             ${draftFields.map((field, index) => renderBuilderFieldRow(field, index)).join("")}
@@ -1242,7 +1329,7 @@ function renderPagesBuilder() {
             <div class="dns-helper-grid">
               <span><strong>Public link</strong>${escapeHtml(getPublicFormUrl(draft.slug || "your-form"))}</span>
               <span><strong>Responses</strong>${draft.submissionCount || 0}</span>
-              <span><strong>Active fields</strong>${draftFields.filter((field) => field.enabled).length}</span>
+              <span><strong>Active fields</strong>${draftFields.filter((field) => field.enabled && isInteractiveFieldType(field.type)).length}</span>
               <span><strong>Submit CTA</strong>${escapeHtml(draft.submitLabel || "Submit")}</span>
             </div>
             <div class="managed-domain-actions">
@@ -1310,6 +1397,15 @@ function renderPagesBuilder() {
     renderPagesBuilderFromDraft(nextDraft);
   });
 
+  document.querySelectorAll("[data-add-block]").forEach((button) => button.addEventListener("click", () => {
+    const type = button.getAttribute("data-add-block");
+    const currentDraft = collectFormBuilderDraftFromDom();
+    renderPagesBuilderFromDraft({
+      ...currentDraft,
+      fields: [...currentDraft.fields, createBlockDraft(type)],
+    });
+  }));
+
   document.querySelectorAll("[data-edit-form]").forEach((button) => button.addEventListener("click", () => {
     selectedFormId = button.getAttribute("data-edit-form");
     formBuilderDraftCache = null;
@@ -1365,6 +1461,10 @@ function collectFormBuilderDraftFromDom() {
       enabled: Boolean(document.querySelector(`[data-builder-enabled="${index}"]`)?.checked),
       builtIn: row.querySelector(".chip-link") !== null,
       options: normalizeBuilderFieldOptions(document.querySelector(`[data-builder-options="${index}"]`)?.value || ""),
+      content: String(document.querySelector(`[data-builder-content="${index}"]`)?.value || "").trim(),
+      url: String(document.querySelector(`[data-builder-url="${index}"]`)?.value || "").trim(),
+      min: Number(document.querySelector(`[data-builder-min="${index}"]`)?.value || 1),
+      max: Number(document.querySelector(`[data-builder-max="${index}"]`)?.value || 5),
     };
   });
 
@@ -1384,11 +1484,28 @@ function collectFormBuilderDraftFromDom() {
 function syncBuilderOptionVisibility() {
   document.querySelectorAll("[data-builder-type]").forEach((select) => {
     const index = select.getAttribute("data-builder-type");
+    const type = normalizeBuilderFieldType(select.value);
     const wrap = document.querySelector(`[data-builder-options-wrap="${index}"]`);
-    if (!wrap) {
-      return;
+    const contentWrap = document.querySelector(`[data-builder-content-wrap="${index}"]`);
+    const urlWrap = document.querySelector(`[data-builder-url-wrap="${index}"]`);
+    const toggleWrap = document.querySelector(`[data-builder-toggle-wrap="${index}"]`);
+    const scaleWrap = document.querySelector(`[data-builder-scale-wrap="${index}"]`);
+
+    if (wrap) {
+      wrap.classList.toggle("hidden", !supportsOptionsType(type));
     }
-    wrap.classList.toggle("hidden", !["select", "radio"].includes(select.value));
+    if (contentWrap) {
+      contentWrap.classList.toggle("hidden", !supportsContentType(type));
+    }
+    if (urlWrap) {
+      urlWrap.classList.toggle("hidden", !supportsUrlType(type));
+    }
+    if (toggleWrap) {
+      toggleWrap.classList.toggle("hidden", !isInteractiveFieldType(type));
+    }
+    if (scaleWrap) {
+      scaleWrap.classList.toggle("hidden", !supportsScaleType(type));
+    }
   });
 }
 
@@ -1425,9 +1542,37 @@ function createCustomFieldDraft() {
   };
 }
 
+function createBlockDraft(type) {
+  const normalizedType = normalizeBuilderFieldType(type);
+  const base = createCustomFieldDraft();
+  const labelMap = new Map([
+    ...formBlockCatalog.input,
+    ...formBlockCatalog.layout,
+    ...formBlockCatalog.embed,
+  ]);
+
+  return normalizeFormFields([{
+    ...base,
+    label: labelMap.get(normalizedType) || "Custom field",
+    type: normalizedType,
+    required: normalizedType === "email" || normalizedType === "text",
+    enabled: !supportsContentType(normalizedType) && !supportsUrlType(normalizedType) && normalizedType !== "divider",
+    content: supportsContentType(normalizedType) ? (labelMap.get(normalizedType) || "") : "",
+    url: supportsUrlType(normalizedType) ? "https://" : "",
+    options: supportsOptionsType(normalizedType) ? ["Option 1", "Option 2"] : [],
+    min: normalizedType === "scale" ? 1 : undefined,
+    max: normalizedType === "scale" ? 5 : undefined,
+  }])[0];
+}
+
 function renderBuilderFieldRow(field, index) {
   const optionsValue = (field.options || []).join("\n");
-  const supportsOptions = ["select", "radio"].includes(field.type);
+  const type = normalizeBuilderFieldType(field.type);
+  const supportsOptions = supportsOptionsType(type);
+  const supportsContent = supportsContentType(type);
+  const supportsUrl = supportsUrlType(type);
+  const supportsScale = supportsScaleType(type);
+  const isInteractive = isInteractiveFieldType(type);
   return `
     <article class="builder-field-card" data-builder-field-row="${index}">
       <div class="builder-field-head">
@@ -1439,18 +1584,33 @@ function renderBuilderFieldRow(field, index) {
         <label class="field-label">Key<input class="url-input" type="text" value="${escapeHtml(field.key)}" data-builder-key="${index}" placeholder="field-key" ${field.builtIn ? "disabled" : ""}></label>
         <label class="field-label">Type
           <select class="url-input domain-select" data-builder-type="${index}">
-            ${["text", "email", "tel", "textarea", "select", "radio", "checkbox"].map((type) => `<option value="${type}" ${field.type === type ? "selected" : ""}>${type}</option>`).join("")}
+            ${[
+              "text", "textarea", "radio", "checkbox", "select", "multiselect", "number", "email", "tel", "url", "file", "date", "time", "scale",
+              "pagebreak", "thankyou", "textblock", "heading1", "heading2", "heading3", "divider", "title", "label", "image", "video", "audio", "embed",
+            ].map((optionType) => `<option value="${optionType}" ${type === optionType ? "selected" : ""}>${optionType}</option>`).join("")}
           </select>
         </label>
       </div>
-      <div class="builder-field-toggle-row">
+      <div class="builder-field-toggle-row ${isInteractive ? "" : "hidden"}" data-builder-toggle-wrap="${index}">
         <label class="field-toggle"><input type="checkbox" data-builder-enabled="${index}" ${field.enabled ? "checked" : ""}><span>Show field</span></label>
         <label class="field-toggle"><input type="checkbox" data-builder-required="${index}" ${field.required ? "checked" : ""}><span>Required</span></label>
       </div>
+      <label class="field-label builder-content-block ${supportsContent ? "" : "hidden"}" data-builder-content-wrap="${index}">
+        Content
+        <textarea class="url-input textarea-input builder-options-input" rows="4" data-builder-content="${index}" placeholder="Write the block content here">${escapeHtml(field.content || "")}</textarea>
+      </label>
+      <label class="field-label builder-content-block ${supportsUrl ? "" : "hidden"}" data-builder-url-wrap="${index}">
+        Media / Embed URL
+        <input class="url-input" type="text" value="${escapeHtml(field.url || "")}" data-builder-url="${index}" placeholder="https://...">
+      </label>
       <label class="field-label builder-options-block ${supportsOptions ? "" : "hidden"}" data-builder-options-wrap="${index}">
         Options
         <textarea class="url-input textarea-input builder-options-input" rows="4" data-builder-options="${index}" placeholder="One option per line">${escapeHtml(optionsValue)}</textarea>
       </label>
+      <div class="builder-field-grid builder-scale-grid ${supportsScale ? "" : "hidden"}" data-builder-scale-wrap="${index}">
+        <label class="field-label">Min<input class="url-input" type="number" value="${escapeHtml(field.min ?? 1)}" data-builder-min="${index}" min="0" step="1"></label>
+        <label class="field-label">Max<input class="url-input" type="number" value="${escapeHtml(field.max ?? 5)}" data-builder-max="${index}" min="1" step="1"></label>
+      </div>
     </article>
   `;
 }
