@@ -207,6 +207,12 @@ const server = http.createServer(async (req, res) => {
       return await withAppAccess(req, res, (user) => handleCreateLink(body, req, res, user));
     }
 
+    if (req.method === "PATCH" && pathname.startsWith("/api/links/")) {
+      const slug = pathname.split("/").pop();
+      const body = await readRequestBody(req);
+      return await withAppAccess(req, res, (user) => handleUpdateLink(slug, body, req, res, user));
+    }
+
     if (req.method === "DELETE" && pathname.startsWith("/api/links/")) {
       const slug = pathname.split("/").pop();
       return await withAppAccess(req, res, (user) => handleDeleteLink(slug, req, res, user));
@@ -1716,6 +1722,118 @@ async function handleCreateLink(body, req, res, user) {
     // JSON remains fallback during DB migration.
   }
   sendJson(res, 201, { link: nextLink });
+}
+
+async function handleUpdateLink(slug, body, req, res, user) {
+  const currentSlug = sanitizeSlugInput(String(slug || "").trim());
+  const nextSlug = sanitizeSlugInput(String(body.slug || currentSlug).trim().toLowerCase());
+  const rawDestination = String(body.destination || "").trim();
+  const includeQr = Boolean(body.includeQr);
+
+  if (!currentSlug) {
+    return sendJson(res, 400, { error: "Link slug is required." });
+  }
+
+  if (!rawDestination) {
+    return sendJson(res, 400, { error: "Destination URL is required." });
+  }
+
+  if (!/^[a-z0-9-]{3,32}$/.test(nextSlug)) {
+    return sendJson(res, 400, { error: "Slug must be 3-32 characters and use only letters, numbers, or hyphens." });
+  }
+
+  const destination = normalizeUrl(rawDestination);
+  if (!destination) {
+    return sendJson(res, 400, { error: "Please enter a valid destination URL." });
+  }
+
+  const settings = await readSettingsForUserAsync(user.id, req);
+  const nextShortUrl = buildShortUrl(settings.defaultDomain || req.headers.host, nextSlug);
+  const links = dbOnlyMode ? [] : readLinks();
+  const fileMatch = links.find((item) => item.slug === currentSlug && item.userId === user.id) || null;
+  let dbMatch = null;
+
+  try {
+    const found = await findLinkBySlug(currentSlug);
+    if (found && found.userId === user.id) {
+      dbMatch = found;
+    }
+  } catch {
+    dbMatch = null;
+  }
+
+  const existing = fileMatch || (dbMatch ? {
+    id: dbMatch.id,
+    userId: dbMatch.userId,
+    slug: dbMatch.slug,
+    destination: dbMatch.destination,
+    shortUrl: dbMatch.shortUrl,
+    includeQr: dbMatch.includeQr,
+    createdAt: dbMatch.createdAt instanceof Date ? dbMatch.createdAt.toISOString() : dbMatch.createdAt,
+    analytics: createEmptyAnalytics(),
+  } : null);
+
+  if (!existing) {
+    return sendJson(res, 404, { error: "Link not found." });
+  }
+
+  if (nextSlug !== currentSlug) {
+    if (!dbOnlyMode && links.some((item) => item.userId === user.id && item.slug === nextSlug)) {
+      return sendJson(res, 409, { error: "That short link already exists. Try another custom slug." });
+    }
+
+    try {
+      const found = await findLinkBySlug(nextSlug);
+      if (found && found.userId === user.id) {
+        return sendJson(res, 409, { error: "That short link already exists. Try another custom slug." });
+      }
+    } catch {
+      // Allow DB update to be final guard.
+    }
+  }
+
+  const updatedLink = {
+    ...existing,
+    slug: nextSlug,
+    destination,
+    shortUrl: nextShortUrl,
+    includeQr,
+  };
+
+  if (!dbOnlyMode) {
+    const nextLinks = links.map((item) => {
+      if (item.userId === user.id && item.slug === currentSlug) {
+        return {
+          ...item,
+          slug: nextSlug,
+          destination,
+          shortUrl: nextShortUrl,
+          includeQr,
+        };
+      }
+      return item;
+    });
+    writeLinks(nextLinks);
+  }
+
+  try {
+    await deleteLinkBySlug(currentSlug, user.id);
+    await createDbLink({
+      id: String(updatedLink.id),
+      userId: user.id,
+      slug: nextSlug,
+      destination,
+      shortUrl: nextShortUrl,
+      includeQr,
+      createdAt: new Date(updatedLink.createdAt || Date.now()),
+    });
+  } catch {
+    if (dbOnlyMode) {
+      return sendJson(res, 500, { error: "Unable to update your link right now. Please try again." });
+    }
+  }
+
+  sendJson(res, 200, { link: updatedLink });
 }
 
 async function handleSavePage(body, req, res, user) {

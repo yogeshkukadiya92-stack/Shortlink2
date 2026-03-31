@@ -2513,6 +2513,10 @@ svg {
     flex-direction: column;
   }
 
+  .link-editor-grid {
+    grid-template-columns: 1fr;
+  }
+
   .link-actions {
     width: 100%;
   }
@@ -2707,6 +2711,17 @@ svg {
   align-items: center;
   gap: 10px;
   flex-wrap: wrap;
+}
+
+.link-editor-card {
+  margin-bottom: 18px;
+}
+
+.link-editor-grid {
+  display: grid;
+  grid-template-columns: minmax(180px, 220px) minmax(320px, 1fr) auto auto;
+  gap: 10px;
+  align-items: center;
 }
 
 .goal-input {

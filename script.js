@@ -61,6 +61,7 @@ const formBlockCatalog = {
 let currentPage = getCurrentPage();
 let currentUser = null;
 let linksCache = [];
+let selectedLinkSlug = "";
 let pagesCache = [];
 let selectedQrSlug = null;
 let selectedFormId = "";
@@ -1247,6 +1248,7 @@ function renderHomePage() {
 function renderLinksPage(links, query = "") {
   const filtered = links.filter((link) => !query || [link.slug, link.destination, link.shortUrl].some((value) => String(value).toLowerCase().includes(query)));
   const trashMarkup = renderTrashLinkItems(settingsCache.trashLinks || []);
+  const editingLink = filtered.find((link) => link.slug === selectedLinkSlug) || linksCache.find((link) => link.slug === selectedLinkSlug) || null;
   mainContent.innerHTML = `
     <section class="surface-card">
       <div class="surface-header">
@@ -1256,6 +1258,23 @@ function renderLinksPage(links, query = "") {
         </div>
         <a class="chip-link" href="/home">Create another</a>
       </div>
+      ${editingLink ? `
+        <div class="form-card link-editor-card">
+          <div class="surface-header">
+            <div>
+              <h3>Edit link</h3>
+              <p>Update destination, slug, and QR preference. Scheduling, pause, expiry, and one-time rules stay below.</p>
+            </div>
+            <button class="link-button secondary" type="button" id="closeLinkEditorButton">Close</button>
+          </div>
+          <div class="goal-action-row link-editor-grid">
+            <input class="url-input" id="editLinkSlugInput" type="text" value="${escapeHtml(editingLink.slug)}" placeholder="custom-slug">
+            <input class="url-input" id="editLinkDestinationInput" type="url" value="${escapeHtml(editingLink.destination)}" placeholder="https://example.com">
+            <label class="field-toggle compact-toggle"><input type="checkbox" id="editLinkQrInput" ${editingLink.includeQr ? "checked" : ""}><span>Include QR</span></label>
+            <button class="link-button" type="button" id="saveLinkEditButton" data-edit-link="${escapeHtml(editingLink.slug)}">Save changes</button>
+          </div>
+        </div>
+      ` : ""}
       <div class="goal-grid">
         ${filtered.length ? filtered.map((link) => {
           const { goal, clicks, progress, achieved } = getGoalStatus(link);
@@ -1292,6 +1311,9 @@ function renderLinksPage(links, query = "") {
                 <input class="url-input password-rule-input" type="text" placeholder="${rule.isProtected ? "Change password" : "Protect with password"}" data-password-input="${escapeHtml(link.slug)}">
                 <button class="link-button secondary" type="button" data-save-password="${escapeHtml(link.slug)}">${rule.isProtected ? "Update password" : "Set password"}</button>
                 ${rule.isProtected ? `<button class="link-button danger" type="button" data-clear-password="${escapeHtml(link.slug)}">Remove password</button>` : ""}
+              </div>
+              <div class="goal-action-row">
+                <button class="link-button secondary" type="button" data-edit-link-card="${escapeHtml(link.slug)}">Edit link</button>
               </div>
             </article>
           `;
@@ -2262,6 +2284,68 @@ function wireCreateForm() {
 }
 
 function wireLinkActions() {
+  document.querySelectorAll("[data-edit-link-card]").forEach((button) => button.addEventListener("click", () => {
+    selectedLinkSlug = button.getAttribute("data-edit-link-card");
+    renderLinksPage(linksCache, searchInput.value.trim().toLowerCase());
+  }));
+
+  document.getElementById("closeLinkEditorButton")?.addEventListener("click", () => {
+    selectedLinkSlug = "";
+    renderLinksPage(linksCache, searchInput.value.trim().toLowerCase());
+  });
+
+  document.getElementById("saveLinkEditButton")?.addEventListener("click", async () => {
+    const currentSlug = document.getElementById("saveLinkEditButton").getAttribute("data-edit-link");
+    const nextSlug = sanitizeSlug(document.getElementById("editLinkSlugInput").value.trim());
+    const destination = document.getElementById("editLinkDestinationInput").value.trim();
+    const includeQr = Boolean(document.getElementById("editLinkQrInput")?.checked);
+
+    try {
+      const response = await fetch(`/api/links/${encodeURIComponent(currentSlug)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ slug: nextSlug, destination, includeQr }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || "Unable to update link.");
+
+      linksCache = linksCache.map((item) => (item.slug === currentSlug ? payload.link : item));
+
+      let nextSettings = settingsCache;
+
+      if (currentSlug !== payload.link.slug && settingsCache.linkRules?.[currentSlug]) {
+        const nextRules = { ...(settingsCache.linkRules || {}) };
+        nextRules[payload.link.slug] = nextRules[currentSlug];
+        delete nextRules[currentSlug];
+        nextSettings = normalizeSettings({ ...nextSettings, linkRules: nextRules });
+      }
+
+      if (currentSlug !== payload.link.slug && settingsCache.conversionGoals?.[currentSlug]) {
+        const nextGoals = { ...(nextSettings.conversionGoals || {}) };
+        nextGoals[payload.link.slug] = nextGoals[currentSlug];
+        delete nextGoals[currentSlug];
+        nextSettings = normalizeSettings({ ...nextSettings, conversionGoals: nextGoals });
+      }
+
+      if (nextSettings !== settingsCache) {
+        await saveSettings({
+          workspaceName: nextSettings.workspaceName,
+          defaultDomain: nextSettings.defaultDomain,
+          domains: nextSettings.domains,
+          conversionGoals: nextSettings.conversionGoals,
+          linkRules: nextSettings.linkRules,
+          campaigns: nextSettings.campaigns,
+        });
+      }
+
+      selectedLinkSlug = payload.link.slug;
+      renderLinksPage(linksCache, searchInput.value.trim().toLowerCase());
+      showGlobalMessage(`Updated link: ${payload.link.slug}`, false);
+    } catch (error) {
+      showGlobalMessage(error.message, true);
+    }
+  });
+
   document.querySelectorAll("[data-copy]").forEach((button) => button.addEventListener("click", async () => {
     const shortUrl = button.getAttribute("data-copy");
     try {
@@ -2279,6 +2363,9 @@ function wireLinkActions() {
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error || "Delete failed");
       linksCache = linksCache.filter((item) => item.slug !== slug);
+      if (selectedLinkSlug === slug) {
+        selectedLinkSlug = "";
+      }
       settingsCache = normalizeSettings({
         ...settingsCache,
         trashLinks: payload.trashLinks || settingsCache.trashLinks,
@@ -2483,7 +2570,7 @@ function renderLinkItems(links, includeDelete) {
   return links.map((link) => {
     const createdAt = new Date(link.createdAt).toLocaleString();
     const liveUrl = getLinkUrl(link);
-    return `<div class="link-item"><div class="link-copy"><a href="${escapeHtml(liveUrl)}" target="_blank" rel="noreferrer">${escapeHtml(liveUrl)}</a><strong>${escapeHtml(link.slug)}</strong><p>${escapeHtml(link.destination)}</p><p>Created: ${escapeHtml(createdAt)}</p></div><div class="link-actions"><button class="link-button" data-copy="${escapeHtml(liveUrl)}">Copy</button><a class="link-button secondary" href="${escapeHtml(liveUrl)}" target="_blank" rel="noreferrer">Open</a><a class="link-button secondary" href="/qr-codes" data-open-qr="${escapeHtml(link.slug)}">QR</a>${includeDelete ? `<button class="link-button danger" data-delete="${escapeHtml(link.slug)}">Delete</button>` : ""}</div></div>`;
+    return `<div class="link-item"><div class="link-copy"><a href="${escapeHtml(liveUrl)}" target="_blank" rel="noreferrer">${escapeHtml(liveUrl)}</a><strong>${escapeHtml(link.slug)}</strong><p>${escapeHtml(link.destination)}</p><p>Created: ${escapeHtml(createdAt)}</p></div><div class="link-actions"><button class="link-button" data-copy="${escapeHtml(liveUrl)}">Copy</button><a class="link-button secondary" href="${escapeHtml(liveUrl)}" target="_blank" rel="noreferrer">Open</a><a class="link-button secondary" href="/qr-codes" data-open-qr="${escapeHtml(link.slug)}">QR</a><button class="link-button secondary" data-edit-link-card="${escapeHtml(link.slug)}">Edit</button>${includeDelete ? `<button class="link-button danger" data-delete="${escapeHtml(link.slug)}">Delete</button>` : ""}</div></div>`;
   }).join("");
 }
 
