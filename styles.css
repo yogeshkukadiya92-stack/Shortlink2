@@ -1447,6 +1447,30 @@ svg {
   color: var(--text);
 }
 
+.form-library-main {
+  display: grid;
+  gap: 6px;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.form-library-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.form-library-actions .link-button {
+  min-width: 96px;
+  justify-content: center;
+}
+
 .form-library-item.active {
   border-color: #8eb1ef;
   background: linear-gradient(135deg, rgba(35, 66, 184, 0.12), rgba(19, 144, 189, 0.12));

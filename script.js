@@ -1346,11 +1346,17 @@ function renderPagesBuilder() {
             </div>
             <div class="form-library">
               ${pagesCache.length ? pagesCache.map((page) => `
-                <button class="form-library-item ${page.id === draft.id ? "active" : ""}" data-edit-form="${escapeHtml(page.id)}" type="button">
-                  <strong>${escapeHtml(page.title)}</strong>
-                  <span>${escapeHtml(page.publicUrl)}</span>
-                  <em>${page.submissionCount || 0} submission${page.submissionCount === 1 ? "" : "s"}</em>
-                </button>
+                <article class="form-library-item ${page.id === draft.id ? "active" : ""}">
+                  <button class="form-library-main" data-edit-form="${escapeHtml(page.id)}" type="button">
+                    <strong>${escapeHtml(page.title)}</strong>
+                    <span>${escapeHtml(page.publicUrl)}</span>
+                    <em>${page.submissionCount || 0} submission${page.submissionCount === 1 ? "" : "s"}</em>
+                  </button>
+                  <div class="form-library-actions">
+                    <button class="link-button secondary" data-edit-form="${escapeHtml(page.id)}" type="button">Edit</button>
+                    <button class="link-button danger" data-delete-form-card="${escapeHtml(page.id)}" type="button">Delete</button>
+                  </div>
+                </article>
               `).join("") : '<div class="empty-state">No forms yet. Build your first form on the left.</div>'}
             </div>
           </article>
@@ -1410,6 +1416,14 @@ function renderPagesBuilder() {
     selectedFormId = button.getAttribute("data-edit-form");
     formBuilderDraftCache = null;
     renderPagesBuilder();
+  }));
+
+  document.querySelectorAll("[data-delete-form-card]").forEach((button) => button.addEventListener("click", async () => {
+    const pageId = button.getAttribute("data-delete-form-card");
+    const page = pagesCache.find((item) => item.id === pageId);
+    const confirmed = window.confirm(`Delete "${page?.title || "this form"}"? You can create it again later, but existing responses will also be removed.`);
+    if (!confirmed) return;
+    await deleteForm(pageId);
   }));
 
   document.querySelectorAll("[data-remove-builder-field]").forEach((button) => button.addEventListener("click", () => {
