@@ -73,6 +73,7 @@ let qrCustomization = {
   background: "#ffffff",
   logoText: "SL",
 };
+let selectedCampaignId = "";
 let settingsCache = {
   workspaceName: "AnyLink Workspace",
   defaultDomain: getDefaultShortDomain(),
@@ -80,6 +81,7 @@ let settingsCache = {
   conversionGoals: {},
   linkRules: {},
   trashLinks: [],
+  campaigns: [],
 };
 let billingCache = {
   subscriptionStatus: "trialing",
@@ -377,7 +379,43 @@ function normalizeSettings(settings) {
     conversionGoals: normalizeConversionGoals(settings.conversionGoals || {}),
     linkRules: normalizeLinkRules(settings.linkRules || {}),
     trashLinks: normalizeTrashLinks(settings.trashLinks || []),
+    campaigns: normalizeCampaigns(settings.campaigns || []),
   };
+}
+
+function normalizeCampaigns(items) {
+  const seen = new Set();
+  return (Array.isArray(items) ? items : []).map((item) => {
+    if (!item || typeof item !== "object") {
+      return null;
+    }
+
+    const id = String(item.id || "").trim() || crypto.randomUUID();
+    if (seen.has(id)) {
+      return null;
+    }
+    seen.add(id);
+
+    return {
+      id,
+      name: String(item.name || "").trim() || "Untitled campaign",
+      status: ["draft", "active", "paused", "completed"].includes(String(item.status || "").trim().toLowerCase())
+        ? String(item.status || "").trim().toLowerCase()
+        : "draft",
+      source: String(item.source || "").trim(),
+      medium: String(item.medium || "").trim(),
+      campaign: String(item.campaign || "").trim(),
+      term: String(item.term || "").trim(),
+      content: String(item.content || "").trim(),
+      destination: String(item.destination || "").trim(),
+      generatedUrl: String(item.generatedUrl || "").trim(),
+      shortUrl: String(item.shortUrl || "").trim(),
+      slug: sanitizeSlug(String(item.slug || "").trim()),
+      notes: String(item.notes || "").trim(),
+      createdAt: String(item.createdAt || new Date().toISOString()),
+      updatedAt: String(item.updatedAt || new Date().toISOString()),
+    };
+  }).filter(Boolean);
 }
 
 function normalizeTrashLinks(items) {
@@ -2630,7 +2668,281 @@ function renderQrLinkItems() {
 }
 
 function renderCampaignsPage() {
-  mainContent.innerHTML = `<section class="surface-card"><div class="surface-header"><div><h2>Campaign tracker</h2><p>Keep your UTM campaigns organized in one private place.</p></div></div><div class="campaign-list"><div class="campaign-item"><strong>Summer Sale</strong><span>Email - Active</span></div><div class="campaign-item"><strong>Creator Outreach</strong><span>Social - Draft</span></div><div class="campaign-item"><strong>Retail Posters</strong><span>Offline - Active</span></div></div></section>`;
+  const editing = settingsCache.campaigns.find((item) => item.id === selectedCampaignId) || null;
+  const campaignItems = settingsCache.campaigns.map((item) => {
+    const statusLabel = item.status.charAt(0).toUpperCase() + item.status.slice(1);
+    return `
+      <div class="campaign-item">
+        <div class="campaign-main">
+          <strong>${escapeHtml(item.name)}</strong>
+          <span>${escapeHtml(item.source || "No source")} / ${escapeHtml(item.medium || "No medium")} / ${escapeHtml(item.campaign || "No campaign")}</span>
+          <span>${escapeHtml(item.generatedUrl || item.destination || "No tracked URL yet")}</span>
+          ${item.shortUrl ? `<a class="campaign-inline-link" href="${escapeHtml(item.shortUrl)}" target="_blank" rel="noreferrer">${escapeHtml(item.shortUrl)}</a>` : ""}
+        </div>
+        <div class="campaign-actions">
+          <span class="domain-status ${item.status}">${escapeHtml(statusLabel)}</span>
+          <button class="link-button secondary" data-copy-campaign-url="${escapeHtml(item.generatedUrl || item.destination || "")}" ${!(item.generatedUrl || item.destination) ? "disabled" : ""}>Copy URL</button>
+          <button class="link-button secondary" data-edit-campaign="${escapeHtml(item.id)}">Edit</button>
+          <button class="link-button danger" data-delete-campaign="${escapeHtml(item.id)}">Delete</button>
+        </div>
+      </div>
+    `;
+  }).join("");
+
+  mainContent.innerHTML = `
+    <section class="surface-card two-column campaign-builder-layout">
+      <div class="form-card">
+        <div class="surface-header">
+          <div>
+            <h2>UTM campaign builder</h2>
+            <p>Create tracked URLs, save your campaign metadata, and optionally generate a short link instantly.</p>
+          </div>
+          <span class="chip-link">${settingsCache.campaigns.length} saved</span>
+        </div>
+        <div class="campaign-builder-grid">
+          <div>
+            <label class="field-label" for="campaignName">Campaign name</label>
+            <input id="campaignName" class="url-input" type="text" value="${escapeHtml(editing?.name || "")}" placeholder="Spring launch">
+          </div>
+          <div>
+            <label class="field-label" for="campaignStatus">Status</label>
+            <select id="campaignStatus" class="url-input">
+              ${["draft", "active", "paused", "completed"].map((status) => `<option value="${status}" ${editing?.status === status ? "selected" : ""}>${status.charAt(0).toUpperCase() + status.slice(1)}</option>`).join("")}
+            </select>
+          </div>
+          <div class="campaign-span-2">
+            <label class="field-label" for="campaignDestination">Destination URL</label>
+            <input id="campaignDestination" class="url-input" type="url" value="${escapeHtml(editing?.destination || "")}" placeholder="https://example.com/landing-page">
+          </div>
+          <div>
+            <label class="field-label" for="campaignSource">UTM source</label>
+            <input id="campaignSource" class="url-input" type="text" value="${escapeHtml(editing?.source || "")}" placeholder="facebook">
+          </div>
+          <div>
+            <label class="field-label" for="campaignMedium">UTM medium</label>
+            <input id="campaignMedium" class="url-input" type="text" value="${escapeHtml(editing?.medium || "")}" placeholder="paid-social">
+          </div>
+          <div>
+            <label class="field-label" for="campaignCode">UTM campaign</label>
+            <input id="campaignCode" class="url-input" type="text" value="${escapeHtml(editing?.campaign || "")}" placeholder="spring-launch">
+          </div>
+          <div>
+            <label class="field-label" for="campaignTerm">UTM term</label>
+            <input id="campaignTerm" class="url-input" type="text" value="${escapeHtml(editing?.term || "")}" placeholder="lookalike-audience">
+          </div>
+          <div>
+            <label class="field-label" for="campaignContent">UTM content</label>
+            <input id="campaignContent" class="url-input" type="text" value="${escapeHtml(editing?.content || "")}" placeholder="video-variation-a">
+          </div>
+          <div>
+            <label class="field-label" for="campaignSlug">Optional short slug</label>
+            <input id="campaignSlug" class="url-input" type="text" value="${escapeHtml(editing?.slug || "")}" placeholder="spring-launch">
+          </div>
+          <div class="campaign-span-2">
+            <label class="field-label" for="campaignNotes">Internal notes</label>
+            <textarea id="campaignNotes" class="url-input" rows="3" placeholder="Creative brief, audience notes, budget, owner...">${escapeHtml(editing?.notes || "")}</textarea>
+          </div>
+        </div>
+        <div class="campaign-preview-card">
+          <span class="field-label">Tracked preview</span>
+          <strong id="campaignPreviewUrl">${escapeHtml(buildCampaignTrackedUrl(editing || {}))}</strong>
+        </div>
+        <div class="campaign-builder-actions">
+          <button class="link-button" id="saveCampaignButton">${editing ? "Update campaign" : "Save campaign"}</button>
+          <button class="link-button secondary" id="createCampaignLinkButton">Create short link</button>
+          <button class="link-button secondary" id="copyCampaignPreviewButton">Copy tracked URL</button>
+          ${editing ? '<button class="link-button secondary" id="resetCampaignEditorButton">New campaign</button>' : ""}
+        </div>
+        <div class="result-banner hidden" id="campaignBanner"></div>
+      </div>
+      <div class="form-card">
+        <div class="surface-header">
+          <div>
+            <h3>Saved campaigns</h3>
+            <p>Use this as your private UTM library and regenerate short links anytime.</p>
+          </div>
+        </div>
+        <div class="campaign-list">${campaignItems || '<div class="empty-state">No campaigns yet. Save your first UTM campaign from the builder.</div>'}</div>
+      </div>
+    </section>
+  `;
+
+  bindCampaignBuilder(editing);
+}
+
+function buildCampaignTrackedUrl(campaign) {
+  const destination = String(campaign.destination || "").trim();
+  if (!destination) {
+    return "Add a destination URL to preview the tracked campaign link.";
+  }
+
+  try {
+    const url = new URL(destination);
+    if (campaign.source) url.searchParams.set("utm_source", campaign.source);
+    if (campaign.medium) url.searchParams.set("utm_medium", campaign.medium);
+    if (campaign.campaign) url.searchParams.set("utm_campaign", campaign.campaign);
+    if (campaign.term) url.searchParams.set("utm_term", campaign.term);
+    if (campaign.content) url.searchParams.set("utm_content", campaign.content);
+    return url.toString();
+  } catch {
+    return "Enter a valid destination URL to preview the tracked link.";
+  }
+}
+
+function collectCampaignFormValue(editing) {
+  return {
+    id: editing?.id || crypto.randomUUID(),
+    name: document.getElementById("campaignName").value.trim(),
+    status: document.getElementById("campaignStatus").value,
+    destination: document.getElementById("campaignDestination").value.trim(),
+    source: document.getElementById("campaignSource").value.trim(),
+    medium: document.getElementById("campaignMedium").value.trim(),
+    campaign: document.getElementById("campaignCode").value.trim(),
+    term: document.getElementById("campaignTerm").value.trim(),
+    content: document.getElementById("campaignContent").value.trim(),
+    slug: sanitizeSlug(document.getElementById("campaignSlug").value.trim()),
+    notes: document.getElementById("campaignNotes").value.trim(),
+    shortUrl: editing?.shortUrl || "",
+    createdAt: editing?.createdAt || new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+async function persistCampaigns(nextCampaigns, successMessage) {
+  await saveSettings({
+    workspaceName: settingsCache.workspaceName,
+    defaultDomain: settingsCache.defaultDomain,
+    domains: settingsCache.domains,
+    campaigns: nextCampaigns,
+  });
+  renderCampaignsPage();
+  showGlobalMessage(successMessage, false);
+}
+
+function bindCampaignBuilder(editing) {
+  const banner = document.getElementById("campaignBanner");
+  const previewNode = document.getElementById("campaignPreviewUrl");
+  const formIds = ["campaignDestination", "campaignSource", "campaignMedium", "campaignCode", "campaignTerm", "campaignContent"];
+
+  const refreshPreview = () => {
+    previewNode.textContent = buildCampaignTrackedUrl(collectCampaignFormValue(editing));
+  };
+
+  formIds.forEach((id) => document.getElementById(id)?.addEventListener("input", refreshPreview));
+
+  document.getElementById("saveCampaignButton")?.addEventListener("click", async () => {
+    const nextCampaign = collectCampaignFormValue(editing);
+    if (!nextCampaign.name || !nextCampaign.destination) {
+      setInlineBanner(banner, "Campaign name and destination URL are required.", true);
+      return;
+    }
+
+    nextCampaign.generatedUrl = buildCampaignTrackedUrl(nextCampaign);
+    const nextCampaigns = [
+      nextCampaign,
+      ...settingsCache.campaigns.filter((item) => item.id !== nextCampaign.id),
+    ];
+
+    try {
+      await persistCampaigns(nextCampaigns, editing ? "Campaign updated." : "Campaign saved.");
+      selectedCampaignId = nextCampaign.id;
+    } catch (error) {
+      setInlineBanner(banner, error.message, true);
+    }
+  });
+
+  document.getElementById("copyCampaignPreviewButton")?.addEventListener("click", async () => {
+    const preview = buildCampaignTrackedUrl(collectCampaignFormValue(editing));
+    if (!preview.startsWith("http")) {
+      setInlineBanner(banner, "Enter a valid destination URL first.", true);
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(preview);
+      setInlineBanner(banner, "Tracked URL copied.", false);
+    } catch {
+      setInlineBanner(banner, "Copy failed. Copy the preview URL manually.", true);
+    }
+  });
+
+  document.getElementById("createCampaignLinkButton")?.addEventListener("click", async () => {
+    const nextCampaign = collectCampaignFormValue(editing);
+    const trackedUrl = buildCampaignTrackedUrl(nextCampaign);
+    if (!nextCampaign.name || !trackedUrl.startsWith("http")) {
+      setInlineBanner(banner, "Enter a valid destination URL before generating a short link.", true);
+      return;
+    }
+
+    setInlineBanner(banner, "Creating tracked short link...", false);
+    try {
+      const response = await fetch("/api/links", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          destination: trackedUrl,
+          slug: nextCampaign.slug,
+          includeQr: false,
+        }),
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        setInlineBanner(banner, payload.error || "Could not create short link.", true);
+        return;
+      }
+
+      linksCache.unshift(payload.link);
+      nextCampaign.generatedUrl = trackedUrl;
+      nextCampaign.shortUrl = payload.link.shortUrl;
+      nextCampaign.slug = payload.link.slug;
+      const nextCampaigns = [
+        nextCampaign,
+        ...settingsCache.campaigns.filter((item) => item.id !== nextCampaign.id),
+      ];
+      await persistCampaigns(nextCampaigns, "Tracked short link created.");
+      selectedCampaignId = nextCampaign.id;
+    } catch (error) {
+      setInlineBanner(banner, error.message, true);
+    }
+  });
+
+  document.getElementById("resetCampaignEditorButton")?.addEventListener("click", () => {
+    selectedCampaignId = "";
+    renderCampaignsPage();
+  });
+
+  document.querySelectorAll("[data-edit-campaign]").forEach((button) => button.addEventListener("click", () => {
+    selectedCampaignId = button.getAttribute("data-edit-campaign");
+    renderCampaignsPage();
+  }));
+
+  document.querySelectorAll("[data-delete-campaign]").forEach((button) => button.addEventListener("click", async () => {
+    const id = button.getAttribute("data-delete-campaign");
+    const nextCampaigns = settingsCache.campaigns.filter((item) => item.id !== id);
+    if (selectedCampaignId === id) {
+      selectedCampaignId = "";
+    }
+    try {
+      await persistCampaigns(nextCampaigns, "Campaign deleted.");
+    } catch (error) {
+      showGlobalMessage(error.message, true);
+    }
+  }));
+
+  document.querySelectorAll("[data-copy-campaign-url]").forEach((button) => button.addEventListener("click", async () => {
+    const url = button.getAttribute("data-copy-campaign-url");
+    if (!url) {
+      showGlobalMessage("No tracked URL saved for this campaign yet.", true);
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(url);
+      showGlobalMessage("Tracked URL copied.", false);
+    } catch {
+      showGlobalMessage("Copy failed. Please copy the URL manually.", true);
+    }
+  }));
 }
 
 function renderDomainsPage() {

@@ -487,6 +487,7 @@ async function readSettingsForUserAsync(userId, req) {
         goalAlertState: fileExtras?.goalAlertState || {},
         linkRules: fileExtras?.linkRules || {},
         trashLinks: fileExtras?.trashLinks || [],
+        campaigns: fileExtras?.campaigns || [],
       }, req);
     }
     if (dbOnlyMode) {
@@ -2447,6 +2448,7 @@ async function handleSaveSettings(body, req, res, user) {
   const goalAlertState = normalizeGoalAlertState(body.goalAlertState || currentSettings.goalAlertState || {});
   const linkRules = normalizeLinkRules(body.linkRules || currentSettings.linkRules || {}, currentSettings.linkRules || {});
   const trashLinks = normalizeTrashLinks(body.trashLinks || currentSettings.trashLinks || []);
+  const campaigns = normalizeCampaigns(body.campaigns || currentSettings.campaigns || []);
 
   if (!workspaceName) {
     return sendJson(res, 400, { error: "Workspace name is required." });
@@ -2471,6 +2473,7 @@ async function handleSaveSettings(body, req, res, user) {
     goalAlertState,
     linkRules,
     trashLinks,
+    campaigns,
   }, req);
 
   if (!dbOnlyMode) {
@@ -3401,6 +3404,45 @@ function normalizeTrashLinks(input) {
   return items.sort((left, right) => new Date(right.deletedAt || 0).getTime() - new Date(left.deletedAt || 0).getTime());
 }
 
+function normalizeCampaigns(input) {
+  const items = [];
+  const seen = new Set();
+
+  for (const rawItem of input || []) {
+    if (!rawItem || typeof rawItem !== "object") {
+      continue;
+    }
+
+    const id = String(rawItem.id || "").trim() || crypto.randomUUID();
+    if (seen.has(id)) {
+      continue;
+    }
+
+    seen.add(id);
+    items.push({
+      id,
+      name: String(rawItem.name || "").trim() || "Untitled campaign",
+      status: ["draft", "active", "paused", "completed"].includes(String(rawItem.status || "").trim().toLowerCase())
+        ? String(rawItem.status || "").trim().toLowerCase()
+        : "draft",
+      source: String(rawItem.source || "").trim(),
+      medium: String(rawItem.medium || "").trim(),
+      campaign: String(rawItem.campaign || "").trim(),
+      term: String(rawItem.term || "").trim(),
+      content: String(rawItem.content || "").trim(),
+      destination: normalizeUrl(String(rawItem.destination || "").trim()),
+      generatedUrl: normalizeUrl(String(rawItem.generatedUrl || "").trim()),
+      shortUrl: String(rawItem.shortUrl || "").trim(),
+      slug: sanitizeSlugInput(String(rawItem.slug || "").trim()),
+      notes: String(rawItem.notes || "").trim(),
+      createdAt: String(rawItem.createdAt || new Date().toISOString()),
+      updatedAt: String(rawItem.updatedAt || new Date().toISOString()),
+    });
+  }
+
+  return items.sort((left, right) => new Date(right.updatedAt || 0).getTime() - new Date(left.updatedAt || 0).getTime());
+}
+
 function buildDomainEntries(domains, defaultDomain, req, sourceEntries = []) {
   const fallback = getDefaultShortDomain(req);
   const sourceMap = new Map((sourceEntries || []).map((entry) => [entry.host, entry]));
@@ -3448,6 +3490,7 @@ function normalizeSettings(settings, req) {
     goalAlertState: normalizeGoalAlertState(settings?.goalAlertState || {}),
     linkRules: normalizeLinkRules(settings?.linkRules || {}, settings?.linkRules || {}),
     trashLinks: normalizeTrashLinks(settings?.trashLinks || []),
+    campaigns: normalizeCampaigns(settings?.campaigns || []),
   };
 }
 
