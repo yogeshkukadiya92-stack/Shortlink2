@@ -661,6 +661,7 @@ function verifyPassword(password, userLike) {
 function normalizeDbUser(user) {
   return {
     ...user,
+    subscriptionStatus: String(user.subscriptionStatus || "").toLowerCase() || "inactive",
     trialStartedAt: user.trialStartedAt ? new Date(user.trialStartedAt).getTime() : 0,
     trialEndsAt: user.trialEndsAt ? new Date(user.trialEndsAt).getTime() : 0,
     subscriptionStartedAt: user.subscriptionStartedAt ? new Date(user.subscriptionStartedAt).getTime() : 0,
@@ -1551,7 +1552,7 @@ function serializeBilling(user) {
 
   const now = Date.now();
   const trialEndsAt = Number(user.trialEndsAt || 0);
-  const subscriptionStatus = user.subscriptionStatus || "inactive";
+  const subscriptionStatus = String(user.subscriptionStatus || "inactive").toLowerCase();
   const trialRemainingMs = Math.max(0, trialEndsAt - now);
   return {
     subscriptionStatus,
@@ -1570,7 +1571,7 @@ function hasActiveAccess(user) {
   }
 
   const now = Date.now();
-  if (user.subscriptionStatus === "active" && Number(user.subscriptionExpiresAt || 0) > now) {
+  if (String(user.subscriptionStatus || "").toLowerCase() === "active" && Number(user.subscriptionExpiresAt || 0) > now) {
     return true;
   }
 
