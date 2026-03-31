@@ -317,7 +317,11 @@ async function readPagesForUserAsync(userId, req) {
   try {
     const pages = await listPagesByUser(userId);
     if (Array.isArray(pages) && pages.length) {
-      return pages.map((page) => mapDbPageRecord(page, req));
+      const filePages = !dbOnlyMode ? readPages().filter((item) => item.userId === userId) : [];
+      return pages.map((page) => {
+        const fallbackPage = filePages.find((item) => item.id === page.id || item.slug === page.slug);
+        return mapDbPageRecord(page, req, fallbackPage);
+      });
     }
     if (dbOnlyMode) {
       return [];
@@ -335,7 +339,8 @@ async function findNormalizedPageByIdAsync(pageId, userId, req) {
   try {
     const page = await findPageById(pageId, userId);
     if (page) {
-      return mapDbPageRecord(page, req);
+      const fallbackPage = !dbOnlyMode ? readPages().find((item) => item.id === pageId && item.userId === userId) : null;
+      return mapDbPageRecord(page, req, fallbackPage);
     }
     if (dbOnlyMode) {
       return null;
@@ -354,7 +359,8 @@ async function findNormalizedPageBySlugAsync(slug, req) {
   try {
     const page = await findPageBySlug(slug);
     if (page) {
-      return mapDbPageRecord(page, req);
+      const fallbackPage = !dbOnlyMode ? readPages().find((item) => item.slug === slug) : null;
+      return mapDbPageRecord(page, req, fallbackPage);
     }
     if (dbOnlyMode) {
       return null;
@@ -1515,14 +1521,29 @@ async function handlePublicFormPage(slug, req, res) {
     res.end("<!DOCTYPE html><html><body style=\"font-family:Arial,sans-serif;padding:40px;\"><h1>Form not found</h1><p>This form link is not available.</p></body></html>");
     return;
   }
-  const fieldMarkup = getEnabledFormFields(normalizedPage.fields).map((field) => `
-    <label style="display:grid;gap:8px;">
-      <span style="font-weight:600;color:#1f356c;">${escapeHtml(field.label)}</span>
-      ${field.type === "textarea"
-        ? `<textarea name="${field.key}" ${field.required ? "required" : ""} rows="5" style="padding:14px 16px;border:1px solid #d9e2f0;border-radius:14px;font:inherit;"></textarea>`
-        : `<input type="${field.type}" name="${field.key}" ${field.required ? "required" : ""} style="padding:14px 16px;border:1px solid #d9e2f0;border-radius:14px;font:inherit;">`}
-    </label>
-  `).join("");
+  const fieldMarkup = getEnabledFormFields(normalizedPage.fields).map((field) => {
+    const label = `<span style="font-weight:600;color:#1f356c;">${escapeHtml(field.label)}</span>`;
+    const requiredAttr = field.required ? "required" : "";
+    const optionsMarkup = (field.options || []).map((option) => `<option value="${escapeHtml(option)}">${escapeHtml(option)}</option>`).join("");
+
+    if (field.type === "textarea") {
+      return `<label style="display:grid;gap:8px;">${label}<textarea name="${field.key}" ${requiredAttr} rows="5" style="padding:14px 16px;border:1px solid #d9e2f0;border-radius:14px;font:inherit;"></textarea></label>`;
+    }
+
+    if (field.type === "select") {
+      return `<label style="display:grid;gap:8px;">${label}<select name="${field.key}" ${requiredAttr} style="padding:14px 16px;border:1px solid #d9e2f0;border-radius:14px;font:inherit;background:#fff;"><option value="">Select an option</option>${optionsMarkup}</select></label>`;
+    }
+
+    if (field.type === "radio") {
+      return `<fieldset style="display:grid;gap:10px;border:none;padding:0;margin:0;"><legend style="font-weight:600;color:#1f356c;padding:0;">${escapeHtml(field.label)}</legend>${(field.options || []).map((option) => `<label style="display:flex;align-items:center;gap:10px;padding:12px 14px;border:1px solid #d9e2f0;border-radius:14px;"><input type="radio" name="${field.key}" value="${escapeHtml(option)}" ${requiredAttr} style="width:18px;height:18px;">${escapeHtml(option)}</label>`).join("")}</fieldset>`;
+    }
+
+    if (field.type === "checkbox") {
+      return `<label style="display:flex;align-items:center;gap:12px;padding:14px 16px;border:1px solid #d9e2f0;border-radius:14px;"><input type="checkbox" name="${field.key}" value="Yes" ${requiredAttr} style="width:18px;height:18px;"><span style="font-weight:600;color:#1f356c;">${escapeHtml(field.label)}</span></label>`;
+    }
+
+    return `<label style="display:grid;gap:8px;">${label}<input type="${field.type}" name="${field.key}" ${requiredAttr} style="padding:14px 16px;border:1px solid #d9e2f0;border-radius:14px;font:inherit;"></label>`;
+  }).join("");
 
   const html = `<!DOCTYPE html>
   <html lang="en">
@@ -1561,7 +1582,11 @@ async function handlePublicFormPage(slug, req, res) {
         const status = document.getElementById("formStatus");
         form.addEventListener("submit", async (event) => {
           event.preventDefault();
-          const entries = Object.fromEntries(new FormData(form).entries());
+          const formData = new FormData(form);
+          const entries = {};
+          for (const [key, value] of formData.entries()) {
+            entries[key] = value;
+          }
           status.className = "status";
           status.style.display = "block";
           status.textContent = "Submitting...";
@@ -1602,7 +1627,10 @@ async function handlePublicFormSubmit(slug, body, req, res) {
   const dbAnswers = [];
 
   for (const field of getEnabledFormFields(normalizedPage.fields)) {
-    const value = String(body[field.key] || "").trim();
+    const rawValue = body[field.key];
+    const value = field.type === "checkbox"
+      ? (rawValue ? "Yes" : "")
+      : String(rawValue || "").trim();
     if (field.required && !value) {
       return sendJson(res, 400, { error: field.label + " is required." });
     }
@@ -2100,14 +2128,88 @@ function sanitizeFormSlug(value) {
     .replace(/^-+|-+$/g, "");
 }
 
+const defaultFormFieldLibrary = [
+  { key: "name", label: "Full name", type: "text", required: true, enabled: true, builtIn: true, options: [] },
+  { key: "email", label: "Email address", type: "email", required: true, enabled: true, builtIn: true, options: [] },
+  { key: "phone", label: "Phone number", type: "tel", required: false, enabled: false, builtIn: true, options: [] },
+  { key: "company", label: "Company", type: "text", required: false, enabled: false, builtIn: true, options: [] },
+  { key: "message", label: "Message", type: "textarea", required: true, enabled: true, builtIn: true, options: [] },
+];
+
+function sanitizeFormFieldKey(value, fallback = "field") {
+  const clean = String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/_{2,}/g, "_")
+    .replace(/^_+|_+$/g, "");
+
+  return clean || fallback;
+}
+
+function normalizeFormFieldType(type) {
+  const normalized = String(type || "text").trim().toLowerCase();
+  if (["email", "tel", "textarea", "select", "radio", "checkbox"].includes(normalized)) {
+    return normalized;
+  }
+  return "text";
+}
+
+function normalizeFieldOptions(options) {
+  const rawItems = Array.isArray(options)
+    ? options
+    : String(options || "").split(/\r?\n|,/);
+
+  return [...new Set(rawItems
+    .map((item) => String(item || "").trim())
+    .filter(Boolean))];
+}
+
 function normalizeFormFields(fields) {
-  return {
-    name: fields.name !== false,
-    email: fields.email !== false,
-    phone: fields.phone === true,
-    company: fields.company === true,
-    message: fields.message !== false,
-  };
+  const source = Array.isArray(fields)
+    ? fields
+    : defaultFormFieldLibrary.map((field) => ({
+      ...field,
+      enabled: Object.prototype.hasOwnProperty.call(fields || {}, field.key)
+        ? Boolean(fields[field.key])
+        : field.enabled,
+    }));
+
+  const seen = new Set();
+  const normalized = [];
+
+  for (const baseField of source) {
+    if (!baseField || typeof baseField !== "object") {
+      continue;
+    }
+
+    const builtIn = Boolean(baseField.builtIn || defaultFormFieldLibrary.some((field) => field.key === baseField.key));
+    const key = sanitizeFormFieldKey(baseField.key || baseField.label, builtIn ? baseField.key : "field");
+    if (!key || seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+    const type = normalizeFormFieldType(baseField.type);
+    const options = ["select", "radio"].includes(type) ? normalizeFieldOptions(baseField.options) : [];
+    normalized.push({
+      key,
+      label: String(baseField.label || key).trim() || key,
+      type,
+      required: Boolean(baseField.required),
+      enabled: Boolean(baseField.enabled !== false),
+      builtIn,
+      options,
+    });
+  }
+
+  for (const defaultField of defaultFormFieldLibrary) {
+    if (!seen.has(defaultField.key)) {
+      normalized.push({ ...defaultField });
+    }
+  }
+
+  return normalized;
 }
 
 function mapInputTypeToDb(type) {
@@ -2128,20 +2230,17 @@ function serializeDbFormFields(fields) {
   }));
 }
 
-function mapDbPageRecord(page, req) {
-  const fieldState = {
-    name: false,
-    email: false,
-    phone: false,
-    company: false,
-    message: false,
-  };
-
-  for (const field of page.fields || []) {
-    if (Object.prototype.hasOwnProperty.call(fieldState, field.key)) {
-      fieldState[field.key] = field.enabled !== false;
-    }
-  }
+function mapDbPageRecord(page, req, fallbackPage = null) {
+  const fallbackFieldMap = new Map(normalizeFormFields(fallbackPage?.fields || []).map((field) => [field.key, field]));
+  const fieldState = (page.fields || []).map((field) => ({
+    key: field.key,
+    label: field.label,
+    type: fallbackFieldMap.get(field.key)?.type || String(field.type || "TEXT").toLowerCase(),
+    required: Boolean(field.required),
+    enabled: field.enabled !== false,
+    builtIn: defaultFormFieldLibrary.some((item) => item.key === field.key),
+    options: fallbackFieldMap.get(field.key)?.options || [],
+  }));
 
   const submissions = (page.submissions || []).map((submission) => ({
     id: submission.id,
@@ -2174,16 +2273,7 @@ function mapDbPageRecord(page, req) {
 }
 
 function getEnabledFormFields(fields) {
-  const normalized = normalizeFormFields(fields);
-  const allFields = [
-    { key: "name", label: "Full name", type: "text", required: normalized.name },
-    { key: "email", label: "Email address", type: "email", required: normalized.email },
-    { key: "phone", label: "Phone number", type: "tel", required: false },
-    { key: "company", label: "Company", type: "text", required: false },
-    { key: "message", label: "Message", type: "textarea", required: normalized.message },
-  ];
-
-  return allFields.filter((field) => normalized[field.key]);
+  return normalizeFormFields(fields).filter((field) => field.enabled);
 }
 
 function normalizePage(page, req) {

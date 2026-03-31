@@ -1339,6 +1339,52 @@ svg {
   flex-wrap: wrap;
 }
 
+.form-builder-header-row {
+  margin: 16px 0 12px;
+}
+
+.builder-field-list {
+  display: grid;
+  gap: 14px;
+}
+
+.builder-field-card {
+  padding: 16px;
+  border-radius: 18px;
+  border: 1px solid #dce6f6;
+  background: linear-gradient(180deg, #fbfdff, #f3f7ff);
+  display: grid;
+  gap: 14px;
+}
+
+.builder-field-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.builder-field-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.builder-field-toggle-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.builder-options-block.hidden {
+  display: none;
+}
+
+.builder-options-input {
+  min-height: 100px;
+}
+
 .form-library,
 .form-submission-list {
   display: grid;
@@ -2342,6 +2388,10 @@ svg {
 
   .form-field-toggle-group,
   .submission-answer-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .builder-field-grid {
     grid-template-columns: 1fr;
   }
 

@@ -14,6 +14,13 @@ const profileDropdown = document.getElementById("profileDropdown");
 const profileAdminLink = document.getElementById("profileAdminLink");
 const adminNavItem = document.getElementById("adminNavItem");
 const publicShortDomain = "go.shortlinks.in";
+const defaultFormFieldLibrary = [
+  { key: "name", label: "Full name", type: "text", required: true, enabled: true, builtIn: true, options: [] },
+  { key: "email", label: "Email address", type: "email", required: true, enabled: true, builtIn: true, options: [] },
+  { key: "phone", label: "Phone number", type: "tel", required: false, enabled: false, builtIn: true, options: [] },
+  { key: "company", label: "Company", type: "text", required: false, enabled: false, builtIn: true, options: [] },
+  { key: "message", label: "Message", type: "textarea", required: true, enabled: true, builtIn: true, options: [] },
+];
 
 let currentPage = getCurrentPage();
 let currentUser = null;
@@ -21,6 +28,7 @@ let linksCache = [];
 let pagesCache = [];
 let selectedQrSlug = null;
 let selectedFormId = "";
+let formBuilderDraftCache = null;
 let analyticsRange = "30d";
 let analyticsCustomStart = "";
 let analyticsCustomEnd = "";
@@ -378,6 +386,65 @@ function normalizeLinkRules(rules) {
     }
 
     normalized[cleanSlug] = { startsAt, expiresAt, isPaused, isProtected, isOneTime, oneTimeUsedAt };
+  });
+
+  return normalized;
+}
+
+function normalizeBuilderFieldType(type) {
+  const normalized = String(type || "text").trim().toLowerCase();
+  return ["text", "email", "tel", "textarea", "select", "radio", "checkbox"].includes(normalized) ? normalized : "text";
+}
+
+function normalizeBuilderFieldKey(value, fallback = "field") {
+  return sanitizeSlug(String(value || fallback).replaceAll("_", "-")) || fallback;
+}
+
+function normalizeBuilderFieldOptions(options) {
+  const rawItems = Array.isArray(options) ? options : String(options || "").split(/\r?\n|,/);
+  return [...new Set(rawItems.map((item) => String(item || "").trim()).filter(Boolean))];
+}
+
+function normalizeFormFields(fields) {
+  const source = Array.isArray(fields)
+    ? fields
+    : defaultFormFieldLibrary.map((field) => ({
+      ...field,
+      enabled: Object.prototype.hasOwnProperty.call(fields || {}, field.key)
+        ? Boolean(fields[field.key])
+        : field.enabled,
+    }));
+  const seen = new Set();
+  const normalized = [];
+
+  source.forEach((field) => {
+    if (!field || typeof field !== "object") {
+      return;
+    }
+
+    const builtIn = Boolean(field.builtIn || defaultFormFieldLibrary.some((item) => item.key === field.key));
+    const key = normalizeBuilderFieldKey(field.key || field.label, builtIn ? field.key : "field");
+    if (!key || seen.has(key)) {
+      return;
+    }
+
+    seen.add(key);
+    const type = normalizeBuilderFieldType(field.type);
+    normalized.push({
+      key,
+      label: String(field.label || key).trim() || key,
+      type,
+      required: Boolean(field.required),
+      enabled: Boolean(field.enabled !== false),
+      builtIn,
+      options: ["select", "radio"].includes(type) ? normalizeBuilderFieldOptions(field.options) : [],
+    });
+  });
+
+  defaultFormFieldLibrary.forEach((field) => {
+    if (!seen.has(field.key)) {
+      normalized.push({ ...field });
+    }
   });
 
   return normalized;
@@ -1119,8 +1186,9 @@ function renderQrPage() {
 
 function renderPagesBuilder() {
   const selectedPage = getSelectedForm();
-  const draft = selectedPage || createEmptyFormDraft();
+  const draft = formBuilderDraftCache || selectedPage || createEmptyFormDraft();
   const totalSubmissions = pagesCache.reduce((sum, page) => sum + (page.submissionCount || 0), 0);
+  const draftFields = normalizeFormFields(draft.fields || []);
 
   mainContent.innerHTML = `
     <section class="stat-grid">
@@ -1151,12 +1219,15 @@ function renderPagesBuilder() {
           <input id="formSubmitLabel" class="url-input" type="text" value="${escapeHtml(draft.submitLabel)}" placeholder="Submit">
           <label class="field-label" for="formThanksMessage">Thank-you message</label>
           <textarea id="formThanksMessage" class="url-input textarea-input" rows="3" placeholder="Thanks, your response has been received.">${escapeHtml(draft.thanksMessage)}</textarea>
-          <div class="form-field-toggle-group">
-            ${renderFieldToggle("name", "Full name", draft.fields.name)}
-            ${renderFieldToggle("email", "Email address", draft.fields.email)}
-            ${renderFieldToggle("phone", "Phone number", draft.fields.phone)}
-            ${renderFieldToggle("company", "Company", draft.fields.company)}
-            ${renderFieldToggle("message", "Message", draft.fields.message)}
+          <div class="surface-header compact form-builder-header-row">
+            <div>
+              <h3>Fields</h3>
+              <p>Mix built-in and custom fields to shape the form exactly the way you want.</p>
+            </div>
+            <button class="link-button secondary" id="addCustomFieldButton" type="button">Add custom field</button>
+          </div>
+          <div class="builder-field-list" id="builderFieldList">
+            ${draftFields.map((field, index) => renderBuilderFieldRow(field, index)).join("")}
           </div>
           <div class="form-builder-actions">
             <button class="primary-action inline-action" id="saveFormButton" type="button">${draft.id ? "Update form" : "Create form"}</button>
@@ -1171,6 +1242,7 @@ function renderPagesBuilder() {
             <div class="dns-helper-grid">
               <span><strong>Public link</strong>${escapeHtml(getPublicFormUrl(draft.slug || "your-form"))}</span>
               <span><strong>Responses</strong>${draft.submissionCount || 0}</span>
+              <span><strong>Active fields</strong>${draftFields.filter((field) => field.enabled).length}</span>
               <span><strong>Submit CTA</strong>${escapeHtml(draft.submitLabel || "Submit")}</span>
             </div>
             <div class="managed-domain-actions">
@@ -1206,12 +1278,13 @@ function renderPagesBuilder() {
         </div>
         ${draft.id ? '<button class="link-button secondary" id="exportResponsesButton" type="button">Export Excel</button>' : ""}
       </div>
-      ${draft.id ? renderFormSubmissions(draft.submissions || []) : '<div class="empty-state">No form selected yet.</div>'}
+      ${draft.id ? renderFormSubmissions(draft.submissions || [], draftFields) : '<div class="empty-state">No form selected yet.</div>'}
     </section>
   `;
 
   document.getElementById("newFormButton").addEventListener("click", () => {
     selectedFormId = "";
+    formBuilderDraftCache = createEmptyFormDraft();
     renderPagesBuilder();
   });
 
@@ -1229,9 +1302,29 @@ function renderPagesBuilder() {
     await saveFormFromBuilder();
   });
 
+  document.getElementById("addCustomFieldButton").addEventListener("click", () => {
+    const nextDraft = {
+      ...collectFormBuilderDraftFromDom(),
+      fields: [...collectFormBuilderDraftFromDom().fields, createCustomFieldDraft()],
+    };
+    renderPagesBuilderFromDraft(nextDraft);
+  });
+
   document.querySelectorAll("[data-edit-form]").forEach((button) => button.addEventListener("click", () => {
     selectedFormId = button.getAttribute("data-edit-form");
+    formBuilderDraftCache = null;
     renderPagesBuilder();
+  }));
+
+  document.querySelectorAll("[data-remove-builder-field]").forEach((button) => button.addEventListener("click", () => {
+    const index = Number(button.getAttribute("data-remove-builder-field"));
+    const currentDraft = collectFormBuilderDraftFromDom();
+    const nextFields = currentDraft.fields.filter((_, fieldIndex) => fieldIndex !== index);
+    renderPagesBuilderFromDraft({ ...currentDraft, fields: nextFields });
+  }));
+
+  document.querySelectorAll("[data-builder-type]").forEach((input) => input.addEventListener("change", () => {
+    syncBuilderOptionVisibility();
   }));
 
   const deleteButton = document.getElementById("deleteCurrentFormButton");
@@ -1247,6 +1340,56 @@ function renderPagesBuilder() {
       window.location.href = `/api/pages/${encodeURIComponent(draft.id)}/export`;
     });
   }
+
+  syncBuilderOptionVisibility();
+}
+
+function renderPagesBuilderFromDraft(draft) {
+  formBuilderDraftCache = {
+    ...draft,
+    fields: normalizeFormFields(draft.fields || []),
+  };
+  renderPagesBuilder();
+}
+
+function collectFormBuilderDraftFromDom() {
+  const existing = formBuilderDraftCache || getSelectedForm() || createEmptyFormDraft();
+  const fieldRows = [...document.querySelectorAll("[data-builder-field-row]")];
+  const fields = fieldRows.map((row) => {
+    const index = row.getAttribute("data-builder-field-row");
+    return {
+      key: normalizeBuilderFieldKey(document.querySelector(`[data-builder-key="${index}"]`)?.value || "", `field-${Number(index) + 1}`),
+      label: String(document.querySelector(`[data-builder-label="${index}"]`)?.value || "").trim() || `Field ${Number(index) + 1}`,
+      type: normalizeBuilderFieldType(document.querySelector(`[data-builder-type="${index}"]`)?.value || "text"),
+      required: Boolean(document.querySelector(`[data-builder-required="${index}"]`)?.checked),
+      enabled: Boolean(document.querySelector(`[data-builder-enabled="${index}"]`)?.checked),
+      builtIn: row.querySelector(".chip-link") !== null,
+      options: normalizeBuilderFieldOptions(document.querySelector(`[data-builder-options="${index}"]`)?.value || ""),
+    };
+  });
+
+  return {
+    ...existing,
+    id: document.getElementById("formId")?.value.trim() || existing.id || "",
+    title: document.getElementById("formTitle")?.value.trim() || existing.title || "",
+    slug: sanitizeSlug(document.getElementById("formSlug")?.value.trim() || existing.slug || existing.title || ""),
+    headline: document.getElementById("formHeadline")?.value.trim() || existing.headline || "",
+    description: document.getElementById("formDescription")?.value.trim() || existing.description || "",
+    submitLabel: document.getElementById("formSubmitLabel")?.value.trim() || existing.submitLabel || "Submit",
+    thanksMessage: document.getElementById("formThanksMessage")?.value.trim() || existing.thanksMessage || "Thanks, your response has been received.",
+    fields: normalizeFormFields(fields),
+  };
+}
+
+function syncBuilderOptionVisibility() {
+  document.querySelectorAll("[data-builder-type]").forEach((select) => {
+    const index = select.getAttribute("data-builder-type");
+    const wrap = document.querySelector(`[data-builder-options-wrap="${index}"]`);
+    if (!wrap) {
+      return;
+    }
+    wrap.classList.toggle("hidden", !["select", "radio"].includes(select.value));
+  });
 }
 
 function createEmptyFormDraft() {
@@ -1261,13 +1404,7 @@ function createEmptyFormDraft() {
     publicUrl: getPublicFormUrl("your-form"),
     submissionCount: 0,
     submissions: [],
-    fields: {
-      name: true,
-      email: true,
-      phone: false,
-      company: false,
-      message: true,
-    },
+    fields: normalizeFormFields(defaultFormFieldLibrary),
   };
 }
 
@@ -1275,12 +1412,46 @@ function getSelectedForm() {
   return pagesCache.find((page) => page.id === selectedFormId) || null;
 }
 
-function renderFieldToggle(key, label, checked) {
+function createCustomFieldDraft() {
+  const suffix = Math.random().toString(36).slice(2, 7);
+  return {
+    key: `custom-${suffix}`,
+    label: "Custom field",
+    type: "text",
+    required: false,
+    enabled: true,
+    builtIn: false,
+    options: [],
+  };
+}
+
+function renderBuilderFieldRow(field, index) {
+  const optionsValue = (field.options || []).join("\n");
+  const supportsOptions = ["select", "radio"].includes(field.type);
   return `
-    <label class="field-toggle">
-      <input type="checkbox" data-form-field="${escapeHtml(key)}" ${checked ? "checked" : ""}>
-      <span>${escapeHtml(label)}</span>
-    </label>
+    <article class="builder-field-card" data-builder-field-row="${index}">
+      <div class="builder-field-head">
+        <strong>${escapeHtml(field.builtIn ? "Core field" : "Custom field")}</strong>
+        ${field.builtIn ? '<span class="chip-link">Built-in</span>' : `<button class="link-button danger" type="button" data-remove-builder-field="${index}">Remove</button>`}
+      </div>
+      <div class="builder-field-grid">
+        <label class="field-label">Label<input class="url-input" type="text" value="${escapeHtml(field.label)}" data-builder-label="${index}" placeholder="Field label"></label>
+        <label class="field-label">Key<input class="url-input" type="text" value="${escapeHtml(field.key)}" data-builder-key="${index}" placeholder="field-key" ${field.builtIn ? "disabled" : ""}></label>
+        <label class="field-label">Type
+          <select class="url-input domain-select" data-builder-type="${index}">
+            ${["text", "email", "tel", "textarea", "select", "radio", "checkbox"].map((type) => `<option value="${type}" ${field.type === type ? "selected" : ""}>${type}</option>`).join("")}
+          </select>
+        </label>
+      </div>
+      <div class="builder-field-toggle-row">
+        <label class="field-toggle"><input type="checkbox" data-builder-enabled="${index}" ${field.enabled ? "checked" : ""}><span>Show field</span></label>
+        <label class="field-toggle"><input type="checkbox" data-builder-required="${index}" ${field.required ? "checked" : ""}><span>Required</span></label>
+      </div>
+      <label class="field-label builder-options-block ${supportsOptions ? "" : "hidden"}" data-builder-options-wrap="${index}">
+        Options
+        <textarea class="url-input textarea-input builder-options-input" rows="4" data-builder-options="${index}" placeholder="One option per line">${escapeHtml(optionsValue)}</textarea>
+      </label>
+    </article>
   `;
 }
 
@@ -1300,19 +1471,21 @@ function sanitizeSlug(value) {
 }
 
 async function saveFormFromBuilder() {
-  const id = document.getElementById("formId").value.trim();
-  const title = document.getElementById("formTitle").value.trim();
-  const slug = sanitizeSlug(document.getElementById("formSlug").value.trim() || title);
-  const headline = document.getElementById("formHeadline").value.trim();
-  const description = document.getElementById("formDescription").value.trim();
-  const submitLabel = document.getElementById("formSubmitLabel").value.trim();
-  const thanksMessage = document.getElementById("formThanksMessage").value.trim();
-  const fields = Object.fromEntries(
-    [...document.querySelectorAll("[data-form-field]")].map((input) => [input.getAttribute("data-form-field"), input.checked]),
-  );
+  const draft = collectFormBuilderDraftFromDom();
+  const {
+    id,
+    title,
+    slug,
+    headline,
+    description,
+    submitLabel,
+    thanksMessage,
+    fields,
+  } = draft;
 
   if (!title) return showGlobalMessage("Form name is required.", true);
   if (!slug) return showGlobalMessage("Public slug is required.", true);
+  if (!fields.some((field) => field.enabled)) return showGlobalMessage("Enable at least one field in your form.", true);
 
   try {
     const response = await fetch("/api/pages", {
@@ -1324,6 +1497,7 @@ async function saveFormFromBuilder() {
     if (!response.ok) throw new Error(payload.error || "Unable to save form.");
     await loadPages();
     selectedFormId = payload.page.id;
+    formBuilderDraftCache = null;
     renderPagesBuilder();
     showGlobalMessage(id ? "Form updated successfully." : "Form created successfully.", false);
   } catch (error) {
@@ -1337,6 +1511,7 @@ async function deleteForm(pageId) {
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.error || "Unable to delete form.");
     selectedFormId = "";
+    formBuilderDraftCache = createEmptyFormDraft();
     await loadPages();
     renderPagesBuilder();
     showGlobalMessage("Form deleted successfully.", false);
@@ -1345,10 +1520,12 @@ async function deleteForm(pageId) {
   }
 }
 
-function renderFormSubmissions(submissions) {
+function renderFormSubmissions(submissions, fields = []) {
   if (!submissions.length) {
     return '<div class="empty-state">No submissions yet. Share the public form link and new responses will appear here.</div>';
   }
+
+  const labelMap = new Map((fields || []).map((field) => [field.key, field.label]));
 
   return `
     <div class="form-submission-list">
@@ -1364,7 +1541,7 @@ function renderFormSubmissions(submissions) {
           <div class="submission-answer-grid">
             ${Object.entries(submission.answers || {}).map(([key, value]) => `
               <div class="submission-answer">
-                <strong>${escapeHtml(formatFieldLabel(key))}</strong>
+                <strong>${escapeHtml(labelMap.get(key) || formatFieldLabel(key))}</strong>
                 <span>${escapeHtml(value || "-")}</span>
               </div>
             `).join("")}
