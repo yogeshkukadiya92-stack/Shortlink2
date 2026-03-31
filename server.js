@@ -126,6 +126,10 @@ const server = http.createServer(async (req, res) => {
       return withAuth(req, res, (user) => handleCreateSubscription(user, req, res));
     }
 
+    if (req.method === "POST" && pathname === "/api/billing/refresh") {
+      return withAuth(req, res, (user) => handleRefreshSubscription(user, res));
+    }
+
     if (req.method === "POST" && pathname === "/api/billing/razorpay/webhook") {
       const rawBody = await readRawRequestBody(req);
       return await handleRazorpayWebhook(rawBody, req, res);
@@ -1169,6 +1173,62 @@ async function handleRazorpayWebhook(rawBody, req, res) {
   return sendJson(res, 200, { received: true, event });
 }
 
+async function handleRefreshSubscription(user, res) {
+  const razorpayKeyId = String(process.env.RAZORPAY_KEY_ID || "").trim();
+  const razorpayKeySecret = String(process.env.RAZORPAY_KEY_SECRET || "").trim();
+
+  if (!razorpayKeyId || !razorpayKeySecret) {
+    return sendJson(res, 501, { error: "Razorpay refresh is not configured yet." });
+  }
+
+  const storedUser = !dbOnlyMode ? readUsers().find((item) => item.id === user.id) : null;
+  const subscriptionId = String(storedUser?.razorpaySubscriptionId || user.razorpaySubscriptionId || "").trim();
+
+  if (!subscriptionId) {
+    return sendJson(res, 404, { error: "No Razorpay subscription found for this account." });
+  }
+
+  try {
+    const authHeader = Buffer.from(`${razorpayKeyId}:${razorpayKeySecret}`).toString("base64");
+    const response = await fetch(`${razorpayApiBase}/subscriptions/${encodeURIComponent(subscriptionId)}`, {
+      headers: {
+        Authorization: `Basic ${authHeader}`,
+        "Content-Type": "application/json",
+      },
+    });
+    const payload = await response.json().catch(() => ({}));
+
+    if (!response.ok) {
+      return sendJson(res, 502, {
+        error: payload.error?.description || payload.error?.reason || "Unable to verify your Razorpay subscription right now.",
+      });
+    }
+
+    const normalized = mapRazorpayStatusToBillingState(payload);
+    if (normalized) {
+      await applyBillingUpdateToUser(user.id, {
+        ...normalized,
+        billingProvider: "razorpay",
+        razorpaySubscriptionId: subscriptionId,
+        razorpayPlanId: String(payload.plan_id || storedUser?.razorpayPlanId || "").trim(),
+        razorpayCustomerId: String(payload.customer_id || storedUser?.razorpayCustomerId || "").trim(),
+        razorpayStatus: String(payload.status || "").trim(),
+        razorpayLastEvent: "manual_refresh",
+        razorpayLastEventAt: Date.now(),
+      });
+    }
+
+    const refreshedUser = getAuthenticatedUserById(user.id) || { ...user, ...(normalized || {}) };
+    return sendJson(res, 200, {
+      success: true,
+      billing: serializeBilling(refreshedUser),
+      razorpayStatus: String(payload.status || "unknown"),
+    });
+  } catch {
+    return sendJson(res, 500, { error: "Could not refresh subscription status right now." });
+  }
+}
+
 function mapRazorpayEventToBillingState(event, subscriptionEntity = {}) {
   const now = Date.now();
   const currentStart = Number(subscriptionEntity.current_start || 0) * 1000 || now;
@@ -1185,6 +1245,33 @@ function mapRazorpayEventToBillingState(event, subscriptionEntity = {}) {
   }
 
   if (["subscription.completed", "subscription.cancelled", "subscription.halted", "subscription.paused"].includes(event)) {
+    return {
+      subscriptionStatus: "inactive",
+      subscriptionStartedAt: currentStart || 0,
+      subscriptionExpiresAt: endedAt || currentEnd || now,
+    };
+  }
+
+  return null;
+}
+
+function mapRazorpayStatusToBillingState(subscriptionEntity = {}) {
+  const status = String(subscriptionEntity.status || "").trim().toLowerCase();
+  const now = Date.now();
+  const currentStart = Number(subscriptionEntity.current_start || 0) * 1000 || now;
+  const currentEnd = Number(subscriptionEntity.current_end || 0) * 1000 || 0;
+  const endedAt = Number(subscriptionEntity.ended_at || 0) * 1000 || 0;
+
+  if (["active", "authenticated"].includes(status)) {
+    return {
+      subscriptionStatus: "active",
+      trialEndsAt: 0,
+      subscriptionStartedAt: currentStart || now,
+      subscriptionExpiresAt: currentEnd || now + 30 * 24 * 60 * 60 * 1000,
+    };
+  }
+
+  if (["completed", "cancelled", "halted", "paused", "expired"].includes(status)) {
     return {
       subscriptionStatus: "inactive",
       subscriptionStartedAt: currentStart || 0,
@@ -1220,6 +1307,14 @@ async function applyBillingUpdateToUser(userId, updates) {
   } catch {
     // JSON remains the operational fallback until full DB billing migration lands.
   }
+}
+
+function getAuthenticatedUserById(userId) {
+  const fileUser = !dbOnlyMode ? readUsers().find((item) => item.id === userId) : null;
+  if (fileUser) {
+    return fileUser;
+  }
+  return null;
 }
 
 function handleAdminOverview(res) {

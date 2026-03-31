@@ -650,6 +650,7 @@ function renderBillingPage() {
           <h2>Pro Subscription</h2>
           <p class="billing-copy">Trial remaining: <strong>${daysLeft}</strong> day${daysLeft === 1 ? "" : "s"}.</p>
           <button class="primary-action auth-submit" id="subscribeButton" type="button">Continue to payment</button>
+          <button class="link-button secondary" id="refreshBillingButton" type="button">I already paid</button>
           <div class="result-banner hidden" id="billingBanner" aria-live="polite"></div>
         </div>
       </div>
@@ -666,11 +667,53 @@ function renderBillingPage() {
         setInlineBanner(banner, payload.error || "Payment setup is not ready yet.", true);
         return;
       }
+      sessionStorage.setItem("anylink_pending_billing_sync", "1");
       window.location.href = payload.paymentUrl;
     } catch (error) {
       setInlineBanner(banner, error.message, true);
     }
   });
+
+  document.getElementById("refreshBillingButton").addEventListener("click", async () => {
+    await refreshBillingAfterPayment();
+  });
+
+  if (sessionStorage.getItem("anylink_pending_billing_sync") === "1") {
+    refreshBillingAfterPayment(true);
+  }
+}
+
+async function refreshBillingAfterPayment(silent = false) {
+  const banner = document.getElementById("billingBanner");
+  if (!silent) {
+    setInlineBanner(banner, "Checking your payment status...", false);
+  }
+
+  try {
+    const response = await fetch("/api/billing/refresh", { method: "POST" });
+    const payload = await response.json();
+
+    if (!response.ok) {
+      setInlineBanner(banner, payload.error || "We could not verify your payment yet. Please try again in a moment.", true);
+      return;
+    }
+
+    billingCache = payload.billing || billingCache;
+    if (billingCache.hasAccess) {
+      sessionStorage.removeItem("anylink_pending_billing_sync");
+      setInlineBanner(banner, "Subscription activated successfully.", false);
+      setTimeout(() => {
+        currentPage = "home";
+        loadAppChrome();
+        renderCurrentPage();
+      }, 700);
+      return;
+    }
+
+    setInlineBanner(banner, `Payment found, but access is still ${payload.razorpayStatus || "pending"}. Try again in a few moments.`, true);
+  } catch (error) {
+    setInlineBanner(banner, error.message, true);
+  }
 }
 
 async function renderAdminPage() {
