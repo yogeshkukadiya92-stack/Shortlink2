@@ -3211,30 +3211,81 @@ function renderDomainsPage() {
       <div class="stack-card-group">
         <div class="form-card">
           <label class="field-label" for="domainName">Add a new custom domain</label>
-          <input id="domainName" class="url-input" type="text" placeholder="go.yourbrand.com">
+          <input id="domainName" class="url-input" type="text" placeholder="yourbrand.com">
+          <div class="domain-mode-toggle">
+            <label class="checkbox-row compact-checkbox">
+              <input type="checkbox" id="useExactDomainToggle">
+              <span>Use exact domain instead of auto-creating <strong>go.</strong> subdomain</span>
+            </label>
+          </div>
+          <div class="domain-suggestion-card" id="domainSuggestionCard">
+            <span class="helper-label">Recommended short domain</span>
+            <strong id="domainSuggestionValue">go.yourbrand.com</strong>
+            <span class="helper-copy" id="domainSuggestionHelp">For most DNS providers, the recommended setup is a CNAME on <strong>go</strong>.</span>
+          </div>
           <button class="primary-action inline-action" id="addDomainButton">Add domain</button>
           <p class="helper-copy">If no custom domain is active, new short links automatically use ${escapeHtml(publicShortDomain)}.</p>
         </div>
         <div class="form-card">
           <h3>DNS setup</h3>
-          <p class="helper-copy">Create a <strong>CNAME</strong> record for your branded subdomain and point it to <strong>${escapeHtml(publicShortDomain)}</strong>.</p>
-          <div class="dns-helper-grid">
-            <span><strong>Type</strong>CNAME</span>
-            <span><strong>Host</strong>go</span>
-            <span><strong>Value</strong>${escapeHtml(publicShortDomain)}</span>
+          <p class="helper-copy" id="dnsSetupCopy">Create a <strong>CNAME</strong> record for your branded subdomain and point it to <strong>${escapeHtml(publicShortDomain)}</strong>.</p>
+          <div class="dns-helper-grid" id="dnsHelperGrid">
+            <span><strong>Type</strong><span id="dnsTypeValue">CNAME</span></span>
+            <span><strong>Host</strong><span id="dnsHostValue">go</span></span>
+            <span><strong>Value</strong><span id="dnsTargetValue">${escapeHtml(publicShortDomain)}</span></span>
           </div>
-          <p class="helper-copy">Example: <code>go.clientdomain.com -> ${escapeHtml(publicShortDomain)}</code></p>
-          <p class="helper-copy">After DNS is live, click <strong>Mark verified</strong> and then set that domain active for fresh links.</p>
+          <p class="helper-copy" id="dnsExampleCopy">Example: <code>go.clientdomain.com -> ${escapeHtml(publicShortDomain)}</code></p>
+          <p class="helper-copy" id="dnsFinalCopy">After DNS is live, click <strong>Mark verified</strong> and then set that domain active for fresh links.</p>
         </div>
       </div>
     </section>
   `;
 
+  const domainInput = document.getElementById("domainName");
+  const exactToggle = document.getElementById("useExactDomainToggle");
+  const suggestionValue = document.getElementById("domainSuggestionValue");
+  const suggestionHelp = document.getElementById("domainSuggestionHelp");
+  const dnsSetupCopy = document.getElementById("dnsSetupCopy");
+  const dnsTypeValue = document.getElementById("dnsTypeValue");
+  const dnsHostValue = document.getElementById("dnsHostValue");
+  const dnsTargetValue = document.getElementById("dnsTargetValue");
+  const dnsExampleCopy = document.getElementById("dnsExampleCopy");
+  const dnsFinalCopy = document.getElementById("dnsFinalCopy");
+
+  const syncDomainSuggestion = () => {
+    const rawDomain = sanitizeDomain(domainInput.value.trim()) || "yourbrand.com";
+    const useExactDomain = exactToggle.checked;
+    const suggestedDomain = buildSuggestedCustomDomain(rawDomain, useExactDomain);
+    const dnsRecord = buildCustomDomainDnsRecord(rawDomain, useExactDomain);
+
+    suggestionValue.textContent = suggestedDomain;
+    suggestionHelp.innerHTML = useExactDomain
+      ? "Root domains need special DNS support on some providers. Use this only if your DNS provider supports apex aliasing or root forwarding."
+      : "For most DNS providers, this recommended setup is easiest because it uses a simple <strong>CNAME</strong> record.";
+    dnsSetupCopy.innerHTML = useExactDomain
+      ? `Point your exact domain to <strong>${escapeHtml(publicShortDomain)}</strong>. Root-domain setups vary by provider.`
+      : `Create a <strong>CNAME</strong> record for your branded subdomain and point it to <strong>${escapeHtml(publicShortDomain)}</strong>.`;
+    dnsTypeValue.textContent = dnsRecord.type;
+    dnsHostValue.textContent = dnsRecord.host;
+    dnsTargetValue.textContent = dnsRecord.value;
+    dnsExampleCopy.innerHTML = useExactDomain
+      ? `Example: <code>${escapeHtml(rawDomain)} -> ${escapeHtml(publicShortDomain)}</code>`
+      : `Example: <code>${escapeHtml(suggestedDomain)} -> ${escapeHtml(publicShortDomain)}</code>`;
+    dnsFinalCopy.innerHTML = useExactDomain
+      ? "After your root-domain DNS is live, click <strong>Mark verified</strong> and then set that domain active."
+      : "After DNS is live, click <strong>Mark verified</strong> and then set that domain active for fresh links.";
+  };
+
+  syncDomainSuggestion();
+  domainInput.addEventListener("input", syncDomainSuggestion);
+  exactToggle.addEventListener("change", syncDomainSuggestion);
+
   document.getElementById("addDomainButton").addEventListener("click", async () => {
-    const domain = sanitizeDomain(document.getElementById("domainName").value.trim());
-    if (!domain) return showGlobalMessage("Enter a valid domain or host.", true);
+    const rawDomain = sanitizeDomain(domainInput.value.trim());
+    if (!rawDomain) return showGlobalMessage("Enter a valid domain or host.", true);
+    const domain = buildSuggestedCustomDomain(rawDomain, exactToggle.checked);
     if (settingsCache.domains.includes(domain)) return showGlobalMessage("That domain is already added.", true);
-    await persistDomains([...settingsCache.domains, domain], settingsCache.defaultDomain, `Domain added: ${domain}. Next step: add the DNS CNAME and mark it verified.`);
+    await persistDomains([...settingsCache.domains, domain], settingsCache.defaultDomain, `Domain added: ${domain}. Next step: update the DNS record and mark it verified.`);
   });
 
   document.querySelectorAll("[data-activate-domain]").forEach((button) => button.addEventListener("click", async () => {
@@ -3419,6 +3470,36 @@ function sanitizeSlug(value) {
 function sanitizeDomain(value) {
   const cleaned = String(value || "").replace(/^https?:\/\//i, "").replace(/\/.*$/, "").trim().toLowerCase();
   return cleaned && /^[a-z0-9.-]+(?::\d+)?$/.test(cleaned) ? cleaned : null;
+}
+
+function buildSuggestedCustomDomain(domain, useExactDomain = false) {
+  const sanitized = sanitizeDomain(domain);
+  if (!sanitized) return "";
+  if (useExactDomain) return sanitized;
+  if (/^(localhost|127\.0\.0\.1)(:\d+)?$/i.test(sanitized)) return sanitized;
+  if (sanitized.startsWith("go.")) return sanitized;
+  const labels = sanitized.split(".").filter(Boolean);
+  if (labels.length <= 1) return sanitized;
+  return `go.${sanitized}`;
+}
+
+function buildCustomDomainDnsRecord(domain, useExactDomain = false) {
+  const sanitized = sanitizeDomain(domain) || "yourbrand.com";
+  if (useExactDomain) {
+    return {
+      type: "ALIAS/A",
+      host: "@",
+      value: publicShortDomain,
+    };
+  }
+
+  const suggested = buildSuggestedCustomDomain(sanitized, false);
+  const host = suggested.replace(`.${sanitized}`, "") || "go";
+  return {
+    type: "CNAME",
+    host,
+    value: publicShortDomain,
+  };
 }
 
 function setInlineBanner(element, message, isError) {

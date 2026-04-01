@@ -2108,6 +2108,33 @@ svg {
   gap: 12px;
 }
 
+.domain-mode-toggle {
+  margin-top: 12px;
+}
+
+.compact-checkbox {
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.domain-suggestion-card {
+  margin-top: 14px;
+  padding: 14px 16px;
+  border-radius: 16px;
+  background: linear-gradient(135deg, rgba(237, 244, 255, 0.95), rgba(230, 251, 255, 0.9));
+  border: 1px solid rgba(170, 197, 239, 0.7);
+  display: grid;
+  gap: 6px;
+}
+
+.helper-label {
+  font-size: 0.76rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  font-weight: 800;
+}
+
 .admin-table {
   display: grid;
   gap: 16px;
