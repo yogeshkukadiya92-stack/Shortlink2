@@ -20,6 +20,7 @@ const pagesFile = path.join(dataDir, "pages.json");
 const settingsFile = path.join(dataDir, "settings.json");
 const usersFile = path.join(dataDir, "users.json");
 const sessionsFile = path.join(dataDir, "sessions.json");
+const activityFile = path.join(dataDir, "activity.json");
 const sessionCookieName = "anylink_session";
 const protectedLinkCookiePrefix = "anylink_gate_";
 const analyticsVisitorCookieName = "anylink_vid";
@@ -293,6 +294,7 @@ function ensureStorage() {
   ensureJsonFile(settingsFile, []);
   ensureJsonFile(usersFile, []);
   ensureJsonFile(sessionsFile, []);
+  ensureJsonFile(activityFile, {});
 }
 
 function ensureJsonFile(filePath, fallbackValue) {
@@ -532,6 +534,96 @@ async function readTrashLinksForUserAsync(userId, req) {
   return Array.isArray(settings.trashLinks) ? settings.trashLinks : [];
 }
 
+function readActivityStore() {
+  return readJsonFile(activityFile, {});
+}
+
+function writeActivityStore(store) {
+  writeJsonFile(activityFile, store || {});
+}
+
+function getDefaultActivitySummary(userId) {
+  return {
+    userId,
+    totalTimeMs: 0,
+    pageViews: 0,
+    visits: 0,
+    linksCreated: 0,
+    lastActiveAt: 0,
+    lastPage: "",
+    pages: {},
+  };
+}
+
+function readActivitySummary(userId) {
+  const store = readActivityStore();
+  return {
+    ...getDefaultActivitySummary(userId),
+    ...(store?.[userId] || {}),
+    pages: store?.[userId]?.pages && typeof store[userId].pages === "object" ? store[userId].pages : {},
+  };
+}
+
+function updateActivitySummary(userId, updater) {
+  const store = readActivityStore();
+  const current = {
+    ...getDefaultActivitySummary(userId),
+    ...(store?.[userId] || {}),
+    pages: store?.[userId]?.pages && typeof store[userId].pages === "object" ? store[userId].pages : {},
+  };
+  const next = updater(current) || current;
+  store[userId] = {
+    ...getDefaultActivitySummary(userId),
+    ...next,
+    pages: next.pages && typeof next.pages === "object" ? next.pages : {},
+  };
+  writeActivityStore(store);
+  return store[userId];
+}
+
+function summarizeTopPages(pages) {
+  return Object.entries(pages || {})
+    .sort((left, right) => Number(right[1] || 0) - Number(left[1] || 0))
+    .slice(0, 3)
+    .map(([page, count]) => ({ page, count: Number(count || 0) }));
+}
+
+function handleActivityPing(body, res, user) {
+  const page = String(body.page || "").trim().toLowerCase();
+  const event = String(body.event || "heartbeat").trim().toLowerCase();
+  const durationMs = Math.max(0, Math.min(5 * 60 * 1000, Number(body.durationMs) || 0));
+  const now = Date.now();
+
+  const summary = updateActivitySummary(user.id, (current) => {
+    const nextPages = { ...(current.pages || {}) };
+
+    if (page && event === "view") {
+      nextPages[page] = Number(nextPages[page] || 0) + 1;
+    }
+
+    return {
+      ...current,
+      totalTimeMs: Number(current.totalTimeMs || 0) + durationMs,
+      pageViews: Number(current.pageViews || 0) + (event === "view" ? 1 : 0),
+      visits: Number(current.visits || 0) + (event === "view" ? 1 : 0),
+      lastActiveAt: now,
+      lastPage: page || current.lastPage || "",
+      pages: nextPages,
+    };
+  });
+
+  return sendJson(res, 200, {
+    success: true,
+    activity: {
+      totalTimeMs: summary.totalTimeMs,
+      pageViews: summary.pageViews,
+      visits: summary.visits,
+      linksCreated: summary.linksCreated,
+      lastActiveAt: summary.lastActiveAt,
+      lastPage: summary.lastPage,
+    },
+  });
+}
 function readRequestBody(req) {
   return new Promise((resolve, reject) => {
     let body = "";
@@ -1337,12 +1429,22 @@ function handleAdminOverview(res) {
   const userSummaries = users.map((user) => {
     const userSessions = sessions.filter((session) => session.userId === user.id);
     const userLinks = links.filter((link) => link.userId === user.id);
+    const activity = readActivitySummary(user.id);
     return {
       ...serializeUser(user),
       billing: serializeBilling(user),
       totalLinks: userLinks.length,
       lastLinkAt: userLinks[0]?.createdAt || "",
       activeSessions: userSessions.length,
+      usage: {
+        totalTimeMs: Number(activity.totalTimeMs || 0),
+        pageViews: Number(activity.pageViews || 0),
+        visits: Number(activity.visits || 0),
+        linksCreated: Number(activity.linksCreated || 0),
+        lastActiveAt: Number(activity.lastActiveAt || 0),
+        lastPage: String(activity.lastPage || ""),
+        topPages: summarizeTopPages(activity.pages || {}),
+      },
     };
   });
 
@@ -1365,13 +1467,16 @@ function handleAdminOverview(res) {
     .sort((left, right) => right.createdAt - left.createdAt);
 
   return sendJson(res, 200, {
-    users: userSummaries.sort((left, right) => right.billing.trialStartedAt - left.billing.trialStartedAt),
+    users: userSummaries.sort((left, right) => Number(right.usage.lastActiveAt || right.billing.trialStartedAt || 0) - Number(left.usage.lastActiveAt || left.billing.trialStartedAt || 0)),
     sessions: sessionSummaries,
     summary: {
       totalUsers: userSummaries.length,
       activeSubscriptions: userSummaries.filter((user) => user.billing.subscriptionStatus === "active" && user.billing.hasAccess).length,
       trialingUsers: userSummaries.filter((user) => user.billing.subscriptionStatus === "trialing" && user.billing.hasAccess).length,
       expiredUsers: userSummaries.filter((user) => !user.billing.hasAccess).length,
+      totalPageViews: userSummaries.reduce((sum, user) => sum + Number(user.usage.pageViews || 0), 0),
+      totalLinksCreated: userSummaries.reduce((sum, user) => sum + Number(user.usage.linksCreated || 0), 0),
+      totalTimeMs: userSummaries.reduce((sum, user) => sum + Number(user.usage.totalTimeMs || 0), 0),
     },
   });
 }
@@ -1721,6 +1826,18 @@ async function handleCreateLink(body, req, res, user) {
     }
     // JSON remains fallback during DB migration.
   }
+
+  try {
+    updateActivitySummary(user.id, (current) => ({
+      ...current,
+      linksCreated: Number(current.linksCreated || 0) + 1,
+      lastActiveAt: Date.now(),
+      lastPage: "links",
+    }));
+  } catch {
+    // Activity summary should not block link creation.
+  }
+
   sendJson(res, 201, { link: nextLink });
 }
 
@@ -3926,6 +4043,13 @@ function sendJson(res, statusCode, payload) {
   res.writeHead(statusCode, { "Content-Type": "application/json; charset=utf-8" });
   res.end(JSON.stringify(payload));
 }
+
+
+
+
+
+
+
 
 
 

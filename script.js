@@ -98,6 +98,10 @@ let billingCache = {
   hasAccess: true,
 };
 let billingRefreshTimer = null;
+let activityHeartbeatTimer = null;
+let activityPageStartedAt = Date.now();
+let lastTrackedActivityPage = "";
+
 function getAuthQuery() {
   return new URLSearchParams(window.location.search);
 }
@@ -176,6 +180,33 @@ searchInput.addEventListener("input", () => {
   }
 });
 
+document.addEventListener("visibilitychange", () => {
+  if (!currentUser || currentPage === "auth") {
+    return;
+  }
+
+  if (document.visibilityState === "hidden") {
+    sendActivityPing("background");
+  } else {
+    activityPageStartedAt = Date.now();
+  }
+});
+
+window.addEventListener("beforeunload", () => {
+  if (!currentUser || currentPage === "auth") {
+    return;
+  }
+
+  const durationMs = Math.max(0, Date.now() - activityPageStartedAt);
+  try {
+    const payload = JSON.stringify({ page: currentPage, event: "leave", durationMs });
+    if (navigator.sendBeacon) {
+      navigator.sendBeacon("/api/activity", new Blob([payload], { type: "application/json" }));
+    }
+  } catch {
+    // Ignore unload tracking errors.
+  }
+});
 document.addEventListener("click", (event) => {
   const qrLink = event.target.closest("[data-open-qr]");
   if (qrLink) {
@@ -906,6 +937,65 @@ function startPendingBillingSync(silent = false) {
   }, 5000);
 }
 
+async function sendActivityPing(event = "heartbeat", durationOverride = null) {
+  if (!currentUser || currentPage === "auth") {
+    return;
+  }
+
+  const now = Date.now();
+  const durationMs = Math.max(0, durationOverride === null ? now - activityPageStartedAt : durationOverride);
+  activityPageStartedAt = now;
+
+  try {
+    await fetch("/api/activity", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ page: currentPage, event, durationMs }),
+      keepalive: true,
+    });
+  } catch {
+    // Activity tracking should never interrupt the dashboard.
+  }
+}
+
+function stopActivityTracking() {
+  if (activityHeartbeatTimer) {
+    window.clearInterval(activityHeartbeatTimer);
+    activityHeartbeatTimer = null;
+  }
+}
+
+function startActivityTracking() {
+  stopActivityTracking();
+  activityPageStartedAt = Date.now();
+  sendActivityPing("view", 0);
+  activityHeartbeatTimer = window.setInterval(() => {
+    sendActivityPing("heartbeat");
+  }, 30000);
+}
+
+function syncActivityTrackingForPage() {
+  if (!currentUser || currentPage === "auth") {
+    stopActivityTracking();
+    lastTrackedActivityPage = "";
+    return;
+  }
+
+  if (lastTrackedActivityPage !== currentPage) {
+    lastTrackedActivityPage = currentPage;
+    startActivityTracking();
+  }
+}
+
+function formatDuration(ms) {
+  const totalMinutes = Math.max(0, Math.round(Number(ms || 0) / 60000));
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+
+  if (hours && minutes) return `${hours}h ${minutes}m`;
+  if (hours) return `${hours}h`;
+  return `${minutes}m`;
+}
 function stopPendingBillingSync() {
   if (billingRefreshTimer) {
     window.clearInterval(billingRefreshTimer);
@@ -934,22 +1024,27 @@ async function renderAdminPage() {
         <article class="stat-card"><span>Total users</span><strong>${payload.summary.totalUsers}</strong></article>
         <article class="stat-card"><span>Active subscriptions</span><strong>${payload.summary.activeSubscriptions}</strong></article>
         <article class="stat-card"><span>Expired users</span><strong>${payload.summary.expiredUsers}</strong></article>
+        <article class="stat-card"><span>Total page views</span><strong>${payload.summary.totalPageViews}</strong></article>
+        <article class="stat-card"><span>Links created</span><strong>${payload.summary.totalLinksCreated}</strong></article>
+        <article class="stat-card"><span>Time spent</span><strong>${formatDuration(payload.summary.totalTimeMs)}</strong></article>
       </section>
       <section class="surface-card">
         <div class="surface-header">
           <div>
             <h2>User management</h2>
-            <p>Manage verification, trial access, subscriptions, and private user accounts.</p>
+            <p>Manage verification, trial access, subscriptions, and review detailed user usage.</p>
           </div>
         </div>
         <div class="admin-table">
           ${payload.users.map((user) => `
-            <div class="admin-row">
+            <div class="admin-row admin-row-usage">
               <div class="admin-main">
                 <strong>${escapeHtml(user.name)}</strong>
                 <span>${escapeHtml(user.email)}</span>
-                <span>${user.emailVerified ? "Verified" : "Not verified"} â€¢ ${escapeHtml(user.billing.subscriptionStatus)}</span>
-                <span>${user.totalLinks} links â€¢ ${user.activeSessions} sessions</span>
+                <span>${user.emailVerified ? "Verified" : "Not verified"} • ${escapeHtml(user.billing.subscriptionStatus)}</span>
+                <span>${user.totalLinks} live links • ${user.usage.linksCreated} created • ${user.activeSessions} sessions</span>
+                <span>${user.usage.pageViews} page views • ${formatDuration(user.usage.totalTimeMs)} spent • Last active: ${user.usage.lastActiveAt ? escapeHtml(new Date(user.usage.lastActiveAt).toLocaleString()) : "Never"}</span>
+                <span>Last page: ${escapeHtml(user.usage.lastPage || "- ")} ${user.usage.topPages?.length ? `• Top pages: ${escapeHtml(user.usage.topPages.map((item) => `${item.page} (${item.count})`).join(", "))}` : ""}</span>
               </div>
               <div class="admin-actions">
                 <select class="admin-select" data-admin-mode="${escapeHtml(user.id)}">
@@ -3557,6 +3652,11 @@ function showGlobalMessage(message, isError) {
   window.clearTimeout(showGlobalMessage.timeoutId);
   showGlobalMessage.timeoutId = window.setTimeout(() => banner.classList.remove("visible"), 2200);
 }
+
+
+
+
+
 
 
 
