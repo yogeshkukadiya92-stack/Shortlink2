@@ -3406,6 +3406,15 @@ function generateSlug(links) {
   return `link-${Date.now()}`;
 }
 
+function sanitizeSlugInput(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9-]/g, "")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+}
+
 function defaultSettings(req) {
   const fallbackDomain = getDefaultShortDomain(req);
   return {
@@ -3917,6 +3926,7 @@ function sendJson(res, statusCode, payload) {
   res.writeHead(statusCode, { "Content-Type": "application/json; charset=utf-8" });
   res.end(JSON.stringify(payload));
 }
+
 
 
 
