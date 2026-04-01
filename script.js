@@ -112,7 +112,24 @@ const pageMeta = {
   billing: { eyebrow: "Billing", title: "Subscription" },
 };
 
+document.querySelectorAll(".side-nav .nav-item, .sidebar-footer .nav-item").forEach((item) => {
+  item.addEventListener("click", () => {
+    if (!isMobileShell()) {
+      return;
+    }
+    sidebar.classList.add("collapsed");
+    document.body.classList.remove("mobile-nav-open");
+  });
+});
+
 sidebarToggle.addEventListener("click", () => {
+  if (isMobileShell()) {
+    const willOpen = sidebar.classList.contains("collapsed");
+    sidebar.classList.toggle("collapsed", !willOpen);
+    document.body.classList.toggle("mobile-nav-open", willOpen);
+    return;
+  }
+
   sidebar.classList.toggle("collapsed");
 });
 
@@ -155,6 +172,16 @@ document.addEventListener("click", (event) => {
   const qrLink = event.target.closest("[data-open-qr]");
   if (qrLink) {
     selectedQrSlug = qrLink.getAttribute("data-open-qr");
+  }
+
+  if (
+    isMobileShell()
+    && !sidebar.classList.contains("collapsed")
+    && !sidebar.contains(event.target)
+    && !sidebarToggle.contains(event.target)
+  ) {
+    sidebar.classList.add("collapsed");
+    document.body.classList.remove("mobile-nav-open");
   }
 
   if (profileMenu && !profileMenu.contains(event.target)) {
@@ -223,11 +250,18 @@ async function initialize() {
 }
 
 function syncResponsiveShell() {
-  if (window.innerWidth <= mobileShellBreakpoint) {
+  if (isMobileShell()) {
+    document.body.classList.add("mobile-shell");
     sidebar.classList.add("collapsed");
+    document.body.classList.remove("mobile-nav-open");
   } else {
+    document.body.classList.remove("mobile-shell", "mobile-nav-open");
     sidebar.classList.remove("collapsed");
   }
+}
+
+function isMobileShell() {
+  return window.innerWidth <= mobileShellBreakpoint;
 }
 
 function getCurrentPage() {
