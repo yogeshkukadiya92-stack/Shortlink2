@@ -19,6 +19,21 @@ async function createLink(data) {
   });
 }
 
+async function updateLinkBySlug(slug, userId, data) {
+  const result = await prisma.link.updateMany({
+    where: { slug, userId },
+    data,
+  });
+
+  if (!result.count) {
+    return null;
+  }
+
+  return prisma.link.findUnique({
+    where: { slug: data.slug || slug },
+  });
+}
+
 async function deleteLinkById(id, userId) {
   return prisma.link.deleteMany({
     where: { id, userId },
@@ -35,6 +50,7 @@ module.exports = {
   listLinksByUser,
   findLinkBySlug,
   createLink,
+  updateLinkBySlug,
   deleteLinkById,
   deleteLinkBySlug,
 };

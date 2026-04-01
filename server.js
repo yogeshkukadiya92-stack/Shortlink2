@@ -6,7 +6,7 @@ const { URL } = require("url");
 const { createUser: createDbUser, findUserByEmail, findUserById, updateUser: updateDbUser } = require("./repositories/usersRepository");
 const { createSession: createDbSession, deleteSessionByToken: deleteDbSessionByToken, findSessionByToken } = require("./repositories/sessionsRepository");
 const { getWorkspaceSettings: getDbWorkspaceSettings, upsertWorkspaceSettings } = require("./repositories/settingsRepository");
-const { listLinksByUser, createLink: createDbLink, deleteLinkBySlug, findLinkBySlug } = require("./repositories/linksRepository");
+const { listLinksByUser, createLink: createDbLink, updateLinkBySlug, deleteLinkBySlug, findLinkBySlug } = require("./repositories/linksRepository");
 const { listDomainsByUser, upsertDomain, removeDomainsNotIn } = require("./repositories/domainsRepository");
 const { listPagesByUser, findPageById, findPageBySlug, savePage: saveDbPage, deletePageById, createSubmission } = require("./repositories/pagesRepository");
 const { recordClickEvent: recordDbClickEvent, listAnalyticsByUser } = require("./repositories/analyticsRepository");
@@ -1817,16 +1817,16 @@ async function handleUpdateLink(slug, body, req, res, user) {
   }
 
   try {
-    await deleteLinkBySlug(currentSlug, user.id);
-    await createDbLink({
-      id: String(updatedLink.id),
-      userId: user.id,
+    const dbUpdatedLink = await updateLinkBySlug(currentSlug, user.id, {
       slug: nextSlug,
       destination,
       shortUrl: nextShortUrl,
       includeQr,
-      createdAt: new Date(updatedLink.createdAt || Date.now()),
     });
+
+    if (dbOnlyMode && !dbUpdatedLink) {
+      return sendJson(res, 500, { error: "Unable to update your link right now. Please try again." });
+    }
   } catch {
     if (dbOnlyMode) {
       return sendJson(res, 500, { error: "Unable to update your link right now. Please try again." });
@@ -2259,7 +2259,13 @@ async function handleDeleteLink(slug, req, res, user) {
     return sendJson(res, 404, { error: "Link not found." });
   }
 
-  const trashLinks = await readTrashLinksForUserAsync(user.id, req);
+  let trashLinks = [];
+  try {
+    trashLinks = await readTrashLinksForUserAsync(user.id, req);
+  } catch {
+    trashLinks = [];
+  }
+
   const trashedItem = {
     ...linkToTrash,
     deletedAt: new Date().toISOString(),
@@ -2270,7 +2276,13 @@ async function handleDeleteLink(slug, req, res, user) {
     ...trashLinks.filter((item) => item.slug !== slug),
   ]);
 
-  writeSettingsExtras(user.id, req, () => ({ trashLinks: nextTrashLinks }));
+  try {
+    writeSettingsExtras(user.id, req, () => ({ trashLinks: nextTrashLinks }));
+  } catch {
+    if (dbOnlyMode) {
+      return sendJson(res, 500, { error: "Unable to archive this deleted link right now. Please try again." });
+    }
+  }
 
   if (!dbOnlyMode && fileMatch) {
     writeLinks(links.filter((item) => !(item.slug === slug && item.userId === user.id)));
@@ -3907,6 +3919,7 @@ function sendJson(res, statusCode, payload) {
   res.writeHead(statusCode, { "Content-Type": "application/json; charset=utf-8" });
   res.end(JSON.stringify(payload));
 }
+
 
 
 
