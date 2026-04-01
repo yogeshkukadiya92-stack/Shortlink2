@@ -44,6 +44,10 @@ body {
     linear-gradient(180deg, #f9fcff 0%, #eef7ff 48%, #edf2ff 100%);
 }
 
+body.mobile-nav-open {
+  overflow: hidden;
+}
+
 body.auth-screen .sidebar,
 body.auth-screen .sidebar-toggle,
 body.auth-screen .topbar {
