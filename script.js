@@ -2435,7 +2435,7 @@ function wireLinkActions() {
         body: JSON.stringify({ slug: nextSlug, destination, includeQr }),
       });
       const payload = await response.json();
-      if (!response.ok) throw new Error(payload.error || "Unable to update link.");
+      if (!response.ok) throw new Error(payload.details || payload.error || "Unable to update link.");
 
       linksCache = linksCache.map((item) => (item.slug === currentSlug ? payload.link : item));
 
@@ -2489,7 +2489,7 @@ function wireLinkActions() {
     try {
       const response = await fetch(`/api/links/${encodeURIComponent(slug)}`, { method: "DELETE" });
       const payload = await response.json();
-      if (!response.ok) throw new Error(payload.error || "Delete failed");
+      if (!response.ok) throw new Error(payload.details || payload.error || "Delete failed");
       linksCache = linksCache.filter((item) => item.slug !== slug);
       if (selectedLinkSlug === slug) {
         selectedLinkSlug = "";
@@ -3557,6 +3557,7 @@ function showGlobalMessage(message, isError) {
   window.clearTimeout(showGlobalMessage.timeoutId);
   showGlobalMessage.timeoutId = window.setTimeout(() => banner.classList.remove("visible"), 2200);
 }
+
 
 
 

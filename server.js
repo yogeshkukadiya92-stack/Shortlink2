@@ -2276,24 +2276,22 @@ async function handleDeleteLink(slug, req, res, user) {
     ...trashLinks.filter((item) => item.slug !== slug),
   ]);
 
-  try {
-    writeSettingsExtras(user.id, req, () => ({ trashLinks: nextTrashLinks }));
-  } catch {
-    if (dbOnlyMode) {
-      return sendJson(res, 500, { error: "Unable to archive this deleted link right now. Please try again." });
-    }
-  }
-
   if (!dbOnlyMode && fileMatch) {
     writeLinks(links.filter((item) => !(item.slug === slug && item.userId === user.id)));
   }
 
   try {
     await deleteLinkBySlug(slug, user.id);
-  } catch {
+  } catch (error) {
     if (dbOnlyMode) {
-      return sendJson(res, 500, { error: "Unable to complete this request right now. Please try again." });
+      return sendJson(res, 500, { error: "Unable to complete this request right now. Please try again.", details: error.message });
     }
+  }
+
+  try {
+    writeSettingsExtras(user.id, req, () => ({ trashLinks: nextTrashLinks }));
+  } catch {
+    // Trash sync is best-effort while migration is in progress.
   }
 
   return sendJson(res, 200, { success: true, trashLink: trashedItem, trashLinks: nextTrashLinks });
@@ -3919,6 +3917,7 @@ function sendJson(res, statusCode, payload) {
   res.writeHead(statusCode, { "Content-Type": "application/json; charset=utf-8" });
   res.end(JSON.stringify(payload));
 }
+
 
 
 
