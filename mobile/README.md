@@ -1,6 +1,6 @@
 # ShortLink Mobile Wrappers
 
-This folder contains a ready-to-open Android WebView wrapper project for the live ShortLink app.
+This folder contains ready-to-open mobile wrapper scaffolds for the live ShortLink app.
 
 ## Android
 
@@ -22,10 +22,18 @@ The app loads:
 
 ## iPhone / iOS
 
-For iPhone, the fastest no-code route is the PWA already included in the web app:
+Two options are ready:
+
+### Fastest option: install the PWA
 
 1. Open `https://go.shortlinks.in` in Safari
 2. Tap `Share`
 3. Tap `Add to Home Screen`
 
-If you want a true App Store iOS app later, the same web app can be wrapped in a WKWebView Xcode project.
+### Native wrapper scaffold
+
+A WKWebView iOS scaffold is included here:
+
+- `mobile/ios-webview`
+
+Open `mobile/ios-webview/README.md` on a Mac and generate the Xcode project with XcodeGen.

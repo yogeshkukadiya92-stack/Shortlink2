@@ -1,0 +1,26 @@
+name: ShortLinkIOS
+options:
+  bundleIdPrefix: com.shortlink
+settings:
+  base:
+    PRODUCT_BUNDLE_IDENTIFIER: com.shortlink.ios
+    IPHONEOS_DEPLOYMENT_TARGET: "16.0"
+    SWIFT_VERSION: "5.9"
+    MARKETING_VERSION: "1.0.0"
+    CURRENT_PROJECT_VERSION: "1"
+targets:
+  ShortLinkIOS:
+    type: application
+    platform: iOS
+    deploymentTarget: "16.0"
+    sources:
+      - Sources
+    settings:
+      base:
+        INFOPLIST_FILE: Sources/Info.plist
+        PRODUCT_NAME: ShortLink
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+    info:
+      path: Sources/Info.plist
+    scheme:
+      testTargets: []
