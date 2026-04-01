@@ -14,6 +14,7 @@ const profileMenuButton = document.getElementById("profileMenuButton");
 const profileDropdown = document.getElementById("profileDropdown");
 const profileAdminLink = document.getElementById("profileAdminLink");
 const adminNavItem = document.getElementById("adminNavItem");
+const mobileShellBreakpoint = 1160;
 const publicShortDomain = "go.shortlinks.in";
 const defaultFormFieldLibrary = [
   { key: "name", label: "Full name", type: "text", required: true, enabled: true, builtIn: true, options: [] },
@@ -115,6 +116,8 @@ sidebarToggle.addEventListener("click", () => {
   sidebar.classList.toggle("collapsed");
 });
 
+window.addEventListener("resize", syncResponsiveShell);
+
 logoutButton.addEventListener("click", async () => {
   await fetch("/api/auth/logout", { method: "POST" });
   window.location.href = "/auth";
@@ -163,6 +166,7 @@ document.addEventListener("click", (event) => {
 initialize();
 
 async function initialize() {
+  syncResponsiveShell();
   currentPage = getCurrentPage();
   try {
     await loadCurrentUser();
@@ -215,6 +219,14 @@ async function initialize() {
         <p>${escapeHtml(error.message || "Something went wrong while loading your dashboard.")}</p>
       </section>
     `;
+  }
+}
+
+function syncResponsiveShell() {
+  if (window.innerWidth <= mobileShellBreakpoint) {
+    sidebar.classList.add("collapsed");
+  } else {
+    sidebar.classList.remove("collapsed");
   }
 }
 

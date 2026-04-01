@@ -2460,7 +2460,7 @@ svg {
 
 @media (max-width: 920px) {
   body.auth-screen .content-area {
-    padding: 18px;
+    padding: 14px;
     align-items: start;
   }
 
@@ -2468,21 +2468,25 @@ svg {
     height: auto;
     align-items: stretch;
     flex-direction: column;
-    padding: 88px 20px 22px;
+    padding: 82px 16px 16px;
+    gap: 14px;
   }
 
   .topbar-actions {
+    width: 100%;
     justify-content: space-between;
     flex-wrap: wrap;
+    gap: 10px;
   }
 
   .content-area {
-    padding: 20px;
+    padding: 16px;
   }
 
   .hero-card,
-  .mini-card {
-    padding: 24px;
+  .mini-card,
+  .surface-card {
+    padding: 18px;
   }
 
   .hero-heading,
@@ -2507,6 +2511,49 @@ svg {
   .qr-panel,
   .auth-shell {
     grid-template-columns: 1fr;
+  }
+
+  .topbar-copy,
+  .searchbar {
+    width: 100%;
+    max-width: none;
+  }
+
+  .searchbar {
+    order: 3;
+    min-height: 50px;
+  }
+
+  .topbar-actions {
+    order: 2;
+  }
+
+  .topbar-title {
+    font-size: 1.6rem;
+  }
+
+  .upgrade-button {
+    min-height: 46px;
+    padding: 0 14px;
+    font-size: 0.92rem;
+  }
+
+  .profile-menu {
+    margin-left: auto;
+  }
+
+  .profile-chip {
+    gap: 10px;
+  }
+
+  .profile-name {
+    font-size: 0.9rem;
+  }
+
+  .avatar {
+    width: 38px;
+    height: 38px;
+    font-size: 0.92rem;
   }
 
   .link-item {
@@ -2550,6 +2597,19 @@ svg {
     grid-template-columns: 1fr;
   }
 
+  .campaign-builder-grid,
+  .analytics-top-actions,
+  .analytics-kpi-grid,
+  .analytics-spotlight-grid,
+  .leaderboard-grid,
+  .analytics-dual-grid,
+  .analytics-split-grid,
+  .analytics-meta-grid,
+  .comparison-grid,
+  .submission-stats-grid {
+    grid-template-columns: 1fr;
+  }
+
   .admin-row {
     grid-template-columns: 1fr;
   }
@@ -2564,6 +2624,44 @@ svg {
 }
 
 @media (max-width: 640px) {
+  .topbar {
+    padding: 74px 12px 14px;
+  }
+
+  .content-area {
+    padding: 12px;
+  }
+
+  .surface-card,
+  .mini-card,
+  .form-card,
+  .goal-card,
+  .analytics-kpi-card,
+  .analytics-panel-card {
+    padding: 14px;
+    border-radius: 18px;
+  }
+
+  .topbar-actions {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    align-items: center;
+    width: 100%;
+  }
+
+  .searchbar input {
+    font-size: 0.88rem;
+  }
+
+  .topbar-title {
+    font-size: 1.42rem;
+  }
+
+  .eyebrow {
+    font-size: 0.68rem;
+    margin-bottom: 4px;
+  }
+
   .analytics-report-topline {
     grid-template-columns: 1fr;
   }
@@ -2574,8 +2672,9 @@ svg {
   }
 
   .sidebar {
-    width: min(100vw, 420px);
-    padding-bottom: 96px;
+    width: 100vw;
+    max-width: 100vw;
+    padding: 18px 14px 96px;
   }
 
   .sidebar-footer {
@@ -2597,6 +2696,31 @@ svg {
     flex-direction: column;
   }
 
+  .brand-logo {
+    width: min(100%, 220px);
+  }
+
+  .create-button {
+    padding: 16px 14px;
+    font-size: 0.92rem;
+  }
+
+  .nav-item {
+    min-height: 48px;
+    grid-template-columns: 24px 1fr auto;
+    gap: 10px;
+    padding: 0 12px;
+  }
+
+  .nav-label {
+    font-size: 0.9rem;
+  }
+
+  .nav-badge {
+    font-size: 0.72rem;
+    padding: 6px 8px;
+  }
+
   .sidebar-toggle {
     left: auto;
     right: 12px;
@@ -2607,6 +2731,56 @@ svg {
   .sidebar.collapsed + .sidebar-toggle {
     left: auto;
     right: 12px;
+  }
+
+  .profile-dropdown {
+    right: 0;
+    min-width: min(280px, calc(100vw - 28px));
+  }
+
+  .goal-action-row,
+  .campaign-builder-actions,
+  .managed-domain-actions,
+  .link-actions,
+  .admin-actions {
+    width: 100%;
+  }
+
+  .goal-input,
+  .schedule-rule-input,
+  .password-rule-input,
+  .url-input {
+    width: 100%;
+  }
+
+  .qr-box {
+    width: min(100%, 240px);
+    height: auto;
+    aspect-ratio: 1;
+  }
+}
+
+@media (max-width: 420px) {
+  .topbar-actions {
+    grid-template-columns: 1fr;
+  }
+
+  .profile-menu {
+    width: 100%;
+    margin-left: 0;
+  }
+
+  .profile-chip,
+  .upgrade-button {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .sidebar-toggle {
+    width: 44px;
+    height: 44px;
+    top: 14px;
+    right: 10px;
   }
 }
 
