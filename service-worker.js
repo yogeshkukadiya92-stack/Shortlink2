@@ -1,4 +1,4 @@
-const CACHE_NAME = "shortlink-shell-v1";
+const CACHE_NAME = "shortlink-shell-v2";
 const APP_SHELL = [
   "/",
   "/home",
@@ -33,13 +33,22 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
+  if (requestUrl.pathname.startsWith("/api/")) {
+    return;
+  }
+
+  const isStaticAsset = /\.[a-z0-9]+$/i.test(requestUrl.pathname);
+  const isAppRoute = ["/", "/home", "/auth", "/links", "/qr-codes", "/pages", "/analytics", "/campaigns", "/custom-domains", "/settings", "/admin"].includes(requestUrl.pathname);
+
   event.respondWith(
     fetch(event.request)
       .then((response) => {
-        const copy = response.clone();
-        caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
+        if (isStaticAsset || isAppRoute) {
+          const copy = response.clone();
+          caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
+        }
         return response;
       })
-      .catch(() => caches.match(event.request).then((cached) => cached || caches.match("/home"))),
+      .catch(() => caches.match(event.request).then((cached) => cached || (isAppRoute ? caches.match("/home") : undefined))),
   );
 });
