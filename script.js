@@ -95,6 +95,7 @@ let billingCache = {
   subscriptionExpiresAt: 0,
   hasAccess: true,
 };
+let billingRefreshTimer = null;
 function getAuthQuery() {
   return new URLSearchParams(window.location.search);
 }
@@ -739,6 +740,11 @@ async function loadPages() {
 
 function renderPage() {
   if (!currentUser || currentPage === "auth") return renderAuthPage();
+  if (billingCache.hasAccess && currentPage === "billing" && !currentUser.isAdmin) {
+    currentPage = "home";
+    updateHeaderMeta();
+    return renderHomePage();
+  }
   if (!billingCache.hasAccess && currentPage !== "admin" && !currentUser.isAdmin) return renderBillingPage();
   if (currentPage === "home") return renderHomePage();
   if (currentPage === "links") return renderLinksPage(linksCache, searchInput.value.trim().toLowerCase());
@@ -754,6 +760,12 @@ function renderPage() {
 }
 
 function renderBillingPage() {
+  if (billingCache.hasAccess && !currentUser?.isAdmin) {
+    currentPage = "home";
+    updateHeaderMeta();
+    renderHomePage();
+    return;
+  }
   const daysLeft = Math.max(0, Math.ceil((billingCache.trialRemainingMs || 0) / (1000 * 60 * 60 * 24)));
   const subscriptionStart = formatDateDisplay(billingCache.subscriptionStartedAt);
   const subscriptionEnd = formatDateDisplay(billingCache.subscriptionExpiresAt);
@@ -783,7 +795,7 @@ function renderBillingPage() {
             </div>
           ` : ""}
           <button class="primary-action auth-submit" id="subscribeButton" type="button">Continue to payment</button>
-          <button class="link-button secondary" id="refreshBillingButton" type="button">I already paid</button>
+          <button class="link-button secondary hidden" id="refreshBillingButton" type="button">I already paid</button>
           <div class="result-banner hidden" id="billingBanner" aria-live="polite"></div>
         </div>
       </div>
@@ -801,6 +813,18 @@ function renderBillingPage() {
         return;
       }
       sessionStorage.setItem("anylink_pending_billing_sync", "1");
+      startPendingBillingSync();
+      setTimeout(() => {
+        const refreshButton = document.getElementById("refreshBillingButton");
+        if (refreshButton) refreshButton.classList.remove("hidden");
+      }, 12000);
+
+      const openedWindow = window.open(payload.paymentUrl, "_blank", "noopener,noreferrer");
+      if (openedWindow) {
+        setInlineBanner(banner, "Payment opened in a new tab. We will activate your subscription automatically once payment is confirmed.", false);
+        return;
+      }
+
       window.location.href = payload.paymentUrl;
     } catch (error) {
       setInlineBanner(banner, error.message, true);
@@ -812,7 +836,7 @@ function renderBillingPage() {
   });
 
   if (sessionStorage.getItem("anylink_pending_billing_sync") === "1") {
-    refreshBillingAfterPayment(true);
+    startPendingBillingSync(true);
   }
 }
 
@@ -833,6 +857,7 @@ async function refreshBillingAfterPayment(silent = false) {
 
     billingCache = payload.billing || billingCache;
     if (billingCache.hasAccess) {
+      stopPendingBillingSync();
       sessionStorage.removeItem("anylink_pending_billing_sync");
       setInlineBanner(banner, "Subscription activated successfully.", false);
       setTimeout(() => {
@@ -844,6 +869,21 @@ async function refreshBillingAfterPayment(silent = false) {
     setInlineBanner(banner, `Payment found, but access is still ${payload.razorpayStatus || "pending"}. Try again in a few moments.`, true);
   } catch (error) {
     setInlineBanner(banner, error.message, true);
+  }
+}
+
+function startPendingBillingSync(silent = false) {
+  stopPendingBillingSync();
+  refreshBillingAfterPayment(silent);
+  billingRefreshTimer = window.setInterval(() => {
+    refreshBillingAfterPayment(true);
+  }, 5000);
+}
+
+function stopPendingBillingSync() {
+  if (billingRefreshTimer) {
+    window.clearInterval(billingRefreshTimer);
+    billingRefreshTimer = null;
   }
 }
 
