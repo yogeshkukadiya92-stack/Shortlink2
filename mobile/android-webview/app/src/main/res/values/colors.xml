@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="shortlink_primary">#2450DB</color>
+    <color name="shortlink_primary_dark">#17315F</color>
+    <color name="shortlink_background">#EEF7FF</color>
+</resources>
