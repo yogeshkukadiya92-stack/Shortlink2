@@ -12,6 +12,8 @@ const avatar = document.querySelector(".avatar");
 const profileMenu = document.getElementById("profileMenu");
 const profileMenuButton = document.getElementById("profileMenuButton");
 const profileDropdown = document.getElementById("profileDropdown");
+const profileDropdownPlan = document.getElementById("profileDropdownPlan");
+const profileDropdownDates = document.getElementById("profileDropdownDates");
 const profileAdminLink = document.getElementById("profileAdminLink");
 const adminNavItem = document.getElementById("adminNavItem");
 const mobileShellBreakpoint = 1160;
@@ -339,9 +341,13 @@ function applyShellMode() {
   if (currentUser) {
     profileName.textContent = currentUser.name;
     avatar.textContent = currentUser.name.charAt(0).toUpperCase();
+    updateProfileDropdownSummary();
   } else {
     profileName.textContent = "Guest";
     avatar.textContent = "A";
+    profileDropdownPlan.textContent = "Plan: Guest";
+    profileDropdownDates.classList.add("hidden");
+    profileDropdownDates.textContent = "";
   }
 
   document.querySelectorAll(".nav-item[data-page]").forEach((item) => {
@@ -357,7 +363,27 @@ function applyShellMode() {
 function shouldShowUpgradeButton() {
   if (!currentUser || currentPage === "auth") return false;
   if (currentUser.isAdmin) return false;
-  return billingCache.subscriptionStatus === "trialing" || !billingCache.hasAccess;
+  const status = String(billingCache.subscriptionStatus || "").toLowerCase();
+  if (status === "active" || status === "lifetime") return false;
+  return status === "trialing" || status === "inactive" || !billingCache.hasAccess;
+}
+
+function updateProfileDropdownSummary() {
+  const status = String(billingCache.subscriptionStatus || "inactive").toLowerCase();
+  const statusLabel = status.charAt(0).toUpperCase() + status.slice(1);
+  profileDropdownPlan.textContent = `Plan: ${statusLabel}`;
+
+  const start = formatDateDisplay(billingCache.subscriptionStartedAt);
+  const end = formatDateDisplay(billingCache.subscriptionExpiresAt);
+
+  if (start || end) {
+    profileDropdownDates.classList.remove("hidden");
+    profileDropdownDates.textContent = `${start || "Started"}${end ? ` - ${end}` : ""}`;
+    return;
+  }
+
+  profileDropdownDates.classList.add("hidden");
+  profileDropdownDates.textContent = "";
 }
 
 function updateHeaderMeta() {

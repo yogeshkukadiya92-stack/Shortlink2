@@ -449,6 +449,26 @@ svg {
   z-index: 25;
 }
 
+.profile-dropdown-summary {
+  display: grid;
+  gap: 4px;
+  padding: 10px 14px 12px;
+  border-bottom: 1px solid rgba(184, 201, 235, 0.4);
+  margin-bottom: 2px;
+}
+
+.profile-dropdown-plan {
+  font-size: 0.9rem;
+  font-weight: 800;
+  color: var(--text);
+}
+
+.profile-dropdown-dates {
+  font-size: 0.78rem;
+  color: var(--muted);
+  line-height: 1.35;
+}
+
 .profile-dropdown-item {
   display: flex;
   align-items: center;
