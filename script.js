@@ -3313,7 +3313,6 @@ function renderDomainsPage() {
               <select id="domainModeSelect" class="url-input compact-select">
                 <option value="recommended">Recommended subdomain</option>
                 <option value="custom-subdomain">Custom subdomain</option>
-                <option value="exact-domain">Exact domain</option>
               </select>
             </label>
             <label id="customSubdomainField" class="hidden">
@@ -3369,30 +3368,20 @@ function renderDomainsPage() {
     const dnsRecord = buildCustomDomainDnsRecord(rawDomain, mode, customPrefix);
 
     customSubdomainField.classList.toggle("hidden", mode !== "custom-subdomain");
-    domainModeHelp.innerHTML = mode === "exact-domain"
-      ? "Use this when you want the exact domain or root domain as-is. This needs provider support for apex/root DNS."
-      : mode === "custom-subdomain"
-        ? "Choose any branded subdomain you want, like <strong>links</strong>, <strong>app</strong>, <strong>promo</strong>, or <strong>shop</strong>."
-        : "We recommend creating a branded subdomain like <strong>go.yourbrand.com</strong> because it works on most DNS providers with a simple CNAME record.";
+    domainModeHelp.innerHTML = mode === "custom-subdomain"
+      ? "Choose any branded subdomain you want, like <strong>links</strong>, <strong>app</strong>, <strong>promo</strong>, or <strong>shop</strong>."
+      : "We recommend creating a branded subdomain like <strong>go.yourbrand.com</strong> because it works on most DNS providers with a simple CNAME record.";
 
     suggestionValue.textContent = suggestedDomain;
-    suggestionHelp.innerHTML = mode === "exact-domain"
-      ? "Root domains need special DNS support on some providers. Use this only if your DNS provider supports apex aliasing or root forwarding."
-      : mode === "custom-subdomain"
-        ? "This custom branded subdomain uses a simple <strong>CNAME</strong> record and works well for teams that want multiple branded hosts."
-        : "For most DNS providers, this recommended setup is easiest because it uses a simple <strong>CNAME</strong> record.";
-    dnsSetupCopy.innerHTML = mode === "exact-domain"
-      ? `Point your exact domain to <strong>${escapeHtml(publicShortDomain)}</strong>. Root-domain setups vary by provider.`
-      : `Create a <strong>CNAME</strong> record for your branded subdomain and point it to <strong>${escapeHtml(publicShortDomain)}</strong>.`;
+    suggestionHelp.innerHTML = mode === "custom-subdomain"
+      ? "This custom branded subdomain uses a simple <strong>CNAME</strong> record and works well for teams that want multiple branded hosts."
+      : "For most DNS providers, this recommended setup is easiest because it uses a simple <strong>CNAME</strong> record.";
+    dnsSetupCopy.innerHTML = `Create a <strong>CNAME</strong> record for your branded subdomain and point it to <strong>${escapeHtml(publicShortDomain)}</strong>.`;
     dnsTypeValue.textContent = dnsRecord.type;
     dnsHostValue.textContent = dnsRecord.host;
     dnsTargetValue.textContent = dnsRecord.value;
-    dnsExampleCopy.innerHTML = mode === "exact-domain"
-      ? `Example: <code>${escapeHtml(rawDomain)} -> ${escapeHtml(publicShortDomain)}</code>`
-      : `Example: <code>${escapeHtml(suggestedDomain)} -> ${escapeHtml(publicShortDomain)}</code>`;
-    dnsFinalCopy.innerHTML = mode === "exact-domain"
-      ? "After your root-domain DNS is live, click <strong>Mark verified</strong> and then set that domain active."
-      : "After DNS is live, click <strong>Mark verified</strong> and then set that domain active for fresh links.";
+    dnsExampleCopy.innerHTML = `Example: <code>${escapeHtml(suggestedDomain)} -> ${escapeHtml(publicShortDomain)}</code>`;
+    dnsFinalCopy.innerHTML = "After DNS is live, click <strong>Mark verified</strong> and then set that domain active for fresh links.";
   };
 
   syncDomainSuggestion();
@@ -3600,7 +3589,7 @@ function sanitizeSubdomainLabel(value) {
 function buildSuggestedCustomDomain(domain, mode = "recommended", customSubdomain = "") {
   const sanitized = sanitizeDomain(domain);
   if (!sanitized) return "";
-  if (mode === "exact-domain") return sanitized;
+  if (mode === "exact-domain") return `go.${sanitized}`;
   if (/^(localhost|127\.0\.0\.1)(:\d+)?$/i.test(sanitized)) return sanitized;
   if (mode === "custom-subdomain") {
     const prefix = sanitizeSubdomainLabel(customSubdomain) || "links";
@@ -3617,8 +3606,8 @@ function buildCustomDomainDnsRecord(domain, mode = "recommended", customSubdomai
   const sanitized = sanitizeDomain(domain) || "yourbrand.com";
   if (mode === "exact-domain") {
     return {
-      type: "ALIAS/A",
-      host: "@",
+      type: "CNAME",
+      host: "go",
       value: publicShortDomain,
     };
   }
@@ -3638,8 +3627,8 @@ function inferDnsRecordForDomain(domain) {
   const labels = sanitized.split(".").filter(Boolean);
   if (labels.length <= 2) {
     return {
-      type: "ALIAS/A",
-      host: "@",
+      type: "CNAME",
+      host: "go",
       value: publicShortDomain,
     };
   }
