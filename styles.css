@@ -2127,6 +2127,22 @@ svg {
   gap: 6px;
 }
 
+.domain-builder-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.compact-select {
+  padding-right: 42px;
+}
+
+@media (max-width: 760px) {
+  .domain-builder-grid {
+    grid-template-columns: 1fr;
+  }
+}
 .helper-label {
   font-size: 0.76rem;
   letter-spacing: 0.08em;

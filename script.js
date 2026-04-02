@@ -1041,10 +1041,10 @@ async function renderAdminPage() {
               <div class="admin-main">
                 <strong>${escapeHtml(user.name)}</strong>
                 <span>${escapeHtml(user.email)}</span>
-                <span>${user.emailVerified ? "Verified" : "Not verified"} • ${escapeHtml(user.billing.subscriptionStatus)}</span>
-                <span>${user.totalLinks} live links • ${user.usage.linksCreated} created • ${user.activeSessions} sessions</span>
-                <span>${user.usage.pageViews} page views • ${formatDuration(user.usage.totalTimeMs)} spent • Last active: ${user.usage.lastActiveAt ? escapeHtml(new Date(user.usage.lastActiveAt).toLocaleString()) : "Never"}</span>
-                <span>Last page: ${escapeHtml(user.usage.lastPage || "- ")} ${user.usage.topPages?.length ? `• Top pages: ${escapeHtml(user.usage.topPages.map((item) => `${item.page} (${item.count})`).join(", "))}` : ""}</span>
+                <span>${user.emailVerified ? "Verified" : "Not verified"} ï¿½ ${escapeHtml(user.billing.subscriptionStatus)}</span>
+                <span>${user.totalLinks} live links ï¿½ ${user.usage.linksCreated} created ï¿½ ${user.activeSessions} sessions</span>
+                <span>${user.usage.pageViews} page views ï¿½ ${formatDuration(user.usage.totalTimeMs)} spent ï¿½ Last active: ${user.usage.lastActiveAt ? escapeHtml(new Date(user.usage.lastActiveAt).toLocaleString()) : "Never"}</span>
+                <span>Last page: ${escapeHtml(user.usage.lastPage || "- ")} ${user.usage.topPages?.length ? `ï¿½ Top pages: ${escapeHtml(user.usage.topPages.map((item) => `${item.page} (${item.count})`).join(", "))}` : ""}</span>
               </div>
               <div class="admin-actions">
                 <select class="admin-select" data-admin-mode="${escapeHtml(user.id)}">
@@ -3268,7 +3268,7 @@ function renderDomainsPage() {
     const isDefaultAppDomain = domain === publicShortDomain;
     const isActive = Boolean(entry.isActive) || domain === settingsCache.defaultDomain;
     const normalizedStatus = String(entry.status || "PENDING").toUpperCase();
-    const hostHint = domain.split(".")[0] || domain;
+    const dnsRecord = inferDnsRecordForDomain(domain);
     const statusLabel = isDefaultAppDomain
       ? "App Default"
       : (isActive ? "Active" : normalizedStatus.charAt(0) + normalizedStatus.slice(1).toLowerCase());
@@ -3278,7 +3278,7 @@ function renderDomainsPage() {
         <div class="managed-domain-copy">
           <strong>${escapeHtml(domain)}</strong>
           <span>${escapeHtml(buildDomainPreview(domain))}</span>
-          ${!isDefaultAppDomain ? `<div class="dns-helper-grid"><span><strong>Type</strong>CNAME</span><span><strong>Host</strong>${escapeHtml(hostHint)}</span><span><strong>Value</strong>${escapeHtml(entry.dnsTarget || publicShortDomain)}</span></div>` : ""}
+          ${!isDefaultAppDomain ? `<div class="dns-helper-grid"><span><strong>Type</strong>${escapeHtml(dnsRecord.type)}</span><span><strong>Host</strong>${escapeHtml(dnsRecord.host)}</span><span><strong>Value</strong>${escapeHtml(entry.dnsTarget || dnsRecord.value || publicShortDomain)}</span></div>` : ""}
         </div>
         <div class="managed-domain-actions">
           <span class="domain-status ${normalizedStatus.toLowerCase()}">${escapeHtml(statusLabel)}</span>
@@ -3297,24 +3297,35 @@ function renderDomainsPage() {
         <div class="surface-header">
           <div>
             <h2>Custom domains</h2>
-            <p>Your app always stays on <strong>${escapeHtml(publicShortDomain)}</strong>. Users can optionally create short links from their own connected domain.</p>
+            <p>Add as many custom domains as you want. Only one stays active for fresh short links at a time.</p>
           </div>
-          <span class="chip-link">${settingsCache.domains.length} saved</span>
+          <span class="data-pill">${domainEntries.length} saved</span>
         </div>
-        <div class="managed-domain-list">${managedDomainsMarkup}</div>
+        <div class="managed-domain-stack">${managedDomainsMarkup || `<p class="helper-copy">No custom domains added yet.</p>`}</div>
       </div>
-      <div class="stack-card-group">
+      <div>
         <div class="form-card">
           <label class="field-label" for="domainName">Add a new custom domain</label>
           <input id="domainName" class="url-input" type="text" placeholder="yourbrand.com">
-          <div class="domain-mode-toggle">
-            <label class="checkbox-row compact-checkbox">
-              <input type="checkbox" id="useExactDomainToggle">
-              <span>Use exact domain instead of auto-creating <strong>go.</strong> subdomain</span>
+          <div class="domain-builder-grid">
+            <label>
+              <span class="field-label">Domain mode</span>
+              <select id="domainModeSelect" class="url-input compact-select">
+                <option value="recommended">Recommended subdomain</option>
+                <option value="custom-subdomain">Custom subdomain</option>
+                <option value="exact-domain">Exact domain</option>
+              </select>
+            </label>
+            <label id="customSubdomainField" class="hidden">
+              <span class="field-label">Subdomain</span>
+              <input id="customSubdomainPrefix" class="url-input" type="text" placeholder="links">
             </label>
           </div>
+          <div class="domain-mode-toggle">
+            <p class="helper-copy" id="domainModeHelp">We recommend creating a branded subdomain like <strong>go.yourbrand.com</strong> because it works on most DNS providers with a simple CNAME record.</p>
+          </div>
           <div class="domain-suggestion-card" id="domainSuggestionCard">
-            <span class="helper-label">Recommended short domain</span>
+            <span class="helper-label">Generated short domain</span>
             <strong id="domainSuggestionValue">go.yourbrand.com</strong>
             <span class="helper-copy" id="domainSuggestionHelp">For most DNS providers, the recommended setup is a CNAME on <strong>go</strong>.</span>
           </div>
@@ -3337,7 +3348,10 @@ function renderDomainsPage() {
   `;
 
   const domainInput = document.getElementById("domainName");
-  const exactToggle = document.getElementById("useExactDomainToggle");
+  const modeSelect = document.getElementById("domainModeSelect");
+  const customSubdomainField = document.getElementById("customSubdomainField");
+  const customSubdomainPrefix = document.getElementById("customSubdomainPrefix");
+  const domainModeHelp = document.getElementById("domainModeHelp");
   const suggestionValue = document.getElementById("domainSuggestionValue");
   const suggestionHelp = document.getElementById("domainSuggestionHelp");
   const dnsSetupCopy = document.getElementById("dnsSetupCopy");
@@ -3349,36 +3363,47 @@ function renderDomainsPage() {
 
   const syncDomainSuggestion = () => {
     const rawDomain = sanitizeDomain(domainInput.value.trim()) || "yourbrand.com";
-    const useExactDomain = exactToggle.checked;
-    const suggestedDomain = buildSuggestedCustomDomain(rawDomain, useExactDomain);
-    const dnsRecord = buildCustomDomainDnsRecord(rawDomain, useExactDomain);
+    const mode = modeSelect.value || "recommended";
+    const customPrefix = customSubdomainPrefix.value.trim();
+    const suggestedDomain = buildSuggestedCustomDomain(rawDomain, mode, customPrefix);
+    const dnsRecord = buildCustomDomainDnsRecord(rawDomain, mode, customPrefix);
+
+    customSubdomainField.classList.toggle("hidden", mode !== "custom-subdomain");
+    domainModeHelp.innerHTML = mode === "exact-domain"
+      ? "Use this when you want the exact domain or root domain as-is. This needs provider support for apex/root DNS."
+      : mode === "custom-subdomain"
+        ? "Choose any branded subdomain you want, like <strong>links</strong>, <strong>app</strong>, <strong>promo</strong>, or <strong>shop</strong>."
+        : "We recommend creating a branded subdomain like <strong>go.yourbrand.com</strong> because it works on most DNS providers with a simple CNAME record.";
 
     suggestionValue.textContent = suggestedDomain;
-    suggestionHelp.innerHTML = useExactDomain
+    suggestionHelp.innerHTML = mode === "exact-domain"
       ? "Root domains need special DNS support on some providers. Use this only if your DNS provider supports apex aliasing or root forwarding."
-      : "For most DNS providers, this recommended setup is easiest because it uses a simple <strong>CNAME</strong> record.";
-    dnsSetupCopy.innerHTML = useExactDomain
+      : mode === "custom-subdomain"
+        ? "This custom branded subdomain uses a simple <strong>CNAME</strong> record and works well for teams that want multiple branded hosts."
+        : "For most DNS providers, this recommended setup is easiest because it uses a simple <strong>CNAME</strong> record.";
+    dnsSetupCopy.innerHTML = mode === "exact-domain"
       ? `Point your exact domain to <strong>${escapeHtml(publicShortDomain)}</strong>. Root-domain setups vary by provider.`
       : `Create a <strong>CNAME</strong> record for your branded subdomain and point it to <strong>${escapeHtml(publicShortDomain)}</strong>.`;
     dnsTypeValue.textContent = dnsRecord.type;
     dnsHostValue.textContent = dnsRecord.host;
     dnsTargetValue.textContent = dnsRecord.value;
-    dnsExampleCopy.innerHTML = useExactDomain
+    dnsExampleCopy.innerHTML = mode === "exact-domain"
       ? `Example: <code>${escapeHtml(rawDomain)} -> ${escapeHtml(publicShortDomain)}</code>`
       : `Example: <code>${escapeHtml(suggestedDomain)} -> ${escapeHtml(publicShortDomain)}</code>`;
-    dnsFinalCopy.innerHTML = useExactDomain
+    dnsFinalCopy.innerHTML = mode === "exact-domain"
       ? "After your root-domain DNS is live, click <strong>Mark verified</strong> and then set that domain active."
       : "After DNS is live, click <strong>Mark verified</strong> and then set that domain active for fresh links.";
   };
 
   syncDomainSuggestion();
   domainInput.addEventListener("input", syncDomainSuggestion);
-  exactToggle.addEventListener("change", syncDomainSuggestion);
+  modeSelect.addEventListener("change", syncDomainSuggestion);
+  customSubdomainPrefix.addEventListener("input", syncDomainSuggestion);
 
   document.getElementById("addDomainButton").addEventListener("click", async () => {
     const rawDomain = sanitizeDomain(domainInput.value.trim());
     if (!rawDomain) return showGlobalMessage("Enter a valid domain or host.", true);
-    const domain = buildSuggestedCustomDomain(rawDomain, exactToggle.checked);
+    const domain = buildSuggestedCustomDomain(rawDomain, modeSelect.value || "recommended", customSubdomainPrefix.value.trim());
     if (settingsCache.domains.includes(domain)) return showGlobalMessage("That domain is already added.", true);
     await persistDomains([...settingsCache.domains, domain], settingsCache.defaultDomain, `Domain added: ${domain}. Next step: update the DNS record and mark it verified.`);
   });
@@ -3567,20 +3592,30 @@ function sanitizeDomain(value) {
   return cleaned && /^[a-z0-9.-]+(?::\d+)?$/.test(cleaned) ? cleaned : null;
 }
 
-function buildSuggestedCustomDomain(domain, useExactDomain = false) {
+function sanitizeSubdomainLabel(value) {
+  const cleaned = String(value || "").trim().toLowerCase().replace(/[^a-z0-9.-]/g, "").replace(/^\.+|\.+$/g, "");
+  return cleaned || null;
+}
+
+function buildSuggestedCustomDomain(domain, mode = "recommended", customSubdomain = "") {
   const sanitized = sanitizeDomain(domain);
   if (!sanitized) return "";
-  if (useExactDomain) return sanitized;
+  if (mode === "exact-domain") return sanitized;
   if (/^(localhost|127\.0\.0\.1)(:\d+)?$/i.test(sanitized)) return sanitized;
+  if (mode === "custom-subdomain") {
+    const prefix = sanitizeSubdomainLabel(customSubdomain) || "links";
+    if (sanitized.startsWith(`${prefix}.`)) return sanitized;
+    return `${prefix}.${sanitized}`;
+  }
   if (sanitized.startsWith("go.")) return sanitized;
   const labels = sanitized.split(".").filter(Boolean);
   if (labels.length <= 1) return sanitized;
   return `go.${sanitized}`;
 }
 
-function buildCustomDomainDnsRecord(domain, useExactDomain = false) {
+function buildCustomDomainDnsRecord(domain, mode = "recommended", customSubdomain = "") {
   const sanitized = sanitizeDomain(domain) || "yourbrand.com";
-  if (useExactDomain) {
+  if (mode === "exact-domain") {
     return {
       type: "ALIAS/A",
       host: "@",
@@ -3588,11 +3623,29 @@ function buildCustomDomainDnsRecord(domain, useExactDomain = false) {
     };
   }
 
-  const suggested = buildSuggestedCustomDomain(sanitized, false);
-  const host = suggested.replace(`.${sanitized}`, "") || "go";
+  const suggested = buildSuggestedCustomDomain(sanitized, mode, customSubdomain);
+  const suffix = `.${sanitized}`;
+  const host = suggested.endsWith(suffix) ? (suggested.slice(0, -suffix.length) || "go") : "go";
   return {
     type: "CNAME",
     host,
+    value: publicShortDomain,
+  };
+}
+
+function inferDnsRecordForDomain(domain) {
+  const sanitized = sanitizeDomain(domain) || "yourbrand.com";
+  const labels = sanitized.split(".").filter(Boolean);
+  if (labels.length <= 2) {
+    return {
+      type: "ALIAS/A",
+      host: "@",
+      value: publicShortDomain,
+    };
+  }
+  return {
+    type: "CNAME",
+    host: labels.slice(0, -2).join(".") || labels[0] || "go",
     value: publicShortDomain,
   };
 }
