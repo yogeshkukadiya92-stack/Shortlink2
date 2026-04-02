@@ -464,6 +464,7 @@ async function saveSettings(nextSettings) {
 }
 
 function normalizeSettings(settings) {
+  const providerDnsTarget = settings.providerDnsTarget || publicShortDomain;
   const domains = Array.isArray(settings.domains) && settings.domains.length
     ? [...new Set(settings.domains)]
     : [settings.defaultDomain || getDefaultShortDomain()];
@@ -479,7 +480,18 @@ function normalizeSettings(settings) {
   const domainEntries = domains.map((host) => {
     const existing = entryMap.get(host) || {};
     if (host === publicShortDomain) {
-      return { host, status: "APP_DEFAULT", isActive: host === defaultDomain, dnsTarget: publicShortDomain, verifiedAt: null };
+      return {
+        host,
+        status: "APP_DEFAULT",
+        isActive: host === defaultDomain,
+        dnsTarget: providerDnsTarget,
+        verifiedAt: null,
+        provider: existing.provider || null,
+        sslStatus: existing.sslStatus || null,
+        ownershipStatus: existing.ownershipStatus || null,
+        providerHostnameId: existing.providerHostnameId || null,
+        verificationErrors: Array.isArray(existing.verificationErrors) ? existing.verificationErrors : [],
+      };
     }
     const isActive = host === defaultDomain;
     const status = isActive ? "ACTIVE" : (existing.status || "PENDING");
@@ -487,8 +499,13 @@ function normalizeSettings(settings) {
       host,
       status,
       isActive,
-      dnsTarget: existing.dnsTarget || publicShortDomain,
+      dnsTarget: existing.dnsTarget || providerDnsTarget,
       verifiedAt: existing.verifiedAt || null,
+      provider: existing.provider || null,
+      sslStatus: existing.sslStatus || null,
+      ownershipStatus: existing.ownershipStatus || null,
+      providerHostnameId: existing.providerHostnameId || null,
+      verificationErrors: Array.isArray(existing.verificationErrors) ? existing.verificationErrors : [],
     };
   });
 
@@ -497,6 +514,7 @@ function normalizeSettings(settings) {
     defaultDomain,
     domains,
     domainEntries,
+    providerDnsTarget,
     conversionGoals: normalizeConversionGoals(settings.conversionGoals || {}),
     linkRules: normalizeLinkRules(settings.linkRules || {}),
     trashLinks: normalizeTrashLinks(settings.trashLinks || []),
@@ -3282,9 +3300,9 @@ function renderDomainsPage() {
         </div>
         <div class="managed-domain-actions">
           <span class="domain-status ${normalizedStatus.toLowerCase()}">${escapeHtml(statusLabel)}</span>
-          ${!isDefaultAppDomain && !isActive ? `<button class="link-button" data-activate-domain="${escapeHtml(domain)}">Set active</button>` : ""}
+          ${!isDefaultAppDomain && !isActive && normalizedStatus === "VERIFIED" ? `<button class="link-button" data-activate-domain="${escapeHtml(domain)}">Set active</button>` : ""}
           ${!isDefaultAppDomain ? `<button class="link-button secondary" data-copy-dns="${escapeHtml(domain)}">Copy DNS</button>` : ""}
-          ${!isDefaultAppDomain && normalizedStatus !== "VERIFIED" && normalizedStatus !== "ACTIVE" ? `<button class="link-button secondary" data-verify-domain="${escapeHtml(domain)}">Mark verified</button>` : ""}
+          ${!isDefaultAppDomain && normalizedStatus !== "ACTIVE" ? `<button class="link-button secondary" data-verify-domain="${escapeHtml(domain)}">${normalizedStatus === "VERIFIED" ? "Recheck SSL" : "Verify / Sync"}</button>` : ""}
           ${!isDefaultAppDomain ? `<button class="link-button danger" data-remove-domain="${escapeHtml(domain)}">Remove</button>` : ""}
         </div>
       </div>
@@ -3340,7 +3358,7 @@ function renderDomainsPage() {
             <span><strong>Value</strong><span id="dnsTargetValue">${escapeHtml(publicShortDomain)}</span></span>
           </div>
           <p class="helper-copy" id="dnsExampleCopy">Example: <code>go.clientdomain.com -> ${escapeHtml(publicShortDomain)}</code></p>
-          <p class="helper-copy" id="dnsFinalCopy">After DNS is live, click <strong>Mark verified</strong> and then set that domain active for fresh links.</p>
+          <p class="helper-copy" id="dnsFinalCopy">After DNS is live, click <strong>Verify / Sync</strong> and then set that domain active for fresh links.</p>
         </div>
       </div>
     </section>
@@ -3381,7 +3399,7 @@ function renderDomainsPage() {
     dnsHostValue.textContent = dnsRecord.host;
     dnsTargetValue.textContent = dnsRecord.value;
     dnsExampleCopy.innerHTML = `Example: <code>${escapeHtml(suggestedDomain)} -> ${escapeHtml(publicShortDomain)}</code>`;
-    dnsFinalCopy.innerHTML = "After DNS is live, click <strong>Mark verified</strong> and then set that domain active for fresh links.";
+    dnsFinalCopy.innerHTML = "After DNS is live, click <strong>Verify / Sync</strong> and then set that domain active for fresh links.";
   };
 
   syncDomainSuggestion();
@@ -3412,10 +3430,11 @@ function renderDomainsPage() {
   document.querySelectorAll("[data-copy-dns]").forEach((button) => button.addEventListener("click", async () => {
     const domain = button.getAttribute("data-copy-dns");
     try {
-      await navigator.clipboard.writeText(publicShortDomain);
-      showGlobalMessage(`DNS target copied for ${domain}: ${publicShortDomain}`, false);
+      const dnsTarget = settingsCache.providerDnsTarget || publicShortDomain;
+      await navigator.clipboard.writeText(dnsTarget);
+      showGlobalMessage(`DNS target copied for ${domain}: ${settingsCache.providerDnsTarget || publicShortDomain}`, false);
     } catch {
-      showGlobalMessage(`Copy failed. Use this DNS target manually: ${publicShortDomain}`, true);
+      showGlobalMessage(`Copy failed. Use this DNS target manually: ${settingsCache.providerDnsTarget || publicShortDomain}`, true);
     }
   }));
 
@@ -3437,15 +3456,31 @@ async function persistDomains(domains, defaultDomain, successMessage) {
 
 async function verifyDomain(domain) {
   try {
+    const providerResponse = await fetch("/api/domains/provider-sync", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ domain }),
+    });
+    const providerPayload = await providerResponse.json().catch(() => ({}));
+    if (providerResponse.ok) {
+      if (providerPayload.settings) {
+        settingsCache = normalizeSettings(providerPayload.settings);
+        renderDomainsPage();
+      }
+      const hostHint = providerPayload.hostHint || inferDnsRecordForDomain(domain).host || domain.split(".")[0] || domain;
+      showGlobalMessage(`${providerPayload.message || "Domain sync updated."} DNS record: ${providerPayload.recordType || "CNAME"} ${hostHint} -> ${providerPayload.dnsTarget || settingsCache.providerDnsTarget || publicShortDomain}`, false);
+      return;
+    }
+
     const response = await fetch(`/api/domains/verify/${encodeURIComponent(domain)}`);
-    const payload = await response.json();
-    if (!response.ok) throw new Error(payload.error || "Unable to verify domain.");
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(providerPayload.details || providerPayload.error || payload.error || "Unable to verify domain.");
     if (payload.settings) {
       settingsCache = normalizeSettings(payload.settings);
       renderDomainsPage();
     }
     const hostHint = payload.hostHint || domain.split(".")[0] || domain;
-    showGlobalMessage(`${payload.message} DNS record: ${payload.recordType || "CNAME"} ${hostHint} -> ${payload.dnsTarget || publicShortDomain}`, false);
+    showGlobalMessage(`${payload.message} DNS record: ${payload.recordType || "CNAME"} ${hostHint} -> ${payload.dnsTarget || settingsCache.providerDnsTarget || publicShortDomain}`, false);
   } catch (error) {
     showGlobalMessage(error.message, true);
   }
@@ -3589,7 +3624,6 @@ function sanitizeSubdomainLabel(value) {
 function buildSuggestedCustomDomain(domain, mode = "recommended", customSubdomain = "") {
   const sanitized = sanitizeDomain(domain);
   if (!sanitized) return "";
-  if (mode === "exact-domain") return `go.${sanitized}`;
   if (/^(localhost|127\.0\.0\.1)(:\d+)?$/i.test(sanitized)) return sanitized;
   if (mode === "custom-subdomain") {
     const prefix = sanitizeSubdomainLabel(customSubdomain) || "links";
@@ -3604,14 +3638,6 @@ function buildSuggestedCustomDomain(domain, mode = "recommended", customSubdomai
 
 function buildCustomDomainDnsRecord(domain, mode = "recommended", customSubdomain = "") {
   const sanitized = sanitizeDomain(domain) || "yourbrand.com";
-  if (mode === "exact-domain") {
-    return {
-      type: "CNAME",
-      host: "go",
-      value: publicShortDomain,
-    };
-  }
-
   const suggested = buildSuggestedCustomDomain(sanitized, mode, customSubdomain);
   const suffix = `.${sanitized}`;
   const host = suggested.endsWith(suffix) ? (suggested.slice(0, -suffix.length) || "go") : "go";
