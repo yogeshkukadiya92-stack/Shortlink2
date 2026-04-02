@@ -3302,7 +3302,7 @@ function renderDomainsPage() {
           <span class="domain-status ${normalizedStatus.toLowerCase()}">${escapeHtml(statusLabel)}</span>
           ${!isDefaultAppDomain && !isActive && normalizedStatus === "VERIFIED" ? `<button class="link-button" data-activate-domain="${escapeHtml(domain)}">Set active</button>` : ""}
           ${!isDefaultAppDomain ? `<button class="link-button secondary" data-copy-dns="${escapeHtml(domain)}">Copy DNS</button>` : ""}
-          ${!isDefaultAppDomain && normalizedStatus !== "ACTIVE" ? `<button class="link-button secondary" data-verify-domain="${escapeHtml(domain)}">${normalizedStatus === "VERIFIED" ? "Recheck SSL" : "Verify / Sync"}</button>` : ""}
+          ${!isDefaultAppDomain && normalizedStatus !== "VERIFIED" && normalizedStatus !== "ACTIVE" ? `<button class="link-button secondary" data-verify-domain="${escapeHtml(domain)}">Verify</button>` : ""}
           ${!isDefaultAppDomain ? `<button class="link-button danger" data-remove-domain="${escapeHtml(domain)}">Remove</button>` : ""}
         </div>
       </div>
@@ -3358,7 +3358,7 @@ function renderDomainsPage() {
             <span><strong>Value</strong><span id="dnsTargetValue">${escapeHtml(publicShortDomain)}</span></span>
           </div>
           <p class="helper-copy" id="dnsExampleCopy">Example: <code>go.clientdomain.com -> ${escapeHtml(publicShortDomain)}</code></p>
-          <p class="helper-copy" id="dnsFinalCopy">After DNS is live, click <strong>Verify / Sync</strong> and then set that domain active for fresh links.</p>
+          <p class="helper-copy" id="dnsFinalCopy">After DNS is live, click <strong>Verify</strong> and then set that domain active for fresh links.</p>
         </div>
       </div>
     </section>
@@ -3399,7 +3399,7 @@ function renderDomainsPage() {
     dnsHostValue.textContent = dnsRecord.host;
     dnsTargetValue.textContent = dnsRecord.value;
     dnsExampleCopy.innerHTML = `Example: <code>${escapeHtml(suggestedDomain)} -> ${escapeHtml(publicShortDomain)}</code>`;
-    dnsFinalCopy.innerHTML = "After DNS is live, click <strong>Verify / Sync</strong> and then set that domain active for fresh links.";
+    dnsFinalCopy.innerHTML = "After DNS is live, click <strong>Verify</strong> and then set that domain active for fresh links.";
   };
 
   syncDomainSuggestion();
@@ -3456,25 +3456,9 @@ async function persistDomains(domains, defaultDomain, successMessage) {
 
 async function verifyDomain(domain) {
   try {
-    const providerResponse = await fetch("/api/domains/provider-sync", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ domain }),
-    });
-    const providerPayload = await providerResponse.json().catch(() => ({}));
-    if (providerResponse.ok) {
-      if (providerPayload.settings) {
-        settingsCache = normalizeSettings(providerPayload.settings);
-        renderDomainsPage();
-      }
-      const hostHint = providerPayload.hostHint || inferDnsRecordForDomain(domain).host || domain.split(".")[0] || domain;
-      showGlobalMessage(`${providerPayload.message || "Domain sync updated."} DNS record: ${providerPayload.recordType || "CNAME"} ${hostHint} -> ${providerPayload.dnsTarget || settingsCache.providerDnsTarget || publicShortDomain}`, false);
-      return;
-    }
-
     const response = await fetch(`/api/domains/verify/${encodeURIComponent(domain)}`);
     const payload = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(providerPayload.details || providerPayload.error || payload.error || "Unable to verify domain.");
+    if (!response.ok) throw new Error(payload.error || "Unable to verify domain.");
     if (payload.settings) {
       settingsCache = normalizeSettings(payload.settings);
       renderDomainsPage();
