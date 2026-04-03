@@ -2803,16 +2803,12 @@ async function handleVerifyDomain(domain, req, res, user) {
         writeSettingsStore(store);
       }
 
-      await upsertDomain(user.id, sanitizedDomain, {
+      await upsertDomain(user.id, sanitizedDomain, toPersistedDomainRecord({
         status: syncedEntry.status,
         isActive: sanitizedDomain === settings.defaultDomain && syncedEntry.status === "ACTIVE",
         dnsTarget: getProviderDnsTarget(),
         verifiedAt: syncedEntry.verifiedAt ? new Date(syncedEntry.verifiedAt) : null,
-        provider: syncedEntry.provider,
-        sslStatus: syncedEntry.sslStatus,
-        ownershipStatus: syncedEntry.ownershipStatus,
-        providerHostnameId: syncedEntry.providerHostnameId,
-      });
+      }));
 
       const ready = syncedEntry.status === "VERIFIED" || syncedEntry.status === "ACTIVE";
       return sendJson(res, 200, {
@@ -2860,15 +2856,12 @@ async function handleVerifyDomain(domain, req, res, user) {
 
   try {
     if (sanitizedDomain !== publicAppDomain) {
-      await upsertDomain(user.id, sanitizedDomain, {
+      await upsertDomain(user.id, sanitizedDomain, toPersistedDomainRecord({
         status: sanitizedDomain === settings.defaultDomain ? "ACTIVE" : "VERIFIED",
         isActive: sanitizedDomain === settings.defaultDomain,
         dnsTarget: customDomainDnsTarget,
         verifiedAt: new Date(),
-        provider: "manual",
-        sslStatus: "manual",
-        ownershipStatus: "manual",
-      });
+      }));
     }
   } catch {
     if (dbOnlyMode) {
@@ -2894,6 +2887,15 @@ function isCloudflareSaasConfigured() {
 
 function getProviderDnsTarget() {
   return isCloudflareSaasConfigured() ? cloudflareSaasCnameTarget : customDomainDnsTarget;
+}
+
+function toPersistedDomainRecord(data = {}) {
+  return {
+    status: data.status,
+    isActive: data.isActive,
+    dnsTarget: data.dnsTarget,
+    verifiedAt: data.verifiedAt,
+  };
 }
 
 async function fetchCloudflareApi(endpoint, options = {}) {
