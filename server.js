@@ -1757,6 +1757,7 @@ function hasLifetimeAccess(user) {
 async function handleCreateLink(body, req, res, user) {
   const rawDestination = String(body.destination || "").trim();
   const customSlug = String(body.slug || "").trim().toLowerCase();
+  const requestedDomain = sanitizeDomainInput(String(body.domain || "").trim(), req);
   const includeQr = Boolean(body.includeQr);
 
   if (!rawDestination) {
@@ -1802,7 +1803,11 @@ async function handleCreateLink(body, req, res, user) {
   }
 
   const settings = await readSettingsForUserAsync(user.id, req);
-  const shortUrl = buildShortUrl(settings.defaultDomain || req.headers.host, slug);
+  const allowedDomains = Array.isArray(settings.domains) ? settings.domains.map((item) => sanitizeDomainInput(String(item || ""), req)).filter(Boolean) : [];
+  const resolvedDomain = requestedDomain && allowedDomains.includes(requestedDomain)
+    ? requestedDomain
+    : (settings.defaultDomain || req.headers.host);
+  const shortUrl = buildShortUrl(resolvedDomain, slug);
   const nextLink = {
     id: Date.now(),
     userId: user.id,
@@ -1853,6 +1858,7 @@ async function handleUpdateLink(slug, body, req, res, user) {
   const currentSlug = sanitizeSlugInput(String(slug || "").trim());
   const nextSlug = sanitizeSlugInput(String(body.slug || currentSlug).trim().toLowerCase());
   const rawDestination = String(body.destination || "").trim();
+  const requestedDomain = sanitizeDomainInput(String(body.domain || "").trim(), req);
   const includeQr = Boolean(body.includeQr);
 
   if (!currentSlug) {
@@ -1873,7 +1879,11 @@ async function handleUpdateLink(slug, body, req, res, user) {
   }
 
   const settings = await readSettingsForUserAsync(user.id, req);
-  const nextShortUrl = buildShortUrl(settings.defaultDomain || req.headers.host, nextSlug);
+  const allowedDomains = Array.isArray(settings.domains) ? settings.domains.map((item) => sanitizeDomainInput(String(item || ""), req)).filter(Boolean) : [];
+  const resolvedDomain = requestedDomain && allowedDomains.includes(requestedDomain)
+    ? requestedDomain
+    : (settings.defaultDomain || req.headers.host);
+  const nextShortUrl = buildShortUrl(resolvedDomain, nextSlug);
   const links = dbOnlyMode ? [] : readLinks();
   const fileMatch = links.find((item) => item.slug === currentSlug && item.userId === user.id) || null;
   let dbMatch = null;

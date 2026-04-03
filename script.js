@@ -1423,6 +1423,7 @@ function bindVerificationAction() {
 function renderHomePage() {
   const activeDomain = escapeHtml(settingsCache.defaultDomain);
   const trialDaysLeft = Math.max(0, Math.ceil((billingCache.trialRemainingMs || 0) / (1000 * 60 * 60 * 24)));
+  const domainOptions = settingsCache.domains.map((domain) => `<option value="${escapeHtml(domain)}" ${domain === settingsCache.defaultDomain ? "selected" : ""}>${escapeHtml(domain)}</option>`).join("");
   mainContent.innerHTML = `
     <section class="clean-home-shell">
       <article class="surface-card clean-create-card">
@@ -1439,6 +1440,7 @@ function renderHomePage() {
         <div class="clean-create-grid">
           <div class="input-stack full-span"><label for="destination" class="field-label">Destination URL</label><input id="destination" class="url-input" type="url" placeholder="https://example.com/my-long-url"></div>
           <div class="input-stack"><label for="slug" class="field-label">Custom slug</label><input id="slug" class="url-input" type="text" placeholder="offer-2026"></div>
+          <div class="input-stack"><label for="linkDomain" class="field-label">Link domain</label><select id="linkDomain" class="url-input domain-select">${domainOptions}</select></div>
           <div class="inline-note clean-preview-note">Preview:<strong id="shortBaseLabel">${escapeHtml(buildShortPreview("your-slug"))}</strong></div>
           <label class="checkbox-row clean-checkbox"><input type="checkbox" id="qrToggle"><span>Generate QR-ready link</span></label>
           <button class="primary-action clean-create-button" id="createLinkButton">Create link</button>
@@ -1490,6 +1492,7 @@ function renderLinksPage(links, query = "") {
   const filtered = links.filter((link) => !query || [link.slug, link.destination, link.shortUrl].some((value) => String(value).toLowerCase().includes(query)));
   const trashMarkup = renderTrashLinkItems(settingsCache.trashLinks || []);
   const editingLink = filtered.find((link) => link.slug === selectedLinkSlug) || linksCache.find((link) => link.slug === selectedLinkSlug) || null;
+  const editDomainOptions = settingsCache.domains.map((domain) => `<option value="${escapeHtml(domain)}" ${editingLink && getLinkDomain(editingLink) === domain ? "selected" : ""}>${escapeHtml(domain)}</option>`).join("");
   mainContent.innerHTML = `
     <section class="surface-card">
       <div class="surface-header">
@@ -1511,6 +1514,7 @@ function renderLinksPage(links, query = "") {
           <div class="goal-action-row link-editor-grid">
             <input class="url-input" id="editLinkSlugInput" type="text" value="${escapeHtml(editingLink.slug)}" placeholder="custom-slug">
             <input class="url-input" id="editLinkDestinationInput" type="url" value="${escapeHtml(editingLink.destination)}" placeholder="https://example.com">
+            <select class="url-input domain-select" id="editLinkDomainInput">${editDomainOptions}</select>
             <label class="field-toggle compact-toggle"><input type="checkbox" id="editLinkQrInput" ${editingLink.includeQr ? "checked" : ""}><span>Include QR</span></label>
             <button class="link-button" type="button" id="saveLinkEditButton" data-edit-link="${escapeHtml(editingLink.slug)}">Save changes</button>
           </div>
@@ -2477,12 +2481,14 @@ function renderTrackedClickRows(clicks, compact) {
 function wireCreateForm() {
   const destinationInput = document.getElementById("destination");
   const slugInput = document.getElementById("slug");
+  const linkDomainInput = document.getElementById("linkDomain");
   const qrToggle = document.getElementById("qrToggle");
   const resultBanner = document.getElementById("resultBanner");
   const shortBaseLabel = document.getElementById("shortBaseLabel");
 
   const updatePreview = () => {
-    shortBaseLabel.textContent = buildShortPreview(sanitizeSlug(slugInput.value.trim()) || "your-slug");
+    const previewDomain = sanitizeDomain(linkDomainInput?.value || "") || settingsCache.defaultDomain;
+    shortBaseLabel.textContent = buildDomainPreview(previewDomain, sanitizeSlug(slugInput.value.trim()) || "your-slug");
   };
 
   const createLink = async () => {
@@ -2494,6 +2500,7 @@ function wireCreateForm() {
         body: JSON.stringify({
           destination: destinationInput.value.trim(),
           slug: sanitizeSlug(slugInput.value.trim()),
+          domain: linkDomainInput?.value || settingsCache.defaultDomain,
           includeQr: qrToggle.checked,
         }),
       });
@@ -2521,6 +2528,7 @@ function wireCreateForm() {
   destinationInput.addEventListener("keydown", (event) => event.key === "Enter" && createLink());
   slugInput.addEventListener("keydown", (event) => event.key === "Enter" && createLink());
   slugInput.addEventListener("input", updatePreview);
+  linkDomainInput?.addEventListener("change", updatePreview);
   updatePreview();
 }
 
@@ -2539,13 +2547,14 @@ function wireLinkActions() {
     const currentSlug = document.getElementById("saveLinkEditButton").getAttribute("data-edit-link");
     const nextSlug = sanitizeSlug(document.getElementById("editLinkSlugInput").value.trim());
     const destination = document.getElementById("editLinkDestinationInput").value.trim();
+    const domain = document.getElementById("editLinkDomainInput")?.value || settingsCache.defaultDomain;
     const includeQr = Boolean(document.getElementById("editLinkQrInput")?.checked);
 
     try {
       const response = await fetch(`/api/links/${encodeURIComponent(currentSlug)}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ slug: nextSlug, destination, includeQr }),
+        body: JSON.stringify({ slug: nextSlug, destination, domain, includeQr }),
       });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.details || payload.error || "Unable to update link.");
@@ -2849,6 +2858,15 @@ function getLinkUrl(link) {
   }
 
   return buildLiveLinkUrl(link?.slug || "");
+}
+
+function getLinkDomain(link) {
+  const shortUrl = String(link?.shortUrl || "");
+  try {
+    return new URL(shortUrl).host || settingsCache.defaultDomain;
+  } catch {
+    return settingsCache.defaultDomain;
+  }
 }
 
 function buildQrImageUrl(targetUrl, options = {}) {
