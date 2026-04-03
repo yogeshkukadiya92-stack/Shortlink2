@@ -35,6 +35,12 @@ const trialLifetimeMs = 1000 * 60 * 60 * 24 * 3;
 const publicAppDomain = process.env.PUBLIC_APP_DOMAIN || "go.shortlinks.in";
 const dbOnlyMode = String(process.env.DB_ONLY_MODE || "").toLowerCase() === "true";
 const customDomainDnsTarget = publicAppDomain;
+const cloudflareApiBase = "https://api.cloudflare.com/client/v4";
+const cloudflareApiToken = String(process.env.CLOUDFLARE_API_TOKEN || "").trim();
+const cloudflareZoneId = String(process.env.CLOUDFLARE_ZONE_ID || "").trim();
+const cloudflareSaasCnameTarget = String(process.env.CLOUDFLARE_SAAS_CNAME_TARGET || "").trim();
+const cloudflareFallbackOrigin = String(process.env.CLOUDFLARE_FALLBACK_ORIGIN || "").trim();
+const cloudflareHostnameSslMethod = String(process.env.CLOUDFLARE_CUSTOM_HOSTNAME_SSL_METHOD || "http").trim().toLowerCase();
 const razorpayApiBase = "https://api.razorpay.com/v1";
 const builtInAdminEmails = ["yogshkukadiya92@gmail.com", "yogeshkukadiya92@gmail.com"];
 const builtInLifetimeEmails = ["yogeshkukadiya92@gmail.com"];
@@ -2741,8 +2747,12 @@ async function handleSaveSettings(body, req, res, user) {
         await upsertDomain(user.id, entry.host, {
           status: entry.status,
           isActive: entry.isActive,
-          dnsTarget: entry.dnsTarget || customDomainDnsTarget,
+          dnsTarget: entry.dnsTarget || getProviderDnsTarget(),
           verifiedAt: entry.verifiedAt ? new Date(entry.verifiedAt) : null,
+          provider: entry.provider || (isCloudflareSaasConfigured() ? "cloudflare" : "manual"),
+          sslStatus: entry.sslStatus || null,
+          ownershipStatus: entry.ownershipStatus || null,
+          providerHostnameId: entry.providerHostnameId || null,
         });
       }
   } catch {
@@ -2764,6 +2774,64 @@ async function handleVerifyDomain(domain, req, res, user) {
 
   if (!settings.domains.includes(sanitizedDomain)) {
     return sendJson(res, 404, { error: "Domain not found in your workspace." });
+  }
+
+  if (sanitizedDomain !== publicAppDomain && isCloudflareSaasConfigured()) {
+    try {
+      const hostname = await ensureCloudflareCustomHostname(sanitizedDomain);
+      const syncedEntry = mapCloudflareDomainStatus(hostname, settings.defaultDomain, sanitizedDomain);
+      const nextEntries = settings.domainEntries.map((entry) => {
+        if (entry.host !== sanitizedDomain) {
+          return entry;
+        }
+
+        return {
+          ...entry,
+          ...syncedEntry,
+          isActive: entry.host === settings.defaultDomain,
+        };
+      });
+
+      const nextSettings = normalizeSettings({
+        ...settings,
+        domainEntries: nextEntries,
+      }, req);
+
+      if (!dbOnlyMode) {
+        const store = readSettingsStore().filter((item) => item.userId !== user.id);
+        store.push(nextSettings);
+        writeSettingsStore(store);
+      }
+
+      await upsertDomain(user.id, sanitizedDomain, {
+        status: syncedEntry.status,
+        isActive: sanitizedDomain === settings.defaultDomain && syncedEntry.status === "ACTIVE",
+        dnsTarget: getProviderDnsTarget(),
+        verifiedAt: syncedEntry.verifiedAt ? new Date(syncedEntry.verifiedAt) : null,
+        provider: syncedEntry.provider,
+        sslStatus: syncedEntry.sslStatus,
+        ownershipStatus: syncedEntry.ownershipStatus,
+        providerHostnameId: syncedEntry.providerHostnameId,
+      });
+
+      const ready = syncedEntry.status === "VERIFIED" || syncedEntry.status === "ACTIVE";
+      return sendJson(res, 200, {
+        domain: sanitizedDomain,
+        verified: ready,
+        status: syncedEntry.status,
+        message: ready
+          ? `Domain is SSL-ready. You can now set ${sanitizedDomain} active for new short links.`
+          : `Cloudflare is still provisioning ${sanitizedDomain}. Keep the CNAME for ${sanitizedDomain} pointed to ${getProviderDnsTarget()} and try Verify / Sync again in a moment.`,
+        dnsTarget: getProviderDnsTarget(),
+        recordType: "CNAME",
+        hostHint: sanitizedDomain.split(".")[0] || sanitizedDomain,
+        sslStatus: syncedEntry.sslStatus,
+        ownershipStatus: syncedEntry.ownershipStatus,
+        settings: nextSettings,
+      });
+    } catch (error) {
+      return sendJson(res, 500, { error: `Cloudflare sync failed: ${error.message}` });
+    }
   }
 
   const nextEntries = settings.domainEntries.map((entry) => {
@@ -2797,6 +2865,9 @@ async function handleVerifyDomain(domain, req, res, user) {
         isActive: sanitizedDomain === settings.defaultDomain,
         dnsTarget: customDomainDnsTarget,
         verifiedAt: new Date(),
+        provider: "manual",
+        sslStatus: "manual",
+        ownershipStatus: "manual",
       });
     }
   } catch {
@@ -2815,6 +2886,97 @@ async function handleVerifyDomain(domain, req, res, user) {
     hostHint: sanitizedDomain.split(".")[0] || sanitizedDomain,
     settings: nextSettings,
   });
+}
+
+function isCloudflareSaasConfigured() {
+  return Boolean(cloudflareApiToken && cloudflareZoneId && cloudflareSaasCnameTarget && cloudflareFallbackOrigin);
+}
+
+function getProviderDnsTarget() {
+  return isCloudflareSaasConfigured() ? cloudflareSaasCnameTarget : customDomainDnsTarget;
+}
+
+async function fetchCloudflareApi(endpoint, options = {}) {
+  if (!isCloudflareSaasConfigured()) {
+    throw new Error("Cloudflare SaaS is not configured.");
+  }
+
+  const response = await fetch(`${cloudflareApiBase}${endpoint}`, {
+    method: options.method || "GET",
+    headers: {
+      Authorization: `Bearer ${cloudflareApiToken}`,
+      "Content-Type": "application/json",
+      ...(options.headers || {}),
+    },
+    body: options.body ? JSON.stringify(options.body) : undefined,
+  });
+
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || payload.success === false) {
+    const details = Array.isArray(payload.errors) && payload.errors.length
+      ? payload.errors.map((item) => item.message || item.code || "Cloudflare error").join("; ")
+      : `Cloudflare request failed with status ${response.status}`;
+    throw new Error(details);
+  }
+
+  return payload.result;
+}
+
+async function findCloudflareCustomHostname(hostname) {
+  const query = new URLSearchParams({ hostname }).toString();
+  const result = await fetchCloudflareApi(`/zones/${cloudflareZoneId}/custom_hostnames?${query}`);
+  if (Array.isArray(result) && result.length) {
+    return result[0];
+  }
+  if (result && Array.isArray(result.result) && result.result.length) {
+    return result.result[0];
+  }
+  return null;
+}
+
+async function createCloudflareCustomHostname(hostname) {
+  return fetchCloudflareApi(`/zones/${cloudflareZoneId}/custom_hostnames`, {
+    method: "POST",
+    body: {
+      hostname,
+      ssl: {
+        method: cloudflareHostnameSslMethod || "http",
+        type: "dv",
+      },
+    },
+  });
+}
+
+async function ensureCloudflareCustomHostname(hostname) {
+  const existing = await findCloudflareCustomHostname(hostname);
+  if (existing) {
+    return existing;
+  }
+  return createCloudflareCustomHostname(hostname);
+}
+
+function mapCloudflareDomainStatus(hostname, defaultDomain, host) {
+  const hostnameStatus = String(hostname?.status || hostname?.hostname_status || "").trim().toLowerCase();
+  const sslStatus = String(hostname?.ssl?.status || hostname?.ssl_status || "").trim().toLowerCase();
+  const ownershipStatus = String(hostname?.ownership_verification?.status || hostname?.ownership_status || "").trim().toLowerCase();
+  const sslReady = sslStatus === "active";
+  const hostnameReady = hostnameStatus === "active" || hostnameStatus === "moved";
+  const ownershipReady = !ownershipStatus || ownershipStatus === "active";
+  const ready = sslReady && hostnameReady && ownershipReady;
+  const isActive = ready && host === defaultDomain;
+
+  return {
+    status: ready ? (isActive ? "ACTIVE" : "VERIFIED") : "PENDING",
+    verifiedAt: ready ? new Date().toISOString() : null,
+    dnsTarget: getProviderDnsTarget(),
+    provider: "cloudflare",
+    sslStatus: sslStatus || "pending",
+    ownershipStatus: ownershipStatus || "pending",
+    providerHostnameId: hostname?.id || null,
+    verificationErrors: Array.isArray(hostname?.verification_errors)
+      ? hostname.verification_errors.map((item) => item?.message || item?.error || String(item)).filter(Boolean)
+      : [],
+  };
 }
 
 function sanitizeFormSlug(value) {
@@ -3542,8 +3704,8 @@ function defaultSettings(req) {
     workspaceName: "AnyLink Workspace",
     defaultDomain: fallbackDomain,
     domains: [fallbackDomain],
-    domainEntries: [{ host: fallbackDomain, status: "APP_DEFAULT", isActive: true, dnsTarget: customDomainDnsTarget, verifiedAt: null }],
-    providerDnsTarget: customDomainDnsTarget,
+    domainEntries: [{ host: fallbackDomain, status: "APP_DEFAULT", isActive: true, dnsTarget: getProviderDnsTarget(), verifiedAt: null }],
+    providerDnsTarget: getProviderDnsTarget(),
     conversionGoals: {},
     goalAlertState: {},
     linkRules: {},
@@ -3711,7 +3873,7 @@ function buildDomainEntries(domains, defaultDomain, req, sourceEntries = []) {
         host,
         status: "APP_DEFAULT",
         isActive: host === defaultDomain,
-        dnsTarget: customDomainDnsTarget,
+        dnsTarget: getProviderDnsTarget(),
         verifiedAt: null,
         provider: "system",
         sslStatus: "active",
@@ -3729,9 +3891,9 @@ function buildDomainEntries(domains, defaultDomain, req, sourceEntries = []) {
         host,
         status,
         isActive,
-        dnsTarget: existing.dnsTarget || customDomainDnsTarget,
+        dnsTarget: existing.dnsTarget || getProviderDnsTarget(),
         verifiedAt: existing.verifiedAt || null,
-        provider: existing.provider || "manual",
+        provider: existing.provider || (isCloudflareSaasConfigured() ? "cloudflare" : "manual"),
         sslStatus: existing.sslStatus || null,
         ownershipStatus: existing.ownershipStatus || null,
         providerHostnameId: existing.providerHostnameId || null,
@@ -3759,7 +3921,7 @@ function normalizeSettings(settings, req) {
     defaultDomain,
     domains,
     domainEntries,
-    providerDnsTarget: customDomainDnsTarget,
+    providerDnsTarget: getProviderDnsTarget(),
     conversionGoals: normalizeConversionGoals(settings?.conversionGoals || {}),
     goalAlertState: normalizeGoalAlertState(settings?.goalAlertState || {}),
     linkRules: normalizeLinkRules(settings?.linkRules || {}, settings?.linkRules || {}),

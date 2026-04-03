@@ -3278,7 +3278,7 @@ function renderDomainsPage() {
     host: domain,
     status: domain === publicShortDomain ? "APP_DEFAULT" : (domain === settingsCache.defaultDomain ? "ACTIVE" : "PENDING"),
     isActive: domain === settingsCache.defaultDomain,
-    dnsTarget: publicShortDomain,
+    dnsTarget: settingsCache.providerDnsTarget || publicShortDomain,
   }));
 
   const managedDomainsMarkup = domainEntries.map((entry) => {
@@ -3302,7 +3302,7 @@ function renderDomainsPage() {
           <span class="domain-status ${normalizedStatus.toLowerCase()}">${escapeHtml(statusLabel)}</span>
           ${!isDefaultAppDomain && !isActive && normalizedStatus === "VERIFIED" ? `<button class="link-button" data-activate-domain="${escapeHtml(domain)}">Set active</button>` : ""}
           ${!isDefaultAppDomain ? `<button class="link-button secondary" data-copy-dns="${escapeHtml(domain)}">Copy DNS</button>` : ""}
-          ${!isDefaultAppDomain && normalizedStatus !== "VERIFIED" && normalizedStatus !== "ACTIVE" ? `<button class="link-button secondary" data-verify-domain="${escapeHtml(domain)}">Verify</button>` : ""}
+          ${!isDefaultAppDomain && normalizedStatus !== "VERIFIED" && normalizedStatus !== "ACTIVE" ? `<button class="link-button secondary" data-verify-domain="${escapeHtml(domain)}">Verify / Sync</button>` : ""}
           ${!isDefaultAppDomain ? `<button class="link-button danger" data-remove-domain="${escapeHtml(domain)}">Remove</button>` : ""}
         </div>
       </div>
@@ -3351,14 +3351,14 @@ function renderDomainsPage() {
         </div>
         <div class="form-card">
           <h3>DNS setup</h3>
-          <p class="helper-copy" id="dnsSetupCopy">Create a <strong>CNAME</strong> record for your branded subdomain and point it to <strong>${escapeHtml(publicShortDomain)}</strong>.</p>
+          <p class="helper-copy" id="dnsSetupCopy">Create a <strong>CNAME</strong> record for your branded subdomain and point it to <strong>${escapeHtml(settingsCache.providerDnsTarget || publicShortDomain)}</strong>.</p>
           <div class="dns-helper-grid" id="dnsHelperGrid">
             <span><strong>Type</strong><span id="dnsTypeValue">CNAME</span></span>
             <span><strong>Host</strong><span id="dnsHostValue">go</span></span>
-            <span><strong>Value</strong><span id="dnsTargetValue">${escapeHtml(publicShortDomain)}</span></span>
+            <span><strong>Value</strong><span id="dnsTargetValue">${escapeHtml(settingsCache.providerDnsTarget || publicShortDomain)}</span></span>
           </div>
-          <p class="helper-copy" id="dnsExampleCopy">Example: <code>go.clientdomain.com -> ${escapeHtml(publicShortDomain)}</code></p>
-          <p class="helper-copy" id="dnsFinalCopy">After DNS is live, click <strong>Verify</strong> and then set that domain active for fresh links.</p>
+          <p class="helper-copy" id="dnsExampleCopy">Example: <code>go.clientdomain.com -> ${escapeHtml(settingsCache.providerDnsTarget || publicShortDomain)}</code></p>
+          <p class="helper-copy" id="dnsFinalCopy">After DNS is live, click <strong>Verify / Sync</strong>. Once SSL is ready, you can set that domain active for fresh links.</p>
         </div>
       </div>
     </section>
@@ -3394,12 +3394,13 @@ function renderDomainsPage() {
     suggestionHelp.innerHTML = mode === "custom-subdomain"
       ? "This custom branded subdomain uses a simple <strong>CNAME</strong> record and works well for teams that want multiple branded hosts."
       : "For most DNS providers, this recommended setup is easiest because it uses a simple <strong>CNAME</strong> record.";
-    dnsSetupCopy.innerHTML = `Create a <strong>CNAME</strong> record for your branded subdomain and point it to <strong>${escapeHtml(publicShortDomain)}</strong>.`;
+    const providerTarget = settingsCache.providerDnsTarget || publicShortDomain;
+    dnsSetupCopy.innerHTML = `Create a <strong>CNAME</strong> record for your branded subdomain and point it to <strong>${escapeHtml(providerTarget)}</strong>.`;
     dnsTypeValue.textContent = dnsRecord.type;
     dnsHostValue.textContent = dnsRecord.host;
     dnsTargetValue.textContent = dnsRecord.value;
-    dnsExampleCopy.innerHTML = `Example: <code>${escapeHtml(suggestedDomain)} -> ${escapeHtml(publicShortDomain)}</code>`;
-    dnsFinalCopy.innerHTML = "After DNS is live, click <strong>Verify</strong> and then set that domain active for fresh links.";
+    dnsExampleCopy.innerHTML = `Example: <code>${escapeHtml(suggestedDomain)} -> ${escapeHtml(providerTarget)}</code>`;
+    dnsFinalCopy.innerHTML = "After DNS is live, click <strong>Verify / Sync</strong>. Once SSL is ready, you can set that domain active for fresh links.";
   };
 
   syncDomainSuggestion();
@@ -3412,7 +3413,7 @@ function renderDomainsPage() {
     if (!rawDomain) return showGlobalMessage("Enter a valid domain or host.", true);
     const domain = buildSuggestedCustomDomain(rawDomain, modeSelect.value || "recommended", customSubdomainPrefix.value.trim());
     if (settingsCache.domains.includes(domain)) return showGlobalMessage("That domain is already added.", true);
-    await persistDomains([...settingsCache.domains, domain], settingsCache.defaultDomain, `Domain added: ${domain}. Next step: update the DNS record and mark it verified.`);
+    await persistDomains([...settingsCache.domains, domain], settingsCache.defaultDomain, `Domain added: ${domain}. Next step: update the DNS record and run Verify / Sync.`);
   });
 
   document.querySelectorAll("[data-activate-domain]").forEach((button) => button.addEventListener("click", async () => {
@@ -3628,7 +3629,7 @@ function buildCustomDomainDnsRecord(domain, mode = "recommended", customSubdomai
   return {
     type: "CNAME",
     host,
-    value: publicShortDomain,
+    value: settingsCache.providerDnsTarget || publicShortDomain,
   };
 }
 
@@ -3639,13 +3640,13 @@ function inferDnsRecordForDomain(domain) {
     return {
       type: "CNAME",
       host: "go",
-      value: publicShortDomain,
+      value: settingsCache.providerDnsTarget || publicShortDomain,
     };
   }
   return {
     type: "CNAME",
     host: labels.slice(0, -2).join(".") || labels[0] || "go",
-    value: publicShortDomain,
+    value: settingsCache.providerDnsTarget || publicShortDomain,
   };
 }
 
