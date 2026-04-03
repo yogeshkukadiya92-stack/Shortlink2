@@ -2803,12 +2803,16 @@ async function handleVerifyDomain(domain, req, res, user) {
         writeSettingsStore(store);
       }
 
-      await upsertDomain(user.id, sanitizedDomain, toPersistedDomainRecord({
-        status: syncedEntry.status,
-        isActive: sanitizedDomain === settings.defaultDomain && syncedEntry.status === "ACTIVE",
-        dnsTarget: getProviderDnsTarget(),
-        verifiedAt: syncedEntry.verifiedAt ? new Date(syncedEntry.verifiedAt) : null,
-      }));
+      try {
+        await upsertDomain(user.id, sanitizedDomain, toPersistedDomainRecord({
+          status: syncedEntry.status,
+          isActive: sanitizedDomain === settings.defaultDomain && syncedEntry.status === "ACTIVE",
+          dnsTarget: getProviderDnsTarget(),
+          verifiedAt: syncedEntry.verifiedAt ? new Date(syncedEntry.verifiedAt) : null,
+        }));
+      } catch {
+        // Keep the Cloudflare sync usable even if the DB domain mirror is behind the current schema/state.
+      }
 
       const ready = syncedEntry.status === "VERIFIED" || syncedEntry.status === "ACTIVE";
       return sendJson(res, 200, {
