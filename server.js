@@ -490,20 +490,35 @@ async function readSettingsForUserAsync(userId, req) {
     const fileExtras = !dbOnlyMode ? readSettingsForUser(userId, req) : null;
 
       if (dbSettings) {
+        const mergedDomainEntries = [
+          ...(Array.isArray(fileExtras?.domainEntries) ? fileExtras.domainEntries : []),
+          ...dbDomains.map((item) => ({
+            host: item.host,
+            status: item.status,
+            isActive: item.isActive,
+            dnsTarget: item.dnsTarget,
+            verifiedAt: item.verifiedAt,
+            provider: item.provider || null,
+            sslStatus: item.sslStatus || null,
+            ownershipStatus: item.ownershipStatus || null,
+            providerHostnameId: item.providerHostnameId || null,
+            verificationErrors: [],
+          })),
+        ];
         return normalizeSettings({
           userId,
           workspaceName: dbSettings.workspaceName,
           defaultDomain: dbSettings.defaultDomain,
-        domains: [
-          dbSettings.defaultDomain,
-          ...dbDomains.map((item) => item.host),
-        ],
+          domains: [
+            dbSettings.defaultDomain,
+            ...dbDomains.map((item) => item.host),
+          ],
           conversionGoals: fileExtras?.conversionGoals || {},
           goalAlertState: fileExtras?.goalAlertState || {},
           linkRules: fileExtras?.linkRules || {},
           trashLinks: fileExtras?.trashLinks || [],
           campaigns: fileExtras?.campaigns || [],
-          domainEntries: fileExtras?.domainEntries || [],
+          domainEntries: mergedDomainEntries,
         }, req);
       }
     if (dbOnlyMode) {
@@ -2782,7 +2797,12 @@ async function handleVerifyDomain(domain, req, res, user) {
     return sendJson(res, 400, { error: "Invalid domain." });
   }
 
-  if (!settings.domains.includes(sanitizedDomain)) {
+  const knownDomains = new Set([
+    ...(Array.isArray(settings.domains) ? settings.domains : []),
+    ...((settings.domainEntries || []).map((entry) => entry.host).filter(Boolean)),
+  ]);
+
+  if (!knownDomains.has(sanitizedDomain)) {
     return sendJson(res, 404, { error: "Domain not found in your workspace." });
   }
 
@@ -3921,7 +3941,14 @@ function buildDomainEntries(domains, defaultDomain, req, sourceEntries = []) {
 function normalizeSettings(settings, req) {
   const base = defaultSettings(req);
   const workspaceName = String(settings?.workspaceName || base.workspaceName).trim() || base.workspaceName;
-  const domains = normalizeDomains(settings?.domains || [settings?.defaultDomain || base.defaultDomain], req);
+  const sourceEntryHosts = Array.isArray(settings?.domainEntries) ? settings.domainEntries.map((entry) => entry?.host).filter(Boolean) : [];
+  const domains = normalizeDomains([
+    ...(Array.isArray(settings?.domains) ? settings.domains : []),
+    ...sourceEntryHosts,
+  ].length ? [
+    ...(Array.isArray(settings?.domains) ? settings.domains : []),
+    ...sourceEntryHosts,
+  ] : [settings?.defaultDomain || base.defaultDomain], req);
   const requestedDefault = sanitizeDomainInput(String(settings?.defaultDomain || "").trim(), req);
   const defaultDomain = requestedDefault && domains.includes(requestedDefault) ? requestedDefault : domains[0];
 
