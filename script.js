@@ -815,7 +815,10 @@ async function loadPages() {
 
 function renderPage() {
   if (!currentUser || currentPage === "auth") return renderAuthPage();
-  if (billingCache.hasAccess && currentPage === "billing" && !currentUser.isAdmin) {
+  const normalizedBillingStatus = String(billingCache.subscriptionStatus || "").toLowerCase();
+  const canOpenBillingPage = !currentUser.isAdmin && (normalizedBillingStatus === "trialing" || !billingCache.hasAccess);
+
+  if (billingCache.hasAccess && currentPage === "billing" && !canOpenBillingPage && !currentUser.isAdmin) {
     currentPage = "home";
     updateHeaderMeta();
     return renderHomePage();
@@ -835,7 +838,10 @@ function renderPage() {
 }
 
 function renderBillingPage() {
-  if (billingCache.hasAccess && !currentUser?.isAdmin) {
+  const billingStatus = String(billingCache.subscriptionStatus || "").toLowerCase();
+  const isTrialing = billingStatus === "trialing";
+
+  if (billingCache.hasAccess && !isTrialing && !currentUser?.isAdmin) {
     currentPage = "home";
     updateHeaderMeta();
     renderHomePage();
@@ -850,8 +856,10 @@ function renderBillingPage() {
     <section class="auth-shell">
       <div class="auth-card auth-copy-card">
         <p class="eyebrow">Subscription Required</p>
-        <h1>Your trial has ended.</h1>
-        <p class="auth-copy">You had a 3-day free trial. Subscribe to continue creating links, QR codes, domains, and private workspace access.</p>
+        <h1>${isTrialing ? "Upgrade anytime." : "Your trial has ended."}</h1>
+        <p class="auth-copy">${isTrialing
+          ? `You still have ${daysLeft} day${daysLeft === 1 ? "" : "s"} left in your free trial. Upgrade now to activate your paid plan immediately and keep everything running without interruption.`
+          : "You had a 3-day free trial. Subscribe to continue creating links, QR codes, domains, and private workspace access."}</p>
         <div class="auth-feature-list">
           <div class="auth-feature"><span class="task-check filled"></span><span>Unlimited private short links</span></div>
           <div class="auth-feature"><span class="task-check filled"></span><span>Unlimited custom domains</span></div>
@@ -862,7 +870,9 @@ function renderBillingPage() {
         <div class="billing-card">
           <p class="eyebrow">Plan</p>
           <h2>Pro Subscription</h2>
-          <p class="billing-copy">Trial remaining: <strong>${daysLeft}</strong> day${daysLeft === 1 ? "" : "s"}.</p>
+          <p class="billing-copy">${isTrialing
+            ? `Trial remaining: <strong>${daysLeft}</strong> day${daysLeft === 1 ? "" : "s"}. You can upgrade right now.`
+            : `Trial remaining: <strong>${daysLeft}</strong> day${daysLeft === 1 ? "" : "s"}.`}</p>
           ${(subscriptionStart || subscriptionEnd) ? `
             <div class="billing-date-list">
               ${subscriptionStart ? `<div class="billing-date-item"><span>Start date</span><strong>${escapeHtml(subscriptionStart)}</strong></div>` : ""}
