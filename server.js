@@ -1504,7 +1504,7 @@ function handleAdminOverview(res) {
   });
 }
 
-function handleAdminSubscriptionUpdate(userId, body, res) {
+async function handleAdminSubscriptionUpdate(userId, body, res) {
   const users = readUsers();
   const user = users.find((item) => item.id === userId);
 
@@ -1518,6 +1518,8 @@ function handleAdminSubscriptionUpdate(userId, body, res) {
 
   if (mode === "active") {
     user.subscriptionStatus = "active";
+    user.trialStartedAt = 0;
+    user.trialEndsAt = 0;
     user.subscriptionStartedAt = now;
     user.subscriptionExpiresAt = now + days * 24 * 60 * 60 * 1000;
   } else if (mode === "trial") {
@@ -1528,23 +1530,42 @@ function handleAdminSubscriptionUpdate(userId, body, res) {
     user.subscriptionExpiresAt = 0;
   } else if (mode === "inactive") {
     user.subscriptionStatus = "inactive";
+    user.trialStartedAt = 0;
     user.trialEndsAt = 0;
     user.subscriptionStartedAt = 0;
     user.subscriptionExpiresAt = 0;
   } else if (mode === "lifetime") {
     user.subscriptionStatus = "lifetime";
+    user.trialStartedAt = 0;
+    user.trialEndsAt = 0;
     user.subscriptionStartedAt = now;
     user.subscriptionExpiresAt = 0;
   } else {
     return sendJson(res, 400, { error: "Invalid subscription mode." });
   }
 
-  writeUsers(users);
+  if (!dbOnlyMode) {
+    writeUsers(users);
+  }
+
+  try {
+    await updateDbUser(user.id, {
+      subscriptionStatus: String(user.subscriptionStatus || "").toUpperCase(),
+      trialStartedAt: user.trialStartedAt ? new Date(Number(user.trialStartedAt)) : null,
+      trialEndsAt: user.trialEndsAt ? new Date(Number(user.trialEndsAt)) : null,
+      subscriptionStartedAt: user.subscriptionStartedAt ? new Date(Number(user.subscriptionStartedAt)) : null,
+      subscriptionExpiresAt: user.subscriptionExpiresAt ? new Date(Number(user.subscriptionExpiresAt)) : null,
+    });
+  } catch {
+    if (dbOnlyMode) {
+      return sendJson(res, 500, { error: "Unable to update this subscription right now." });
+    }
+  }
 
   return sendJson(res, 200, { success: true, billing: serializeBilling(user) });
 }
 
-function handleAdminTrialUpdate(userId, body, res) {
+async function handleAdminTrialUpdate(userId, body, res) {
   const users = readUsers();
   const user = users.find((item) => item.id === userId);
 
@@ -1558,7 +1579,23 @@ function handleAdminTrialUpdate(userId, body, res) {
   user.trialEndsAt = Date.now() + days * 24 * 60 * 60 * 1000;
   user.subscriptionStartedAt = 0;
   user.subscriptionExpiresAt = 0;
-  writeUsers(users);
+  if (!dbOnlyMode) {
+    writeUsers(users);
+  }
+
+  try {
+    await updateDbUser(user.id, {
+      subscriptionStatus: "TRIALING",
+      trialStartedAt: new Date(Number(user.trialStartedAt)),
+      trialEndsAt: new Date(Number(user.trialEndsAt)),
+      subscriptionStartedAt: null,
+      subscriptionExpiresAt: null,
+    });
+  } catch {
+    if (dbOnlyMode) {
+      return sendJson(res, 500, { error: "Unable to extend this trial right now." });
+    }
+  }
 
   return sendJson(res, 200, { success: true, billing: serializeBilling(user) });
 }
