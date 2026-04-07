@@ -98,6 +98,7 @@ let billingCache = {
   hasAccess: true,
 };
 let billingRefreshTimer = null;
+let billingCouponState = null;
 let activityHeartbeatTimer = null;
 let activityPageStartedAt = Date.now();
 let lastTrackedActivityPage = "";
@@ -879,6 +880,11 @@ function renderBillingPage() {
               ${subscriptionEnd ? `<div class="billing-date-item"><span>End date</span><strong>${escapeHtml(subscriptionEnd)}</strong></div>` : ""}
             </div>
           ` : ""}
+          <div class="campaign-builder-grid">
+            <input class="url-input" id="billingCouponCode" type="text" placeholder="Offer / coupon code" value="${escapeHtml(billingCouponState?.code || "")}" />
+            <button class="link-button secondary" id="billingCouponApply" type="button">Apply code</button>
+          </div>
+          ${billingCouponState ? `<div class="task-item"><span class="task-check filled"></span><span>Applied: ${escapeHtml(billingCouponState.code)} • ${escapeHtml(billingCouponState.message || billingCouponState.label || billingCouponState.type || "Offer")}</span></div>` : ""}
           <button class="primary-action auth-submit" id="subscribeButton" type="button">Continue to payment</button>
           <button class="link-button secondary hidden" id="refreshBillingButton" type="button">I already paid</button>
           <div class="result-banner hidden" id="billingBanner" aria-live="polite"></div>
@@ -891,10 +897,23 @@ function renderBillingPage() {
     const banner = document.getElementById("billingBanner");
     setInlineBanner(banner, "Preparing payment...", false);
     try {
-      const response = await fetch("/api/billing/subscribe", { method: "POST" });
+      const response = await fetch("/api/billing/subscribe", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ couponCode: billingCouponState?.code || "" }),
+      });
       const payload = await response.json();
       if (!response.ok) {
         setInlineBanner(banner, payload.error || "Payment setup is not ready yet.", true);
+        return;
+      }
+      if (payload.provider === "coupon" && payload.billing) {
+        billingCache = payload.billing || billingCache;
+        billingCouponState = null;
+        setInlineBanner(banner, payload.message || "Offer applied successfully.", false);
+        setTimeout(() => {
+          window.location.replace("/home");
+        }, 700);
         return;
       }
       sessionStorage.setItem("anylink_pending_billing_sync", "1");
@@ -918,6 +937,41 @@ function renderBillingPage() {
 
   document.getElementById("refreshBillingButton").addEventListener("click", async () => {
     await refreshBillingAfterPayment();
+  });
+
+  document.getElementById("billingCouponApply")?.addEventListener("click", async () => {
+    const banner = document.getElementById("billingBanner");
+    const code = document.getElementById("billingCouponCode")?.value?.trim() || "";
+    if (!code) {
+      billingCouponState = null;
+      setInlineBanner(banner, "Enter a coupon code first.", true);
+      return;
+    }
+    setInlineBanner(banner, "Checking coupon...", false);
+    try {
+      const response = await fetch("/api/billing/coupon/preview", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code }),
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        billingCouponState = null;
+        setInlineBanner(banner, payload.error || "Coupon is not valid.", true);
+        return;
+      }
+      billingCouponState = {
+        code: payload.coupon?.code || code.toUpperCase(),
+        label: payload.coupon?.label || "",
+        type: payload.coupon?.type || "",
+        message: payload.message || "",
+      };
+      setInlineBanner(banner, payload.message || "Coupon applied.", false);
+      renderBillingPage();
+    } catch (error) {
+      billingCouponState = null;
+      setInlineBanner(banner, error.message, true);
+    }
   });
 
   if (sessionStorage.getItem("anylink_pending_billing_sync") === "1") {
@@ -1092,6 +1146,42 @@ async function renderAdminPage() {
       <section class="surface-card">
         <div class="surface-header">
           <div>
+            <h2>Coupons & offers</h2>
+            <p>Create discount-plan coupons or free-access offers for billing.</p>
+          </div>
+        </div>
+        <div class="campaign-builder-grid">
+          <input class="url-input" id="adminCouponCode" type="text" placeholder="Code e.g. SUMMER20" />
+          <input class="url-input" id="adminCouponLabel" type="text" placeholder="Label e.g. 20% Off Plan" />
+          <select class="url-input" id="adminCouponType">
+            <option value="plan">Discounted plan</option>
+            <option value="free_days">Free days</option>
+            <option value="lifetime">Lifetime access</option>
+          </select>
+          <input class="url-input" id="adminCouponValue" type="text" placeholder="Days or note" />
+          <input class="url-input" id="adminCouponPlanId" type="text" placeholder="Razorpay plan id (for discounted plan)" />
+          <button class="primary-action" id="adminCouponSave" type="button">Save coupon</button>
+        </div>
+        <div class="admin-table">
+          ${(payload.coupons || []).length
+            ? payload.coupons.map((coupon) => `
+              <div class="admin-row">
+                <div class="admin-main">
+                  <strong>${escapeHtml(coupon.code)}</strong>
+                  <span>${escapeHtml(coupon.label || coupon.type)}</span>
+                  <span>Type: ${escapeHtml(coupon.type)}${coupon.type === "free_days" ? ` • ${escapeHtml(String(coupon.value || 0))} days` : ""}${coupon.type === "plan" ? ` • Plan: ${escapeHtml(coupon.planId || "-")}` : ""}</span>
+                </div>
+                <div class="admin-actions">
+                  <button class="link-button danger" data-admin-coupon-delete="${escapeHtml(coupon.code)}">Delete</button>
+                </div>
+              </div>
+            `).join("")
+            : '<div class="empty-state">No coupons created yet.</div>'}
+        </div>
+      </section>
+      <section class="surface-card">
+        <div class="surface-header">
+          <div>
             <h2>Active sessions</h2>
             <p>Review and revoke active user sessions when needed.</p>
           </div>
@@ -1145,6 +1235,25 @@ function bindAdminActions() {
   document.querySelectorAll("[data-admin-revoke]").forEach((button) => {
     button.addEventListener("click", async () => {
       await runAdminAction(`/api/admin/sessions/${button.getAttribute("data-admin-revoke")}/revoke`, {}, "Session revoked.");
+    });
+  });
+
+  document.getElementById("adminCouponSave")?.addEventListener("click", async () => {
+    const code = document.getElementById("adminCouponCode")?.value?.trim() || "";
+    const label = document.getElementById("adminCouponLabel")?.value?.trim() || "";
+    const type = document.getElementById("adminCouponType")?.value || "plan";
+    const value = document.getElementById("adminCouponValue")?.value?.trim() || "";
+    const planId = document.getElementById("adminCouponPlanId")?.value?.trim() || "";
+    await runAdminAction(
+      "/api/admin/coupons",
+      { code, label, type, value, planId, active: true },
+      `Coupon ${code.toUpperCase()} saved.`
+    );
+  });
+
+  document.querySelectorAll("[data-admin-coupon-delete]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      await runAdminAction(`/api/admin/coupons/${button.getAttribute("data-admin-coupon-delete")}/delete`, {}, "Coupon deleted.");
     });
   });
 }

@@ -21,6 +21,7 @@ const settingsFile = path.join(dataDir, "settings.json");
 const usersFile = path.join(dataDir, "users.json");
 const sessionsFile = path.join(dataDir, "sessions.json");
 const activityFile = path.join(dataDir, "activity.json");
+const couponsFile = path.join(dataDir, "coupons.json");
 const sessionCookieName = "anylink_session";
 const protectedLinkCookiePrefix = "anylink_gate_";
 const analyticsVisitorCookieName = "anylink_vid";
@@ -135,7 +136,13 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === "POST" && pathname === "/api/billing/subscribe") {
-      return await withAuth(req, res, (user) => handleCreateSubscription(user, req, res));
+      const body = await readRequestBody(req);
+      return await withAuth(req, res, (user) => handleCreateSubscription(user, req, res, body));
+    }
+
+    if (req.method === "POST" && pathname === "/api/billing/coupon/preview") {
+      const body = await readRequestBody(req);
+      return await withAuth(req, res, (user) => handleCouponPreview(user, body, res));
     }
 
     if (req.method === "POST" && pathname === "/api/billing/refresh") {
@@ -171,6 +178,16 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "POST" && pathname.startsWith("/api/admin/sessions/") && pathname.endsWith("/revoke")) {
       const sessionToken = pathname.split("/")[4];
       return await withAdmin(req, res, () => handleAdminRevokeSession(sessionToken, res));
+    }
+
+    if (req.method === "POST" && pathname === "/api/admin/coupons") {
+      const body = await readRequestBody(req);
+      return await withAdmin(req, res, () => handleAdminSaveCoupon(body, res));
+    }
+
+    if (req.method === "POST" && pathname.startsWith("/api/admin/coupons/") && pathname.endsWith("/delete")) {
+      const couponCode = pathname.split("/")[4];
+      return await withAdmin(req, res, () => handleAdminDeleteCoupon(couponCode, res));
     }
 
     if (req.method === "GET" && pathname === "/api/links") {
@@ -302,6 +319,7 @@ function ensureStorage() {
   ensureJsonFile(usersFile, []);
   ensureJsonFile(sessionsFile, []);
   ensureJsonFile(activityFile, {});
+  ensureJsonFile(couponsFile, []);
 }
 
 function ensureJsonFile(filePath, fallbackValue) {
@@ -461,6 +479,44 @@ function readSessions() {
 
 function writeSessions(sessions) {
   writeJsonFile(sessionsFile, sessions);
+}
+
+function readCoupons() {
+  return readJsonFile(couponsFile, [])
+    .map((coupon) => normalizeCoupon(coupon))
+    .filter(Boolean)
+    .sort((left, right) => Number(right.createdAt || 0) - Number(left.createdAt || 0));
+}
+
+function writeCoupons(coupons) {
+  writeJsonFile(couponsFile, coupons);
+}
+
+function normalizeCoupon(coupon) {
+  const code = String(coupon?.code || "").trim().toUpperCase();
+  if (!code) {
+    return null;
+  }
+
+  const type = String(coupon?.type || "plan").trim().toLowerCase();
+  return {
+    code,
+    label: String(coupon?.label || "").trim(),
+    type: ["plan", "free_days", "lifetime"].includes(type) ? type : "plan",
+    value: Math.max(0, Number(coupon?.value || 0)),
+    planId: String(coupon?.planId || "").trim(),
+    active: coupon?.active !== false,
+    createdAt: Number(coupon?.createdAt || Date.now()),
+    updatedAt: Number(coupon?.updatedAt || Date.now()),
+  };
+}
+
+function findCouponByCode(code) {
+  const normalizedCode = String(code || "").trim().toUpperCase();
+  if (!normalizedCode) {
+    return null;
+  }
+  return readCoupons().find((coupon) => coupon.code === normalizedCode && coupon.active) || null;
 }
 
 function readSettingsStore() {
@@ -1148,11 +1204,103 @@ function handleVerifyEmail(body, req, res) {
   return sendJson(res, 200, { success: true, message: "Email verified successfully." });
 }
 
-async function handleCreateSubscription(user, req, res) {
+function serializeCouponForClient(coupon) {
+  if (!coupon) {
+    return null;
+  }
+
+  return {
+    code: coupon.code,
+    label: coupon.label,
+    type: coupon.type,
+    value: coupon.value,
+    planId: coupon.planId,
+    active: coupon.active,
+  };
+}
+
+function describeCoupon(coupon) {
+  if (!coupon) {
+    return "";
+  }
+  if (coupon.type === "free_days") {
+    return `${coupon.value || 0} free day${Number(coupon.value || 0) === 1 ? "" : "s"}`;
+  }
+  if (coupon.type === "lifetime") {
+    return "lifetime access";
+  }
+  return coupon.label || "discounted plan";
+}
+
+async function handleCouponPreview(user, body, res) {
+  const coupon = findCouponByCode(body.code);
+
+  if (!coupon) {
+    return sendJson(res, 404, { error: "Coupon code not found or inactive." });
+  }
+
+  return sendJson(res, 200, {
+    success: true,
+    coupon: serializeCouponForClient(coupon),
+    message: coupon.type === "plan"
+      ? `Coupon applied: ${describeCoupon(coupon)}.`
+      : `Offer applied: ${describeCoupon(coupon)}.`,
+  });
+}
+
+async function handleCreateSubscription(user, req, res, body = {}) {
   const razorpayKeyId = String(process.env.RAZORPAY_KEY_ID || "").trim();
   const razorpayKeySecret = String(process.env.RAZORPAY_KEY_SECRET || "").trim();
-  const razorpayPlanId = String(process.env.RAZORPAY_PLAN_ID || "").trim();
+  const defaultRazorpayPlanId = String(process.env.RAZORPAY_PLAN_ID || "").trim();
   const fallbackPaymentUrl = String(process.env.SUBSCRIPTION_PAYMENT_URL || "").trim();
+  const coupon = findCouponByCode(body.couponCode);
+
+  if (String(body.couponCode || "").trim() && !coupon) {
+    return sendJson(res, 400, { error: "That coupon is invalid or inactive." });
+  }
+
+  if (coupon?.type === "free_days") {
+    const now = Date.now();
+    const days = Math.max(1, Number(coupon.value || 0));
+    await applyBillingUpdateToUser(user.id, {
+      subscriptionStatus: "active",
+      trialStartedAt: 0,
+      trialEndsAt: 0,
+      subscriptionStartedAt: now,
+      subscriptionExpiresAt: now + days * 24 * 60 * 60 * 1000,
+      billingProvider: "coupon",
+      couponCode: coupon.code,
+    });
+    const refreshedUser = (await getAuthenticatedUserAsync(req)) || user;
+    return sendJson(res, 200, {
+      success: true,
+      provider: "coupon",
+      billing: serializeBilling(refreshedUser),
+      message: `${describeCoupon(coupon)} applied successfully.`,
+    });
+  }
+
+  if (coupon?.type === "lifetime") {
+    const now = Date.now();
+    await applyBillingUpdateToUser(user.id, {
+      subscriptionStatus: "lifetime",
+      trialStartedAt: 0,
+      trialEndsAt: 0,
+      subscriptionStartedAt: now,
+      subscriptionExpiresAt: 0,
+      billingProvider: "coupon",
+      couponCode: coupon.code,
+    });
+    const refreshedUser = (await getAuthenticatedUserAsync(req)) || user;
+    return sendJson(res, 200, {
+      success: true,
+      provider: "coupon",
+      billing: serializeBilling(refreshedUser),
+      message: "Lifetime access unlocked successfully.",
+    });
+  }
+
+  const razorpayPlanId = String(coupon?.planId || defaultRazorpayPlanId || "").trim();
 
   if (!razorpayKeyId || !razorpayKeySecret || !razorpayPlanId) {
     if (fallbackPaymentUrl) {
@@ -1188,6 +1336,8 @@ async function handleCreateSubscription(user, req, res) {
           anylink_workspace: currentSettings.workspaceName || "AnyLink Workspace",
           anylink_return_url: returnUrl,
           anylink_plan_label: periodLabel,
+          anylink_coupon_code: coupon?.code || "",
+          anylink_coupon_label: describeCoupon(coupon),
         },
       }),
     });
@@ -1214,6 +1364,7 @@ async function handleCreateSubscription(user, req, res) {
         fileUser.razorpaySubscriptionId = payload.id || "";
         fileUser.razorpayCheckoutUrl = paymentUrl;
         fileUser.razorpayCheckoutCreatedAt = now;
+        fileUser.pendingCouponCode = coupon?.code || "";
         writeUsers(users);
       }
     }
@@ -1492,6 +1643,7 @@ function handleAdminOverview(res) {
   return sendJson(res, 200, {
     users: userSummaries.sort((left, right) => Number(right.usage.lastActiveAt || right.billing.trialStartedAt || 0) - Number(left.usage.lastActiveAt || left.billing.trialStartedAt || 0)),
     sessions: sessionSummaries,
+    coupons: readCoupons().map(serializeCouponForClient),
     summary: {
       totalUsers: userSummaries.length,
       activeSubscriptions: userSummaries.filter((user) => user.billing.subscriptionStatus === "active" && user.billing.hasAccess).length,
@@ -2950,6 +3102,67 @@ async function handleVerifyDomain(domain, req, res, user) {
     hostHint: sanitizedDomain.split(".")[0] || sanitizedDomain,
     settings: nextSettings,
   });
+}
+
+function handleAdminSaveCoupon(body, res) {
+  const code = String(body.code || "").trim().toUpperCase();
+  const type = String(body.type || "plan").trim().toLowerCase();
+  const label = String(body.label || "").trim();
+  const value = Math.max(0, Number(body.value || 0));
+  const planId = String(body.planId || "").trim();
+  const active = body.active !== false;
+
+  if (!code || !/^[A-Z0-9_-]{3,32}$/.test(code)) {
+    return sendJson(res, 400, { error: "Enter a valid coupon code (3-32 letters/numbers)." });
+  }
+
+  if (!["plan", "free_days", "lifetime"].includes(type)) {
+    return sendJson(res, 400, { error: "Invalid coupon type." });
+  }
+
+  if (type === "plan" && !planId) {
+    return sendJson(res, 400, { error: "Plan coupons need a Razorpay plan id." });
+  }
+
+  if (type === "free_days" && value < 1) {
+    return sendJson(res, 400, { error: "Free-days coupons need at least 1 day." });
+  }
+
+  const coupons = readCoupons();
+  const existingIndex = coupons.findIndex((coupon) => coupon.code === code);
+  const now = Date.now();
+  const nextCoupon = normalizeCoupon({
+    code,
+    label,
+    type,
+    value: type === "free_days" ? value : 0,
+    planId: type === "plan" ? planId : "",
+    active,
+    createdAt: existingIndex >= 0 ? coupons[existingIndex].createdAt : now,
+    updatedAt: now,
+  });
+
+  if (existingIndex >= 0) {
+    coupons[existingIndex] = nextCoupon;
+  } else {
+    coupons.push(nextCoupon);
+  }
+
+  writeCoupons(coupons);
+  return sendJson(res, 200, { success: true, coupon: serializeCouponForClient(nextCoupon) });
+}
+
+function handleAdminDeleteCoupon(couponCode, res) {
+  const normalizedCode = String(couponCode || "").trim().toUpperCase();
+  const coupons = readCoupons();
+  const nextCoupons = coupons.filter((coupon) => coupon.code !== normalizedCode);
+
+  if (nextCoupons.length === coupons.length) {
+    return sendJson(res, 404, { error: "Coupon not found." });
+  }
+
+  writeCoupons(nextCoupons);
+  return sendJson(res, 200, { success: true });
 }
 
 function isCloudflareSaasConfigured() {
