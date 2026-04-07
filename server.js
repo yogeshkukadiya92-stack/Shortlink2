@@ -131,15 +131,15 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === "GET" && pathname === "/api/billing/status") {
-      return withAuth(req, res, (user) => sendJson(res, 200, { billing: serializeBilling(user) }));
+      return await withAuth(req, res, (user) => sendJson(res, 200, { billing: serializeBilling(user) }));
     }
 
     if (req.method === "POST" && pathname === "/api/billing/subscribe") {
-      return withAuth(req, res, (user) => handleCreateSubscription(user, req, res));
+      return await withAuth(req, res, (user) => handleCreateSubscription(user, req, res));
     }
 
     if (req.method === "POST" && pathname === "/api/billing/refresh") {
-      return withAuth(req, res, (user) => handleRefreshSubscription(user, res));
+      return await withAuth(req, res, (user) => handleRefreshSubscription(user, res));
     }
 
     if (req.method === "POST" && pathname === "/api/billing/razorpay/webhook") {
@@ -148,29 +148,29 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === "GET" && pathname === "/api/admin/overview") {
-      return withAdmin(req, res, () => handleAdminOverview(res));
+      return await withAdmin(req, res, () => handleAdminOverview(res));
     }
 
     if (req.method === "POST" && pathname.startsWith("/api/admin/users/") && pathname.endsWith("/subscription")) {
       const body = await readRequestBody(req);
       const userId = pathname.split("/")[4];
-      return withAdmin(req, res, () => handleAdminSubscriptionUpdate(userId, body, res));
+      return await withAdmin(req, res, () => handleAdminSubscriptionUpdate(userId, body, res));
     }
 
     if (req.method === "POST" && pathname.startsWith("/api/admin/users/") && pathname.endsWith("/trial")) {
       const body = await readRequestBody(req);
       const userId = pathname.split("/")[4];
-      return withAdmin(req, res, () => handleAdminTrialUpdate(userId, body, res));
+      return await withAdmin(req, res, () => handleAdminTrialUpdate(userId, body, res));
     }
 
     if (req.method === "POST" && pathname.startsWith("/api/admin/users/") && pathname.endsWith("/verify")) {
       const userId = pathname.split("/")[4];
-      return withAdmin(req, res, () => handleAdminVerifyUser(userId, res));
+      return await withAdmin(req, res, () => handleAdminVerifyUser(userId, res));
     }
 
     if (req.method === "POST" && pathname.startsWith("/api/admin/sessions/") && pathname.endsWith("/revoke")) {
       const sessionToken = pathname.split("/")[4];
-      return withAdmin(req, res, () => handleAdminRevokeSession(sessionToken, res));
+      return await withAdmin(req, res, () => handleAdminRevokeSession(sessionToken, res));
     }
 
     if (req.method === "GET" && pathname === "/api/links") {
@@ -688,8 +688,8 @@ function readRawRequestBody(req) {
   });
 }
 
-function withAuth(req, res, handler) {
-  const user = getAuthenticatedUser(req);
+async function withAuth(req, res, handler) {
+  const user = await getAuthenticatedUserAsync(req);
 
   if (!user) {
     return sendJson(res, 401, { error: "Authentication required." });
@@ -698,7 +698,7 @@ function withAuth(req, res, handler) {
   return handler(user);
 }
 
-function withAppAccess(req, res, handler) {
+async function withAppAccess(req, res, handler) {
   return withAuth(req, res, (user) => {
     if (!hasActiveAccess(user)) {
       return sendJson(res, 402, {
@@ -711,7 +711,7 @@ function withAppAccess(req, res, handler) {
   });
 }
 
-function withAdmin(req, res, handler) {
+async function withAdmin(req, res, handler) {
   return withAuth(req, res, (user) => {
     if (!isAdminUser(user)) {
       return sendJson(res, 403, { error: "Admin access required." });
