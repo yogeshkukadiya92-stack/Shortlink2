@@ -22,6 +22,7 @@ const usersFile = path.join(dataDir, "users.json");
 const sessionsFile = path.join(dataDir, "sessions.json");
 const activityFile = path.join(dataDir, "activity.json");
 const couponsFile = path.join(dataDir, "coupons.json");
+const godaddyTokensFile = path.join(dataDir, "godaddy_tokens.json");
 const sessionCookieName = "anylink_session";
 const protectedLinkCookiePrefix = "anylink_gate_";
 const analyticsVisitorCookieName = "anylink_vid";
@@ -42,6 +43,19 @@ const cloudflareZoneId = String(process.env.CLOUDFLARE_ZONE_ID || "").trim();
 const cloudflareSaasCnameTarget = String(process.env.CLOUDFLARE_SAAS_CNAME_TARGET || "").trim();
 const cloudflareFallbackOrigin = String(process.env.CLOUDFLARE_FALLBACK_ORIGIN || "").trim();
 const cloudflareHostnameSslMethod = String(process.env.CLOUDFLARE_CUSTOM_HOSTNAME_SSL_METHOD || "http").trim().toLowerCase();
+const godaddyApiBase = "https://api.godaddy.com/v1";
+const godaddySecondLevelTlds = new Set([
+  "co.in",
+  "org.in",
+  "net.in",
+  "gen.in",
+  "firm.in",
+  "ind.in",
+  "ac.in",
+  "edu.in",
+  "gov.in",
+  "mil.in",
+]);
 const razorpayApiBase = "https://api.razorpay.com/v1";
 const builtInAdminEmails = ["yogshkukadiya92@gmail.com", "yogeshkukadiya92@gmail.com"];
 const builtInLifetimeEmails = ["yogeshkukadiya92@gmail.com"];
@@ -271,6 +285,15 @@ const server = http.createServer(async (req, res) => {
       return await withAppAccess(req, res, (user) => handleVerifyDomain(domain, req, res, user));
     }
 
+    if (req.method === "POST" && pathname === "/api/domains/godaddy/connect") {
+      const body = await readRequestBody(req);
+      return await withAppAccess(req, res, (user) => handleGoDaddyConnect(body, req, res, user));
+    }
+
+    if (req.method === "POST" && pathname === "/api/domains/godaddy/disconnect") {
+      return await withAppAccess(req, res, (user) => handleGoDaddyDisconnect(req, res, user));
+    }
+
     if (req.method === "POST" && pathname.startsWith("/api/unlock/")) {
       const body = await readRequestBody(req);
       const slug = pathname.split("/").pop();
@@ -320,6 +343,7 @@ function ensureStorage() {
   ensureJsonFile(sessionsFile, []);
   ensureJsonFile(activityFile, {});
   ensureJsonFile(couponsFile, []);
+  ensureJsonFile(godaddyTokensFile, []);
 }
 
 function ensureJsonFile(filePath, fallbackValue) {
@@ -490,6 +514,46 @@ function readCoupons() {
 
 function writeCoupons(coupons) {
   writeJsonFile(couponsFile, coupons);
+}
+
+function readGoDaddyTokens() {
+  return readJsonFile(godaddyTokensFile, [])
+    .filter((item) => item && item.userId);
+}
+
+function writeGoDaddyTokens(tokens) {
+  writeJsonFile(godaddyTokensFile, tokens);
+}
+
+function getGoDaddyTokenForUser(userId) {
+  const tokens = readGoDaddyTokens();
+  return tokens.find((item) => item.userId === userId) || null;
+}
+
+function setGoDaddyTokenForUser(userId, apiKey, apiSecret) {
+  const tokens = readGoDaddyTokens();
+  const filtered = tokens.filter((item) => item.userId !== userId);
+  filtered.push({
+    userId,
+    apiKey,
+    apiSecret,
+    updatedAt: Date.now(),
+  });
+  writeGoDaddyTokens(filtered);
+}
+
+function clearGoDaddyTokenForUser(userId) {
+  const tokens = readGoDaddyTokens();
+  const nextTokens = tokens.filter((item) => item.userId !== userId);
+  writeGoDaddyTokens(nextTokens);
+}
+
+function getDomainAutomationStateForUser(userId) {
+  const token = userId ? getGoDaddyTokenForUser(userId) : null;
+  return {
+    provider: "godaddy",
+    connected: Boolean(token && token.apiKey && token.apiSecret),
+  };
 }
 
 function normalizeCoupon(coupon) {
@@ -2978,6 +3042,38 @@ async function handleSaveSettings(body, req, res, user) {
   return sendJson(res, 200, { settings: nextSettings });
 }
 
+async function handleGoDaddyConnect(body, req, res, user) {
+  const apiKey = String(body?.apiKey || "").trim();
+  const apiSecret = String(body?.apiSecret || "").trim();
+
+  if (!apiKey || !apiSecret) {
+    return sendJson(res, 400, { error: "GoDaddy API key and secret are required." });
+  }
+
+  try {
+    await validateGoDaddyCredentials({ apiKey, apiSecret });
+    setGoDaddyTokenForUser(user.id, apiKey, apiSecret);
+    const settings = await readSettingsForUserAsync(user.id, req);
+    return sendJson(res, 200, {
+      success: true,
+      domainAutomation: settings.domainAutomation,
+      settings,
+    });
+  } catch (error) {
+    return sendJson(res, 400, { error: `GoDaddy connection failed: ${error.message}` });
+  }
+}
+
+async function handleGoDaddyDisconnect(req, res, user) {
+  clearGoDaddyTokenForUser(user.id);
+  const settings = await readSettingsForUserAsync(user.id, req);
+  return sendJson(res, 200, {
+    success: true,
+    domainAutomation: settings.domainAutomation,
+    settings,
+  });
+}
+
 async function handleVerifyDomain(domain, req, res, user) {
   const settings = await readSettingsForUserAsync(user.id, req);
   const sanitizedDomain = sanitizeDomainInput(domain, req);
@@ -2993,6 +3089,18 @@ async function handleVerifyDomain(domain, req, res, user) {
 
   if (!knownDomains.has(sanitizedDomain)) {
     return sendJson(res, 404, { error: "Domain not found in your workspace." });
+  }
+
+  let autoDnsAttempted = false;
+  let autoDnsError = null;
+  if (sanitizedDomain !== publicAppDomain) {
+    try {
+      const result = await ensureGoDaddyCnameRecord(user.id, sanitizedDomain, getProviderDnsTarget());
+      autoDnsAttempted = Boolean(result.attempted);
+    } catch (error) {
+      autoDnsAttempted = true;
+      autoDnsError = error.message;
+    }
   }
 
   if (sanitizedDomain !== publicAppDomain && isCloudflareSaasConfigured()) {
@@ -3046,6 +3154,8 @@ async function handleVerifyDomain(domain, req, res, user) {
         hostHint: sanitizedDomain.split(".")[0] || sanitizedDomain,
         sslStatus: syncedEntry.sslStatus,
         ownershipStatus: syncedEntry.ownershipStatus,
+        autoDnsAttempted,
+        autoDnsError,
         settings: nextSettings,
       });
     } catch (error) {
@@ -3100,6 +3210,8 @@ async function handleVerifyDomain(domain, req, res, user) {
     dnsTarget: customDomainDnsTarget,
     recordType: "CNAME",
     hostHint: sanitizedDomain.split(".")[0] || sanitizedDomain,
+    autoDnsAttempted,
+    autoDnsError,
     settings: nextSettings,
   });
 }
@@ -3171,6 +3283,76 @@ function isCloudflareSaasConfigured() {
 
 function getProviderDnsTarget() {
   return isCloudflareSaasConfigured() ? cloudflareSaasCnameTarget : customDomainDnsTarget;
+}
+
+function buildGoDaddyAuthHeader(token) {
+  return `sso-key ${token.apiKey}:${token.apiSecret}`;
+}
+
+async function fetchGoDaddyApi(token, endpoint, options = {}) {
+  const response = await fetch(`${godaddyApiBase}${endpoint}`, {
+    method: options.method || "GET",
+    headers: {
+      Authorization: buildGoDaddyAuthHeader(token),
+      "Content-Type": "application/json",
+    },
+    body: options.body ? JSON.stringify(options.body) : undefined,
+  });
+
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const details = payload?.message || payload?.errors?.[0]?.message || `GoDaddy request failed with status ${response.status}`;
+    throw new Error(details);
+  }
+
+  return payload;
+}
+
+async function validateGoDaddyCredentials(token) {
+  await fetchGoDaddyApi(token, "/domains?limit=1");
+  return true;
+}
+
+function splitDomainForGoDaddy(hostname) {
+  const labels = String(hostname || "").split(".").filter(Boolean);
+  if (labels.length < 2) {
+    return { rootDomain: hostname, name: "" };
+  }
+
+  const lastTwo = labels.slice(-2).join(".");
+  const useThree = godaddySecondLevelTlds.has(lastTwo);
+  const rootLabelsCount = useThree ? 3 : 2;
+  if (labels.length < rootLabelsCount) {
+    return { rootDomain: hostname, name: "" };
+  }
+
+  const rootDomain = labels.slice(-rootLabelsCount).join(".");
+  const name = labels.slice(0, -rootLabelsCount).join(".");
+  return { rootDomain, name };
+}
+
+async function ensureGoDaddyCnameRecord(userId, hostname, target) {
+  const token = getGoDaddyTokenForUser(userId);
+  if (!token) {
+    return { attempted: false };
+  }
+
+  const { rootDomain, name } = splitDomainForGoDaddy(hostname);
+  if (!name) {
+    throw new Error("Root domains need an A record. Please use a subdomain like go.yourbrand.com.");
+  }
+
+  await fetchGoDaddyApi(token, `/domains/${rootDomain}/records/CNAME/${encodeURIComponent(name)}`, {
+    method: "PUT",
+    body: [
+      {
+        data: target,
+        ttl: 600,
+      },
+    ],
+  });
+
+  return { attempted: true, rootDomain, name };
 }
 
 function toPersistedDomainRecord(data = {}) {
@@ -4215,6 +4397,7 @@ function normalizeSettings(settings, req) {
     domains,
     domainEntries,
     providerDnsTarget: getProviderDnsTarget(),
+    domainAutomation: getDomainAutomationStateForUser(settings?.userId || ""),
     conversionGoals: normalizeConversionGoals(settings?.conversionGoals || {}),
     goalAlertState: normalizeGoalAlertState(settings?.goalAlertState || {}),
     linkRules: normalizeLinkRules(settings?.linkRules || {}, settings?.linkRules || {}),

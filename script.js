@@ -83,6 +83,7 @@ let settingsCache = {
   workspaceName: "AnyLink Workspace",
   defaultDomain: getDefaultShortDomain(),
   domains: [getDefaultShortDomain()],
+  domainAutomation: { provider: "godaddy", connected: false },
   conversionGoals: {},
   linkRules: {},
   trashLinks: [],
@@ -491,6 +492,7 @@ async function saveSettings(nextSettings) {
 
 function normalizeSettings(settings) {
   const providerDnsTarget = settings.providerDnsTarget || publicShortDomain;
+  const domainAutomation = settings.domainAutomation || { provider: "godaddy", connected: false };
   const domains = Array.isArray(settings.domains) && settings.domains.length
     ? [...new Set(settings.domains)]
     : [settings.defaultDomain || getDefaultShortDomain()];
@@ -541,6 +543,7 @@ function normalizeSettings(settings) {
     domains,
     domainEntries,
     providerDnsTarget,
+    domainAutomation,
     conversionGoals: normalizeConversionGoals(settings.conversionGoals || {}),
     linkRules: normalizeLinkRules(settings.linkRules || {}),
     trashLinks: normalizeTrashLinks(settings.trashLinks || []),
@@ -3490,6 +3493,22 @@ function renderDomainsPage() {
       </div>
       <div>
         <div class="form-card">
+          <h3>Auto DNS (GoDaddy)</h3>
+          <p class="helper-copy">Connect a GoDaddy API key to let AnyLink add the CNAME record automatically when you add a new domain.</p>
+          <div class="domain-automation-status" id="domainAutomationStatus"></div>
+          <div id="godaddyConnectFields">
+            <label class="field-label" for="godaddyApiKey">GoDaddy API key</label>
+            <input id="godaddyApiKey" class="url-input" type="text" placeholder="your-api-key">
+            <label class="field-label" for="godaddyApiSecret">GoDaddy API secret</label>
+            <input id="godaddyApiSecret" class="url-input" type="password" placeholder="your-api-secret">
+            <button class="primary-action inline-action" id="connectGoDaddyButton">Connect GoDaddy</button>
+          </div>
+          <div id="godaddyDisconnectFields" class="hidden">
+            <button class="link-button danger" id="disconnectGoDaddyButton">Disconnect GoDaddy</button>
+          </div>
+          <p class="helper-copy">Tip: create a dedicated API key in GoDaddy for DNS access only.</p>
+        </div>
+        <div class="form-card">
           <label class="field-label" for="domainName">Add a new custom domain</label>
           <input id="domainName" class="url-input" type="text" placeholder="yourbrand.com">
           <div class="domain-builder-grid">
@@ -3544,6 +3563,20 @@ function renderDomainsPage() {
   const dnsTargetValue = document.getElementById("dnsTargetValue");
   const dnsExampleCopy = document.getElementById("dnsExampleCopy");
   const dnsFinalCopy = document.getElementById("dnsFinalCopy");
+  const domainAutomationStatus = document.getElementById("domainAutomationStatus");
+  const godaddyConnectFields = document.getElementById("godaddyConnectFields");
+  const godaddyDisconnectFields = document.getElementById("godaddyDisconnectFields");
+
+  const automationState = settingsCache.domainAutomation || { provider: "godaddy", connected: false };
+  if (automationState.connected) {
+    domainAutomationStatus.innerHTML = "<span class=\"domain-status verified\">Connected</span> GoDaddy auto DNS is enabled.";
+    godaddyConnectFields.classList.add("hidden");
+    godaddyDisconnectFields.classList.remove("hidden");
+  } else {
+    domainAutomationStatus.innerHTML = "<span class=\"domain-status pending\">Not connected</span> Add your GoDaddy API keys to enable auto DNS.";
+    godaddyConnectFields.classList.remove("hidden");
+    godaddyDisconnectFields.classList.add("hidden");
+  }
 
   const syncDomainSuggestion = () => {
     const rawDomain = sanitizeDomain(domainInput.value.trim()) || "yourbrand.com";
@@ -3574,6 +3607,47 @@ function renderDomainsPage() {
   domainInput.addEventListener("input", syncDomainSuggestion);
   modeSelect.addEventListener("change", syncDomainSuggestion);
   customSubdomainPrefix.addEventListener("input", syncDomainSuggestion);
+
+  document.getElementById("connectGoDaddyButton").addEventListener("click", async () => {
+    const apiKey = document.getElementById("godaddyApiKey").value.trim();
+    const apiSecret = document.getElementById("godaddyApiSecret").value.trim();
+    if (!apiKey || !apiSecret) {
+      return showGlobalMessage("Enter your GoDaddy API key and secret.", true);
+    }
+    try {
+      const response = await fetch("/api/domains/godaddy/connect", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ apiKey, apiSecret }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.error || "Unable to connect GoDaddy.");
+      if (payload.settings) {
+        settingsCache = normalizeSettings(payload.settings);
+      }
+      document.getElementById("godaddyApiKey").value = "";
+      document.getElementById("godaddyApiSecret").value = "";
+      renderDomainsPage();
+      showGlobalMessage("GoDaddy connected. DNS will be created automatically.", false);
+    } catch (error) {
+      showGlobalMessage(error.message, true);
+    }
+  });
+
+  document.getElementById("disconnectGoDaddyButton").addEventListener("click", async () => {
+    try {
+      const response = await fetch("/api/domains/godaddy/disconnect", { method: "POST" });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.error || "Unable to disconnect GoDaddy.");
+      if (payload.settings) {
+        settingsCache = normalizeSettings(payload.settings);
+      }
+      renderDomainsPage();
+      showGlobalMessage("GoDaddy disconnected.", false);
+    } catch (error) {
+      showGlobalMessage(error.message, true);
+    }
+  });
 
   document.getElementById("addDomainButton").addEventListener("click", async () => {
     const rawDomain = sanitizeDomain(domainInput.value.trim());
@@ -3654,6 +3728,9 @@ async function verifyDomain(domain, options = {}) {
     const hostHint = payload.hostHint || domain.split(".")[0] || domain;
     if (!silent) {
       showGlobalMessage(`${payload.message} DNS record: ${payload.recordType || "CNAME"} ${hostHint} -> ${payload.dnsTarget || settingsCache.providerDnsTarget || publicShortDomain}`, false);
+    }
+    if (payload.autoDnsError && !silent) {
+      showGlobalMessage(`Auto DNS failed: ${payload.autoDnsError}`, true);
     }
 
     const normalizedStatus = String(payload.status || "").toUpperCase();
