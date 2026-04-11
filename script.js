@@ -102,6 +102,31 @@ let billingCouponState = null;
 let activityHeartbeatTimer = null;
 let activityPageStartedAt = Date.now();
 let lastTrackedActivityPage = "";
+const DOMAIN_SYNC_INTERVAL_MS = 20000;
+const DOMAIN_SYNC_MAX_ATTEMPTS = 12;
+const domainSyncState = {};
+
+function updateDomainSyncState(domain, updates) {
+  if (!domain) return;
+  const current = domainSyncState[domain] || {};
+  domainSyncState[domain] = { ...current, ...updates };
+}
+
+function clearDomainSyncTimer(domain) {
+  const current = domainSyncState[domain];
+  if (current && current.timerId) {
+    clearTimeout(current.timerId);
+    updateDomainSyncState(domain, { timerId: null });
+  }
+}
+
+function scheduleDomainSync(domain) {
+  clearDomainSyncTimer(domain);
+  const timerId = setTimeout(() => {
+    verifyDomain(domain, { autoRetry: true, silent: true });
+  }, DOMAIN_SYNC_INTERVAL_MS);
+  updateDomainSyncState(domain, { timerId });
+}
 
 function getAuthQuery() {
   return new URLSearchParams(window.location.search);
@@ -3423,10 +3448,15 @@ function renderDomainsPage() {
     const isDefaultAppDomain = domain === publicShortDomain;
     const isActive = Boolean(entry.isActive) || domain === settingsCache.defaultDomain;
     const normalizedStatus = String(entry.status || "PENDING").toUpperCase();
+    const syncState = domainSyncState[domain];
+    const syncInProgress = Boolean(syncState && syncState.inProgress);
     const dnsRecord = inferDnsRecordForDomain(domain);
     const statusLabel = isDefaultAppDomain
       ? "App Default"
       : (isActive ? "Active" : normalizedStatus.charAt(0) + normalizedStatus.slice(1).toLowerCase());
+    const finalStatusLabel = (!isActive && normalizedStatus === "PENDING" && syncInProgress)
+      ? "Pending (syncing)"
+      : statusLabel;
 
     return `
       <div class="managed-domain ${isActive ? "active" : ""}">
@@ -3436,10 +3466,10 @@ function renderDomainsPage() {
           ${!isDefaultAppDomain ? `<div class="dns-helper-grid"><span><strong>Type</strong>${escapeHtml(dnsRecord.type)}</span><span><strong>Host</strong>${escapeHtml(dnsRecord.host)}</span><span><strong>Value</strong>${escapeHtml(entry.dnsTarget || dnsRecord.value || publicShortDomain)}</span></div>` : ""}
         </div>
         <div class="managed-domain-actions">
-          <span class="domain-status ${normalizedStatus.toLowerCase()}">${escapeHtml(statusLabel)}</span>
+          <span class="domain-status ${normalizedStatus.toLowerCase()}">${escapeHtml(finalStatusLabel)}</span>
           ${!isDefaultAppDomain && !isActive && normalizedStatus === "VERIFIED" ? `<button class="link-button" data-activate-domain="${escapeHtml(domain)}">Set active</button>` : ""}
           ${!isDefaultAppDomain ? `<button class="link-button secondary" data-copy-dns="${escapeHtml(domain)}">Copy DNS</button>` : ""}
-          ${!isDefaultAppDomain && normalizedStatus !== "VERIFIED" && normalizedStatus !== "ACTIVE" ? `<button class="link-button secondary" data-verify-domain="${escapeHtml(domain)}">Verify / Sync</button>` : ""}
+          ${!isDefaultAppDomain && normalizedStatus !== "VERIFIED" && normalizedStatus !== "ACTIVE" ? `<button class="link-button secondary" data-verify-domain="${escapeHtml(domain)}" ${syncInProgress ? "disabled" : ""}>${syncInProgress ? "Syncing..." : "Verify / Sync"}</button>` : ""}
           ${!isDefaultAppDomain ? `<button class="link-button danger" data-remove-domain="${escapeHtml(domain)}">Remove</button>` : ""}
         </div>
       </div>
@@ -3550,7 +3580,12 @@ function renderDomainsPage() {
     if (!rawDomain) return showGlobalMessage("Enter a valid domain or host.", true);
     const domain = buildSuggestedCustomDomain(rawDomain, modeSelect.value || "recommended", customSubdomainPrefix.value.trim());
     if (settingsCache.domains.includes(domain)) return showGlobalMessage("That domain is already added.", true);
-    await persistDomains([...settingsCache.domains, domain], settingsCache.defaultDomain, `Domain added: ${domain}. Next step: update the DNS record and run Verify / Sync.`);
+    await persistDomains(
+      [...settingsCache.domains, domain],
+      settingsCache.defaultDomain,
+      `Domain added: ${domain}. We will auto-check DNS in the background.`
+    );
+    verifyDomain(domain, { autoRetry: true });
   });
 
   document.querySelectorAll("[data-activate-domain]").forEach((button) => button.addEventListener("click", async () => {
@@ -3578,7 +3613,7 @@ function renderDomainsPage() {
 
   document.querySelectorAll("[data-verify-domain]").forEach((button) => button.addEventListener("click", async () => {
     const domain = button.getAttribute("data-verify-domain");
-    await verifyDomain(domain);
+    await verifyDomain(domain, { autoRetry: true });
   }));
 }
 
@@ -3592,7 +3627,22 @@ async function persistDomains(domains, defaultDomain, successMessage) {
   }
 }
 
-async function verifyDomain(domain) {
+async function verifyDomain(domain, options = {}) {
+  const { autoRetry = false, silent = false } = options;
+  const syncState = domainSyncState[domain] || {};
+  if (autoRetry) {
+    const attempts = Number(syncState.attempts || 0);
+    updateDomainSyncState(domain, {
+      inProgress: true,
+      attempts,
+    });
+    renderDomainsPage();
+    if (!syncState.notified && !silent) {
+      updateDomainSyncState(domain, { notified: true });
+      showGlobalMessage("We will keep checking DNS every 20 seconds until SSL is ready.", false);
+    }
+  }
+
   try {
     const response = await fetch(`/api/domains/verify/${encodeURIComponent(domain)}`);
     const payload = await response.json().catch(() => ({}));
@@ -3602,9 +3652,48 @@ async function verifyDomain(domain) {
       renderDomainsPage();
     }
     const hostHint = payload.hostHint || domain.split(".")[0] || domain;
-    showGlobalMessage(`${payload.message} DNS record: ${payload.recordType || "CNAME"} ${hostHint} -> ${payload.dnsTarget || settingsCache.providerDnsTarget || publicShortDomain}`, false);
+    if (!silent) {
+      showGlobalMessage(`${payload.message} DNS record: ${payload.recordType || "CNAME"} ${hostHint} -> ${payload.dnsTarget || settingsCache.providerDnsTarget || publicShortDomain}`, false);
+    }
+
+    const normalizedStatus = String(payload.status || "").toUpperCase();
+    const ready = payload.verified || normalizedStatus === "VERIFIED" || normalizedStatus === "ACTIVE";
+    if (ready) {
+      clearDomainSyncTimer(domain);
+      updateDomainSyncState(domain, { inProgress: false, attempts: 0 });
+      renderDomainsPage();
+      return;
+    }
+
+    if (autoRetry) {
+      const nextAttempts = Number((domainSyncState[domain] || {}).attempts || 0) + 1;
+      if (nextAttempts <= DOMAIN_SYNC_MAX_ATTEMPTS) {
+        updateDomainSyncState(domain, { attempts: nextAttempts, inProgress: true });
+        scheduleDomainSync(domain);
+        renderDomainsPage();
+      } else {
+        clearDomainSyncTimer(domain);
+        updateDomainSyncState(domain, { inProgress: false });
+        if (!silent) {
+          showGlobalMessage("DNS is still not ready. Please confirm the CNAME record and try Verify / Sync again.", true);
+        }
+      }
+    }
   } catch (error) {
-    showGlobalMessage(error.message, true);
+    if (autoRetry) {
+      const nextAttempts = Number((domainSyncState[domain] || {}).attempts || 0) + 1;
+      if (nextAttempts <= DOMAIN_SYNC_MAX_ATTEMPTS) {
+        updateDomainSyncState(domain, { attempts: nextAttempts, inProgress: true });
+        scheduleDomainSync(domain);
+      } else {
+        clearDomainSyncTimer(domain);
+        updateDomainSyncState(domain, { inProgress: false });
+      }
+    }
+    if (!silent) {
+      showGlobalMessage(error.message, true);
+    }
+    renderDomainsPage();
   }
 }
 
