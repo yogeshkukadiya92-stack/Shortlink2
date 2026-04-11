@@ -3538,13 +3538,16 @@ function renderDomainsPage() {
         <div class="form-card">
           <h3>DNS setup</h3>
           <p class="helper-copy" id="dnsSetupCopy">Create a <strong>CNAME</strong> record for your branded subdomain and point it to <strong>${escapeHtml(settingsCache.providerDnsTarget || publicShortDomain)}</strong>.</p>
-          <div class="dns-helper-grid" id="dnsHelperGrid">
-            <span><strong>Type</strong><span id="dnsTypeValue">CNAME</span></span>
-            <span><strong>Host</strong><span id="dnsHostValue">go</span></span>
-            <span><strong>Value</strong><span id="dnsTargetValue">${escapeHtml(settingsCache.providerDnsTarget || publicShortDomain)}</span></span>
+          <div id="manualDnsWrapper">
+            <div class="dns-helper-grid" id="dnsHelperGrid">
+              <span><strong>Type</strong><span id="dnsTypeValue">CNAME</span></span>
+              <span><strong>Host</strong><span id="dnsHostValue">go</span></span>
+              <span><strong>Value</strong><span id="dnsTargetValue">${escapeHtml(settingsCache.providerDnsTarget || publicShortDomain)}</span></span>
+            </div>
+            <p class="helper-copy" id="dnsExampleCopy">Example: <code>go.clientdomain.com -> ${escapeHtml(settingsCache.providerDnsTarget || publicShortDomain)}</code></p>
+            <p class="helper-copy" id="dnsFinalCopy">After DNS is live, click <strong>Verify / Sync</strong>. Once SSL is ready, you can set that domain active for fresh links.</p>
           </div>
-          <p class="helper-copy" id="dnsExampleCopy">Example: <code>go.clientdomain.com -> ${escapeHtml(settingsCache.providerDnsTarget || publicShortDomain)}</code></p>
-          <p class="helper-copy" id="dnsFinalCopy">After DNS is live, click <strong>Verify / Sync</strong>. Once SSL is ready, you can set that domain active for fresh links.</p>
+          <button class="link-button secondary hidden" id="showManualDnsButton" type="button">Show manual DNS</button>
         </div>
       </div>
     </section>
@@ -3563,6 +3566,8 @@ function renderDomainsPage() {
   const dnsTargetValue = document.getElementById("dnsTargetValue");
   const dnsExampleCopy = document.getElementById("dnsExampleCopy");
   const dnsFinalCopy = document.getElementById("dnsFinalCopy");
+  const manualDnsWrapper = document.getElementById("manualDnsWrapper");
+  const showManualDnsButton = document.getElementById("showManualDnsButton");
   const domainAutomationStatus = document.getElementById("domainAutomationStatus");
   const godaddyConnectFields = document.getElementById("godaddyConnectFields");
   const godaddyDisconnectFields = document.getElementById("godaddyDisconnectFields");
@@ -3572,11 +3577,21 @@ function renderDomainsPage() {
     domainAutomationStatus.innerHTML = "<span class=\"domain-status verified\">Connected</span> GoDaddy auto DNS is enabled.";
     godaddyConnectFields.classList.add("hidden");
     godaddyDisconnectFields.classList.remove("hidden");
+    dnsSetupCopy.innerHTML = "Auto DNS is ON. We will create the <strong>CNAME</strong> record in GoDaddy automatically after you add a domain.";
+    manualDnsWrapper.classList.add("hidden");
+    showManualDnsButton.classList.remove("hidden");
   } else {
     domainAutomationStatus.innerHTML = "<span class=\"domain-status pending\">Not connected</span> Add your GoDaddy API keys to enable auto DNS.";
     godaddyConnectFields.classList.remove("hidden");
     godaddyDisconnectFields.classList.add("hidden");
+    manualDnsWrapper.classList.remove("hidden");
+    showManualDnsButton.classList.add("hidden");
   }
+
+  showManualDnsButton.addEventListener("click", () => {
+    manualDnsWrapper.classList.toggle("hidden");
+    showManualDnsButton.textContent = manualDnsWrapper.classList.contains("hidden") ? "Show manual DNS" : "Hide manual DNS";
+  });
 
   const syncDomainSuggestion = () => {
     const rawDomain = sanitizeDomain(domainInput.value.trim()) || "yourbrand.com";
@@ -3728,6 +3743,9 @@ async function verifyDomain(domain, options = {}) {
     const hostHint = payload.hostHint || domain.split(".")[0] || domain;
     if (!silent) {
       showGlobalMessage(`${payload.message} DNS record: ${payload.recordType || "CNAME"} ${hostHint} -> ${payload.dnsTarget || settingsCache.providerDnsTarget || publicShortDomain}`, false);
+    }
+    if (payload.autoDnsAttempted && !payload.autoDnsError && !silent) {
+      showGlobalMessage("GoDaddy DNS record created automatically. Waiting for DNS to propagate.", false);
     }
     if (payload.autoDnsError && !silent) {
       showGlobalMessage(`Auto DNS failed: ${payload.autoDnsError}`, true);
