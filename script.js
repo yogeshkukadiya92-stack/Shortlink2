@@ -73,6 +73,7 @@ let currentPage = getCurrentPage();
 let currentUser = null;
 let linksCache = [];
 let selectedLinkSlug = "";
+let isRecycleBinExpanded = false;
 let pagesCache = [];
 let selectedQrSlug = null;
 let selectedFormId = "";
@@ -1988,9 +1989,12 @@ function renderLinksPage(links, query = "") {
             <h3>Recycle Bin</h3>
             <p>Deleted links stay here until you restore them or delete them forever.</p>
           </div>
-          <span class="chip-link">${(settingsCache.trashLinks || []).length} item${(settingsCache.trashLinks || []).length === 1 ? "" : "s"}</span>
+          <div class="goal-action-row">
+            <span class="chip-link">${(settingsCache.trashLinks || []).length} item${(settingsCache.trashLinks || []).length === 1 ? "" : "s"}</span>
+            <button class="link-button secondary" type="button" id="toggleRecycleBinButton">${isRecycleBinExpanded ? "Hide" : "Open"}</button>
+          </div>
         </div>
-        <div class="links-list recycle-bin-list">${trashMarkup}</div>
+        ${isRecycleBinExpanded ? `<div class="links-list recycle-bin-list">${trashMarkup}</div>` : ""}
       </div>
     </section>
   `;
@@ -2950,6 +2954,11 @@ function wireCreateForm() {
 }
 
 function wireLinkActions() {
+  document.getElementById("toggleRecycleBinButton")?.addEventListener("click", () => {
+    isRecycleBinExpanded = !isRecycleBinExpanded;
+    renderLinksPage(linksCache, searchInput.value.trim().toLowerCase());
+  });
+
   document.querySelectorAll("[data-edit-link-card]").forEach((button) => button.addEventListener("click", () => {
     selectedLinkSlug = button.getAttribute("data-edit-link-card");
     renderLinksPage(linksCache, searchInput.value.trim().toLowerCase());
