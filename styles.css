@@ -398,6 +398,25 @@ svg {
   font-size: 0.95rem;
 }
 
+.compact-toggle-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  padding: 0 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(168, 193, 230, 0.72);
+  background: rgba(244, 248, 255, 0.95);
+  color: var(--text);
+  font-size: 0.86rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.compact-toggle-button:hover {
+  background: rgba(232, 241, 255, 0.98);
+}
+
 .upgrade-button:hover,
 .aside-upgrade:hover {
   background: var(--teal-strong);
@@ -811,6 +830,90 @@ svg {
   border: 1px solid rgba(184, 201, 235, 0.34);
   box-shadow: var(--shadow);
   padding: 22px;
+}
+
+body.compact-ui .brand-copy-tagline,
+body.compact-ui .nav-badge,
+body.compact-ui .eyebrow,
+body.compact-ui .surface-header p,
+body.compact-ui .helper-copy,
+body.compact-ui .chip-link,
+body.compact-ui .profile-card .task-list {
+  display: none !important;
+}
+
+body.compact-ui .sidebar {
+  padding: 14px 12px;
+  gap: 12px;
+}
+
+body.compact-ui .create-button {
+  padding: 12px 14px;
+  border-radius: 12px;
+  font-size: 0.88rem;
+}
+
+body.compact-ui .side-nav {
+  gap: 6px;
+  padding-top: 12px;
+}
+
+body.compact-ui .nav-item {
+  min-height: 46px;
+  gap: 10px;
+  padding: 0 12px;
+}
+
+body.compact-ui .topbar {
+  min-height: 74px;
+  padding: 10px 18px;
+  gap: 12px;
+}
+
+body.compact-ui .topbar-title {
+  font-size: 1.6rem;
+}
+
+body.compact-ui .searchbar {
+  height: 46px;
+  border-radius: 12px;
+  padding: 0 14px;
+}
+
+body.compact-ui .topbar-actions {
+  gap: 10px;
+}
+
+body.compact-ui .upgrade-button,
+body.compact-ui .compact-toggle-button {
+  min-height: 42px;
+  border-radius: 10px;
+  padding: 0 12px;
+  font-size: 0.82rem;
+}
+
+body.compact-ui .content-area {
+  padding: 12px;
+  gap: 12px;
+}
+
+body.compact-ui .surface-card,
+body.compact-ui .mini-card,
+body.compact-ui .form-card {
+  border-radius: 16px;
+  padding: 14px;
+}
+
+body.compact-ui .admin-table,
+body.compact-ui .analytics-list,
+body.compact-ui .campaign-list {
+  gap: 10px;
+}
+
+body.compact-ui .admin-row {
+  padding: 12px 14px;
+  border-radius: 14px;
+  gap: 12px;
 }
 
 .auth-shell {

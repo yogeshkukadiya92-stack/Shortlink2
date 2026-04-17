@@ -7,6 +7,7 @@ const pageEyebrow = document.getElementById("pageEyebrow");
 const searchInput = document.getElementById("searchInput");
 const logoutButton = document.getElementById("logoutButton");
 const upgradeButton = document.getElementById("upgradeButton");
+const compactToggleButton = document.getElementById("compactToggleButton");
 const profileName = document.querySelector(".profile-name");
 const avatar = document.querySelector(".avatar");
 const profileMenu = document.getElementById("profileMenu");
@@ -116,6 +117,8 @@ let lastTrackedActivityPage = "";
 const DOMAIN_SYNC_INTERVAL_MS = 20000;
 const DOMAIN_SYNC_MAX_ATTEMPTS = 12;
 const domainSyncState = {};
+const uiDensityStorageKey = "anylink_ui_density";
+let uiDensity = localStorage.getItem(uiDensityStorageKey) || "compact";
 
 function updateDomainSyncState(domain, updates) {
   if (!domain) return;
@@ -205,6 +208,12 @@ upgradeButton.addEventListener("click", () => {
   renderBillingPage();
 });
 
+compactToggleButton?.addEventListener("click", () => {
+  uiDensity = uiDensity === "compact" ? "expanded" : "compact";
+  localStorage.setItem(uiDensityStorageKey, uiDensity);
+  applyDensityMode();
+});
+
 profileMenuButton.addEventListener("click", () => {
   const isOpen = !profileDropdown.classList.contains("hidden");
   profileDropdown.classList.toggle("hidden", isOpen);
@@ -271,6 +280,7 @@ initialize();
 async function initialize() {
   registerServiceWorker();
   syncResponsiveShell();
+  applyDensityMode();
   currentPage = getCurrentPage();
   try {
     await loadCurrentUser();
@@ -345,6 +355,12 @@ function syncResponsiveShell() {
     document.body.classList.remove("mobile-shell", "mobile-nav-open");
     sidebar.classList.remove("collapsed");
   }
+}
+
+function applyDensityMode() {
+  body.classList.toggle("compact-ui", uiDensity === "compact");
+  if (!compactToggleButton) return;
+  compactToggleButton.textContent = uiDensity === "compact" ? "Show details" : "Compact view";
 }
 
 function isMobileShell() {
