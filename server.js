@@ -23,6 +23,7 @@ const sessionsFile = path.join(dataDir, "sessions.json");
 const activityFile = path.join(dataDir, "activity.json");
 const couponsFile = path.join(dataDir, "coupons.json");
 const godaddyTokensFile = path.join(dataDir, "godaddy_tokens.json");
+const auditLogsFile = path.join(dataDir, "audit_logs.json");
 const sessionCookieName = "anylink_session";
 const protectedLinkCookiePrefix = "anylink_gate_";
 const analyticsVisitorCookieName = "anylink_vid";
@@ -175,33 +176,33 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "POST" && pathname.startsWith("/api/admin/users/") && pathname.endsWith("/subscription")) {
       const body = await readRequestBody(req);
       const userId = pathname.split("/")[4];
-      return await withAdmin(req, res, () => handleAdminSubscriptionUpdate(userId, body, res));
+      return await withAdmin(req, res, (adminUser) => handleAdminSubscriptionUpdate(userId, body, res, adminUser));
     }
 
     if (req.method === "POST" && pathname.startsWith("/api/admin/users/") && pathname.endsWith("/trial")) {
       const body = await readRequestBody(req);
       const userId = pathname.split("/")[4];
-      return await withAdmin(req, res, () => handleAdminTrialUpdate(userId, body, res));
+      return await withAdmin(req, res, (adminUser) => handleAdminTrialUpdate(userId, body, res, adminUser));
     }
 
     if (req.method === "POST" && pathname.startsWith("/api/admin/users/") && pathname.endsWith("/verify")) {
       const userId = pathname.split("/")[4];
-      return await withAdmin(req, res, () => handleAdminVerifyUser(userId, res));
+      return await withAdmin(req, res, (adminUser) => handleAdminVerifyUser(userId, res, adminUser));
     }
 
     if (req.method === "POST" && pathname.startsWith("/api/admin/sessions/") && pathname.endsWith("/revoke")) {
       const sessionToken = pathname.split("/")[4];
-      return await withAdmin(req, res, () => handleAdminRevokeSession(sessionToken, res));
+      return await withAdmin(req, res, (adminUser) => handleAdminRevokeSession(sessionToken, res, adminUser));
     }
 
     if (req.method === "POST" && pathname === "/api/admin/coupons") {
       const body = await readRequestBody(req);
-      return await withAdmin(req, res, () => handleAdminSaveCoupon(body, res));
+      return await withAdmin(req, res, (adminUser) => handleAdminSaveCoupon(body, res, adminUser));
     }
 
     if (req.method === "POST" && pathname.startsWith("/api/admin/coupons/") && pathname.endsWith("/delete")) {
       const couponCode = pathname.split("/")[4];
-      return await withAdmin(req, res, () => handleAdminDeleteCoupon(couponCode, res));
+      return await withAdmin(req, res, (adminUser) => handleAdminDeleteCoupon(couponCode, res, adminUser));
     }
 
     if (req.method === "GET" && pathname === "/api/links") {
@@ -299,6 +300,20 @@ const server = http.createServer(async (req, res) => {
       return await withAppAccess(req, res, (user) => handleGoDaddyDisconnect(req, res, user));
     }
 
+    if (req.method === "GET" && pathname === "/api/team") {
+      return await withAppAccess(req, res, (user) => handleGetTeamMembers(req, res, user));
+    }
+
+    if (req.method === "POST" && pathname === "/api/team") {
+      const body = await readRequestBody(req);
+      return await withAppAccess(req, res, (user) => handleUpsertTeamMember(body, req, res, user));
+    }
+
+    if (req.method === "POST" && pathname.startsWith("/api/team/") && pathname.endsWith("/remove")) {
+      const memberId = pathname.split("/")[3];
+      return await withAppAccess(req, res, (user) => handleRemoveTeamMember(memberId, req, res, user));
+    }
+
     if (req.method === "POST" && pathname.startsWith("/api/unlock/")) {
       const body = await readRequestBody(req);
       const slug = pathname.split("/").pop();
@@ -349,6 +364,7 @@ function ensureStorage() {
   ensureJsonFile(activityFile, {});
   ensureJsonFile(couponsFile, []);
   ensureJsonFile(godaddyTokensFile, []);
+  ensureJsonFile(auditLogsFile, []);
 }
 
 function ensureJsonFile(filePath, fallbackValue) {
@@ -643,6 +659,8 @@ async function readSettingsForUserAsync(userId, req) {
           linkRules: fileExtras?.linkRules || {},
           linkHealth: fileExtras?.linkHealth || {},
           campaignTemplates: fileExtras?.campaignTemplates || [],
+          pixelTemplates: fileExtras?.pixelTemplates || [],
+          teamMembers: fileExtras?.teamMembers || [],
           trashLinks: fileExtras?.trashLinks || [],
           campaigns: fileExtras?.campaigns || [],
           domainEntries: mergedDomainEntries,
@@ -690,6 +708,30 @@ function readActivityStore() {
 
 function writeActivityStore(store) {
   writeJsonFile(activityFile, store || {});
+}
+
+function readAuditLogs() {
+  return readJsonFile(auditLogsFile, [])
+    .filter((item) => item && typeof item === "object")
+    .sort((left, right) => Number(right.createdAt || 0) - Number(left.createdAt || 0));
+}
+
+function writeAuditLogs(items) {
+  writeJsonFile(auditLogsFile, items || []);
+}
+
+function appendAuditLog(action, actor = {}, metadata = {}) {
+  const logs = readAuditLogs();
+  logs.unshift({
+    id: crypto.randomUUID(),
+    action: String(action || "").trim() || "system.event",
+    actorUserId: String(actor.userId || "").trim(),
+    actorEmail: String(actor.email || "").trim(),
+    actorType: String(actor.type || "system").trim().toLowerCase(),
+    metadata: metadata && typeof metadata === "object" ? metadata : {},
+    createdAt: Date.now(),
+  });
+  writeAuditLogs(logs.slice(0, 1500));
 }
 
 function getDefaultActivitySummary(userId) {
@@ -1715,6 +1757,7 @@ function handleAdminOverview(res) {
     users: userSummaries.sort((left, right) => Number(right.usage.lastActiveAt || right.billing.trialStartedAt || 0) - Number(left.usage.lastActiveAt || left.billing.trialStartedAt || 0)),
     sessions: sessionSummaries,
     coupons: readCoupons().map(serializeCouponForClient),
+    auditLogs: readAuditLogs().slice(0, 120),
     summary: {
       totalUsers: userSummaries.length,
       activeSubscriptions: userSummaries.filter((user) => user.billing.subscriptionStatus === "active" && user.billing.hasAccess).length,
@@ -1727,7 +1770,7 @@ function handleAdminOverview(res) {
   });
 }
 
-async function handleAdminSubscriptionUpdate(userId, body, res) {
+async function handleAdminSubscriptionUpdate(userId, body, res, adminUser) {
   const users = readUsers();
   const user = users.find((item) => item.id === userId);
 
@@ -1785,10 +1828,16 @@ async function handleAdminSubscriptionUpdate(userId, body, res) {
     }
   }
 
+  appendAuditLog("admin.subscription.update", { userId: adminUser?.id, email: adminUser?.email, type: "admin" }, {
+    targetUserId: user.id,
+    targetEmail: user.email,
+    mode,
+    days,
+  });
   return sendJson(res, 200, { success: true, billing: serializeBilling(user) });
 }
 
-async function handleAdminTrialUpdate(userId, body, res) {
+async function handleAdminTrialUpdate(userId, body, res, adminUser) {
   const users = readUsers();
   const user = users.find((item) => item.id === userId);
 
@@ -1820,10 +1869,15 @@ async function handleAdminTrialUpdate(userId, body, res) {
     }
   }
 
+  appendAuditLog("admin.trial.update", { userId: adminUser?.id, email: adminUser?.email, type: "admin" }, {
+    targetUserId: user.id,
+    targetEmail: user.email,
+    days,
+  });
   return sendJson(res, 200, { success: true, billing: serializeBilling(user) });
 }
 
-function handleAdminVerifyUser(userId, res) {
+function handleAdminVerifyUser(userId, res, adminUser) {
   const users = readUsers();
   const user = users.find((item) => item.id === userId);
 
@@ -1836,11 +1890,16 @@ function handleAdminVerifyUser(userId, res) {
   user.verificationExpiresAt = 0;
   writeUsers(users);
 
+  appendAuditLog("admin.user.verify", { userId: adminUser?.id, email: adminUser?.email, type: "admin" }, {
+    targetUserId: user.id,
+    targetEmail: user.email,
+  });
   return sendJson(res, 200, { success: true, user: serializeUser(user) });
 }
 
-function handleAdminRevokeSession(sessionToken, res) {
+function handleAdminRevokeSession(sessionToken, res, adminUser) {
   const sessions = readSessions();
+  const revoked = sessions.find((session) => session.token === sessionToken);
   const nextSessions = sessions.filter((session) => session.token !== sessionToken);
 
   if (sessions.length === nextSessions.length) {
@@ -1848,6 +1907,10 @@ function handleAdminRevokeSession(sessionToken, res) {
   }
 
   writeSessions(nextSessions);
+  appendAuditLog("admin.session.revoke", { userId: adminUser?.id, email: adminUser?.email, type: "admin" }, {
+    sessionToken: sessionToken.slice(0, 12),
+    targetUserId: revoked?.userId || "",
+  });
   return sendJson(res, 200, { success: true });
 }
 
@@ -3073,6 +3136,8 @@ async function handleSaveSettings(body, req, res, user) {
   const linkRules = normalizeLinkRules(body.linkRules || currentSettings.linkRules || {}, currentSettings.linkRules || {});
   const linkHealth = normalizeLinkHealth(body.linkHealth || currentSettings.linkHealth || {});
   const campaignTemplates = normalizeCampaignTemplates(body.campaignTemplates || currentSettings.campaignTemplates || []);
+  const pixelTemplates = normalizePixelTemplates(body.pixelTemplates || currentSettings.pixelTemplates || []);
+  const teamMembers = normalizeTeamMembers(body.teamMembers || currentSettings.teamMembers || []);
   const trashLinks = normalizeTrashLinks(body.trashLinks || currentSettings.trashLinks || []);
   const campaigns = normalizeCampaigns(body.campaigns || currentSettings.campaigns || []);
 
@@ -3100,6 +3165,8 @@ async function handleSaveSettings(body, req, res, user) {
     linkRules,
     linkHealth,
     campaignTemplates,
+    pixelTemplates,
+    teamMembers,
     trashLinks,
     campaigns,
   }, req);
@@ -3169,6 +3236,68 @@ async function handleGoDaddyDisconnect(req, res, user) {
     domainAutomation: settings.domainAutomation,
     settings,
   });
+}
+
+async function handleGetTeamMembers(req, res, user) {
+  const settings = await readSettingsForUserAsync(user.id, req);
+  return sendJson(res, 200, { teamMembers: settings.teamMembers || [] });
+}
+
+async function handleUpsertTeamMember(body, req, res, user) {
+  const settings = await readSettingsForUserAsync(user.id, req);
+  const id = String(body?.id || "").trim() || crypto.randomUUID();
+  const email = String(body?.email || "").trim().toLowerCase();
+  const role = ["admin", "editor", "viewer"].includes(String(body?.role || "").trim().toLowerCase())
+    ? String(body?.role || "").trim().toLowerCase()
+    : "viewer";
+  const name = String(body?.name || "").trim() || (email.split("@")[0] || "Member");
+
+  if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    return sendJson(res, 400, { error: "Enter a valid member email." });
+  }
+
+  const existing = normalizeTeamMembers(settings.teamMembers || []);
+  const next = [
+    { id, email, role, name, status: "active", updatedAt: new Date().toISOString(), createdAt: new Date().toISOString() },
+    ...existing.filter((item) => item.id !== id && item.email !== email),
+  ];
+
+  const nextSettings = normalizeSettings({
+    ...settings,
+    teamMembers: next,
+  }, req);
+
+  if (!dbOnlyMode) {
+    const store = readSettingsStore().filter((item) => item.userId !== user.id);
+    store.push(nextSettings);
+    writeSettingsStore(store);
+  }
+
+  appendAuditLog("team.member.upsert", { userId: user.id, email: user.email, type: "user" }, { workspaceUserId: user.id, memberEmail: email, role });
+  return sendJson(res, 200, { teamMembers: nextSettings.teamMembers, settings: nextSettings });
+}
+
+async function handleRemoveTeamMember(memberId, req, res, user) {
+  const settings = await readSettingsForUserAsync(user.id, req);
+  const existing = normalizeTeamMembers(settings.teamMembers || []);
+  const match = existing.find((item) => item.id === memberId);
+  const next = existing.filter((item) => item.id !== memberId);
+
+  const nextSettings = normalizeSettings({
+    ...settings,
+    teamMembers: next,
+  }, req);
+
+  if (!dbOnlyMode) {
+    const store = readSettingsStore().filter((item) => item.userId !== user.id);
+    store.push(nextSettings);
+    writeSettingsStore(store);
+  }
+
+  if (match) {
+    appendAuditLog("team.member.remove", { userId: user.id, email: user.email, type: "user" }, { workspaceUserId: user.id, memberEmail: match.email, role: match.role });
+  }
+  return sendJson(res, 200, { teamMembers: nextSettings.teamMembers, settings: nextSettings });
 }
 
 async function handleVerifyDomain(domain, req, res, user) {
@@ -3313,7 +3442,7 @@ async function handleVerifyDomain(domain, req, res, user) {
   });
 }
 
-function handleAdminSaveCoupon(body, res) {
+function handleAdminSaveCoupon(body, res, adminUser) {
   const code = String(body.code || "").trim().toUpperCase();
   const type = String(body.type || "plan").trim().toLowerCase();
   const label = String(body.label || "").trim();
@@ -3358,10 +3487,17 @@ function handleAdminSaveCoupon(body, res) {
   }
 
   writeCoupons(coupons);
+  appendAuditLog("admin.coupon.save", { userId: adminUser?.id, email: adminUser?.email, type: "admin" }, {
+    code: nextCoupon.code,
+    type: nextCoupon.type,
+    planId: nextCoupon.planId || "",
+    value: Number(nextCoupon.value || 0),
+    active: Boolean(nextCoupon.active),
+  });
   return sendJson(res, 200, { success: true, coupon: serializeCouponForClient(nextCoupon) });
 }
 
-function handleAdminDeleteCoupon(couponCode, res) {
+function handleAdminDeleteCoupon(couponCode, res, adminUser) {
   const normalizedCode = String(couponCode || "").trim().toUpperCase();
   const coupons = readCoupons();
   const nextCoupons = coupons.filter((coupon) => coupon.code !== normalizedCode);
@@ -3371,6 +3507,9 @@ function handleAdminDeleteCoupon(couponCode, res) {
   }
 
   writeCoupons(nextCoupons);
+  appendAuditLog("admin.coupon.delete", { userId: adminUser?.id, email: adminUser?.email, type: "admin" }, {
+    code: normalizedCode,
+  });
   return sendJson(res, 200, { success: true });
 }
 
@@ -4325,6 +4464,8 @@ function defaultSettings(req) {
     linkRules: {},
     linkHealth: {},
     campaignTemplates: [],
+    pixelTemplates: [],
+    teamMembers: [],
     trashLinks: [],
     campaigns: [],
   };
@@ -4611,6 +4752,51 @@ function normalizeCampaignTemplates(input) {
   return templates.sort((left, right) => new Date(right.updatedAt || 0).getTime() - new Date(left.updatedAt || 0).getTime());
 }
 
+function normalizePixelTemplates(input) {
+  const templates = [];
+  const seen = new Set();
+
+  for (const item of input || []) {
+    if (!item || typeof item !== "object") continue;
+    const id = String(item.id || "").trim() || crypto.randomUUID();
+    if (seen.has(id)) continue;
+    seen.add(id);
+    templates.push({
+      id,
+      name: String(item.name || "").trim() || "Pixel template",
+      pixelId: String(item.pixelId || "").trim().slice(0, 80),
+      createdAt: String(item.createdAt || new Date().toISOString()),
+      updatedAt: String(item.updatedAt || new Date().toISOString()),
+    });
+  }
+
+  return templates.filter((item) => item.pixelId).sort((left, right) => new Date(right.updatedAt || 0).getTime() - new Date(left.updatedAt || 0).getTime());
+}
+
+function normalizeTeamMembers(input) {
+  const members = [];
+  const seen = new Set();
+  for (const item of input || []) {
+    if (!item || typeof item !== "object") continue;
+    const email = String(item.email || "").trim().toLowerCase();
+    const role = ["admin", "editor", "viewer"].includes(String(item.role || "").trim().toLowerCase())
+      ? String(item.role || "").trim().toLowerCase()
+      : "viewer";
+    if (!email || seen.has(email)) continue;
+    seen.add(email);
+    members.push({
+      id: String(item.id || "").trim() || crypto.randomUUID(),
+      name: String(item.name || "").trim() || email.split("@")[0] || "Member",
+      email,
+      role,
+      status: String(item.status || "active").trim().toLowerCase(),
+      createdAt: String(item.createdAt || new Date().toISOString()),
+      updatedAt: String(item.updatedAt || new Date().toISOString()),
+    });
+  }
+  return members.sort((left, right) => new Date(right.updatedAt || 0).getTime() - new Date(left.updatedAt || 0).getTime());
+}
+
 function normalizeSettings(settings, req) {
   const base = defaultSettings(req);
   const workspaceName = String(settings?.workspaceName || base.workspaceName).trim() || base.workspaceName;
@@ -4644,6 +4830,8 @@ function normalizeSettings(settings, req) {
     linkRules: normalizeLinkRules(settings?.linkRules || {}, settings?.linkRules || {}),
     linkHealth: normalizeLinkHealth(settings?.linkHealth || {}),
     campaignTemplates: normalizeCampaignTemplates(settings?.campaignTemplates || []),
+    pixelTemplates: normalizePixelTemplates(settings?.pixelTemplates || []),
+    teamMembers: normalizeTeamMembers(settings?.teamMembers || []),
     trashLinks: normalizeTrashLinks(settings?.trashLinks || []),
     campaigns: normalizeCampaigns(settings?.campaigns || []),
   };

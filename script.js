@@ -94,6 +94,8 @@ let settingsCache = {
   linkRules: {},
   linkHealth: {},
   campaignTemplates: [],
+  pixelTemplates: [],
+  teamMembers: [],
   trashLinks: [],
   campaigns: [],
 };
@@ -556,6 +558,8 @@ function normalizeSettings(settings) {
     linkRules: normalizeLinkRules(settings.linkRules || {}),
     linkHealth: normalizeLinkHealth(settings.linkHealth || {}),
     campaignTemplates: normalizeCampaignTemplates(settings.campaignTemplates || []),
+    pixelTemplates: normalizePixelTemplates(settings.pixelTemplates || []),
+    teamMembers: normalizeTeamMembers(settings.teamMembers || []),
     trashLinks: normalizeTrashLinks(settings.trashLinks || []),
     campaigns: normalizeCampaigns(settings.campaigns || []),
   };
@@ -600,6 +604,55 @@ function normalizeCampaignTemplates(input) {
   }).filter(Boolean).sort((left, right) => new Date(right.updatedAt || 0).getTime() - new Date(left.updatedAt || 0).getTime());
 }
 
+function normalizePixelTemplates(input) {
+  const seen = new Set();
+  return (Array.isArray(input) ? input : [])
+    .map((item) => {
+      if (!item || typeof item !== "object") return null;
+      const id = String(item.id || "").trim() || crypto.randomUUID();
+      const pixelId = String(item.pixelId || "").trim();
+      if (seen.has(id) || !pixelId) return null;
+      seen.add(id);
+      return {
+        id,
+        name: String(item.name || "").trim() || "Pixel template",
+        pixelId,
+        createdAt: String(item.createdAt || new Date().toISOString()),
+        updatedAt: String(item.updatedAt || new Date().toISOString()),
+      };
+    })
+    .filter(Boolean)
+    .sort((left, right) => new Date(right.updatedAt || 0).getTime() - new Date(left.updatedAt || 0).getTime());
+}
+
+function normalizeTeamMembers(input) {
+  const seenId = new Set();
+  const seenEmail = new Set();
+  return (Array.isArray(input) ? input : [])
+    .map((item) => {
+      if (!item || typeof item !== "object") return null;
+      const id = String(item.id || "").trim() || crypto.randomUUID();
+      const email = String(item.email || "").trim().toLowerCase();
+      if (!email || seenId.has(id) || seenEmail.has(email)) return null;
+      seenId.add(id);
+      seenEmail.add(email);
+      const role = ["admin", "editor", "viewer"].includes(String(item.role || "").trim().toLowerCase())
+        ? String(item.role || "").trim().toLowerCase()
+        : "viewer";
+      return {
+        id,
+        email,
+        role,
+        name: String(item.name || "").trim() || email.split("@")[0] || "Member",
+        status: String(item.status || "active").trim().toLowerCase() || "active",
+        createdAt: String(item.createdAt || new Date().toISOString()),
+        updatedAt: String(item.updatedAt || new Date().toISOString()),
+      };
+    })
+    .filter(Boolean)
+    .sort((left, right) => new Date(right.updatedAt || 0).getTime() - new Date(left.updatedAt || 0).getTime());
+}
+
 function normalizeCampaigns(items) {
   const seen = new Set();
   return (Array.isArray(items) ? items : []).map((item) => {
@@ -624,6 +677,8 @@ function normalizeCampaigns(items) {
       campaign: String(item.campaign || "").trim(),
       term: String(item.term || "").trim(),
       content: String(item.content || "").trim(),
+      pixelTemplateId: String(item.pixelTemplateId || "").trim(),
+      pixelId: String(item.pixelId || "").trim(),
       destination: String(item.destination || "").trim(),
       generatedUrl: String(item.generatedUrl || "").trim(),
       shortUrl: String(item.shortUrl || "").trim(),
@@ -1347,6 +1402,17 @@ async function renderAdminPage() {
             : '<div class="empty-state">No active sessions right now.</div>'}
         </div>
       </section>
+      <section class="surface-card">
+        <div class="surface-header">
+          <div>
+            <h2>Audit timeline</h2>
+            <p>Latest admin and workspace actions with actor and timestamp.</p>
+          </div>
+        </div>
+        <div class="admin-table">
+          ${renderAuditRows(payload.auditLogs || [])}
+        </div>
+      </section>
     `;
 
     bindAdminActions();
@@ -1399,6 +1465,36 @@ function bindAdminActions() {
       await runAdminAction(`/api/admin/coupons/${button.getAttribute("data-admin-coupon-delete")}/delete`, {}, "Coupon deleted.");
     });
   });
+}
+
+function renderAuditRows(auditLogs) {
+  const rows = Array.isArray(auditLogs) ? auditLogs : [];
+  if (!rows.length) {
+    return '<div class="empty-state">No audit events yet.</div>';
+  }
+  return rows.slice(0, 80).map((log) => {
+    const action = escapeHtml(String(log.action || "event"));
+    const actorEmail = escapeHtml(String(log.actorEmail || "system"));
+    const createdAt = Number(log.createdAt || 0);
+    const createdLabel = createdAt ? escapeHtml(new Date(createdAt).toLocaleString()) : "-";
+    const metadata = log.metadata && typeof log.metadata === "object"
+      ? Object.entries(log.metadata)
+        .filter(([key, value]) => value !== null && value !== undefined && String(value).trim() !== "")
+        .slice(0, 4)
+        .map(([key, value]) => `${key}: ${String(value)}`)
+        .join(" | ")
+      : "";
+    return `
+      <div class="admin-row">
+        <div class="admin-main">
+          <strong>${action}</strong>
+          <span>Actor: ${actorEmail}</span>
+          <span>At: ${createdLabel}</span>
+          ${metadata ? `<span>${escapeHtml(metadata)}</span>` : ""}
+        </div>
+      </div>
+    `;
+  }).join("");
 }
 
 async function runAdminAction(url, body, successMessage) {
@@ -3376,6 +3472,7 @@ function renderCampaignsPage() {
   builtInCampaignTemplates.forEach((item) => templateMap.set(item.id, item));
   (settingsCache.campaignTemplates || []).forEach((item) => templateMap.set(item.id, item));
   const templateItems = [...templateMap.values()];
+  const pixelTemplateItems = settingsCache.pixelTemplates || [];
   const campaignItems = settingsCache.campaigns.map((item) => {
     const statusLabel = item.status.charAt(0).toUpperCase() + item.status.slice(1);
     return `
@@ -3409,6 +3506,14 @@ function renderCampaignsPage() {
         <div class="campaign-template-row">
           ${templateItems.map((tpl) => `<button class="link-button secondary" type="button" data-apply-template="${escapeHtml(tpl.id)}">${escapeHtml(tpl.name)}</button>`).join("")}
           <button class="link-button" type="button" id="saveCampaignTemplateButton">Save as template</button>
+        </div>
+        <div class="campaign-template-row">
+          <select id="campaignPixelTemplate" class="url-input">
+            <option value="">Pixel template (optional)</option>
+            ${pixelTemplateItems.map((item) => `<option value="${escapeHtml(item.id)}" ${editing?.pixelTemplateId === item.id ? "selected" : ""}>${escapeHtml(item.name)} (${escapeHtml(item.pixelId)})</option>`).join("")}
+          </select>
+          <input id="campaignPixelId" class="url-input" type="text" value="${escapeHtml(editing?.pixelId || "")}" placeholder="Pixel ID (adds anylink_px query)">
+          <button class="link-button secondary" type="button" id="savePixelTemplateButton">Save pixel template</button>
         </div>
         <div class="campaign-builder-grid">
           <div>
@@ -3494,6 +3599,7 @@ function buildCampaignTrackedUrl(campaign) {
     if (campaign.campaign) url.searchParams.set("utm_campaign", campaign.campaign);
     if (campaign.term) url.searchParams.set("utm_term", campaign.term);
     if (campaign.content) url.searchParams.set("utm_content", campaign.content);
+    if (campaign.pixelId) url.searchParams.set("anylink_px", campaign.pixelId);
     return url.toString();
   } catch {
     return "Enter a valid destination URL to preview the tracked link.";
@@ -3511,6 +3617,8 @@ function collectCampaignFormValue(editing) {
     campaign: document.getElementById("campaignCode").value.trim(),
     term: document.getElementById("campaignTerm").value.trim(),
     content: document.getElementById("campaignContent").value.trim(),
+    pixelTemplateId: document.getElementById("campaignPixelTemplate")?.value?.trim() || "",
+    pixelId: document.getElementById("campaignPixelId")?.value?.trim() || "",
     slug: sanitizeSlug(document.getElementById("campaignSlug").value.trim()),
     notes: document.getElementById("campaignNotes").value.trim(),
     shortUrl: editing?.shortUrl || "",
@@ -3533,7 +3641,7 @@ async function persistCampaigns(nextCampaigns, successMessage) {
 function bindCampaignBuilder(editing) {
   const banner = document.getElementById("campaignBanner");
   const previewNode = document.getElementById("campaignPreviewUrl");
-  const formIds = ["campaignDestination", "campaignSource", "campaignMedium", "campaignCode", "campaignTerm", "campaignContent"];
+  const formIds = ["campaignDestination", "campaignSource", "campaignMedium", "campaignCode", "campaignTerm", "campaignContent", "campaignPixelId"];
 
   const refreshPreview = () => {
     previewNode.textContent = buildCampaignTrackedUrl(collectCampaignFormValue(editing));
@@ -3554,6 +3662,13 @@ function bindCampaignBuilder(editing) {
     refreshPreview();
   };
 
+  const applyPixelTemplate = (templateId) => {
+    const selected = (settingsCache.pixelTemplates || []).find((item) => item.id === templateId);
+    if (!selected) return;
+    document.getElementById("campaignPixelId").value = selected.pixelId || "";
+    refreshPreview();
+  };
+
   document.querySelectorAll("[data-apply-template]").forEach((button) => button.addEventListener("click", () => {
     const id = button.getAttribute("data-apply-template");
     const source = [...builtInCampaignTemplates, ...(settingsCache.campaignTemplates || [])]
@@ -3561,6 +3676,10 @@ function bindCampaignBuilder(editing) {
     applyTemplate(source);
     setInlineBanner(banner, `Template applied: ${source?.name || "Campaign template"}.`, false);
   }));
+
+  document.getElementById("campaignPixelTemplate")?.addEventListener("change", (event) => {
+    applyPixelTemplate(event.target.value);
+  });
 
   document.getElementById("saveCampaignTemplateButton")?.addEventListener("click", async () => {
     const current = collectCampaignFormValue(editing);
@@ -3591,6 +3710,36 @@ function bindCampaignBuilder(editing) {
       });
       renderCampaignsPage();
       showGlobalMessage(`Template saved: ${template.name}`, false);
+    } catch (error) {
+      setInlineBanner(banner, error.message, true);
+    }
+  });
+
+  document.getElementById("savePixelTemplateButton")?.addEventListener("click", async () => {
+    const pixelId = document.getElementById("campaignPixelId")?.value?.trim() || "";
+    if (!pixelId) {
+      setInlineBanner(banner, "Pixel ID required to save a template.", true);
+      return;
+    }
+    const nameBase = document.getElementById("campaignName")?.value?.trim() || "Pixel";
+    const template = {
+      id: crypto.randomUUID(),
+      name: `${nameBase} Pixel`,
+      pixelId,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    try {
+      await saveSettings({
+        workspaceName: settingsCache.workspaceName,
+        defaultDomain: settingsCache.defaultDomain,
+        domains: settingsCache.domains,
+        campaigns: settingsCache.campaigns,
+        campaignTemplates: settingsCache.campaignTemplates,
+        pixelTemplates: [template, ...(settingsCache.pixelTemplates || []).filter((item) => item.pixelId !== template.pixelId)],
+      });
+      renderCampaignsPage();
+      showGlobalMessage(`Pixel template saved: ${template.name}`, false);
     } catch (error) {
       setInlineBanner(banner, error.message, true);
     }
@@ -4106,6 +4255,23 @@ function renderSettingsPage() {
             <select id="defaultDomain" class="url-input domain-select">${settingsCache.domains.map((domain) => `<option value="${escapeHtml(domain)}" ${domain === settingsCache.defaultDomain ? "selected" : ""}>${escapeHtml(domain)}</option>`).join("")}</select>
             <button class="primary-action inline-action" id="saveSettingsButton">Save settings</button>
           </div>
+          <div class="form-card">
+            <h3>Team & roles</h3>
+            <p class="helper-copy">Add collaborators with role-based workspace access.</p>
+            <div class="campaign-builder-grid">
+              <input id="teamMemberName" class="url-input" type="text" placeholder="Member name">
+              <input id="teamMemberEmail" class="url-input" type="email" placeholder="member@company.com">
+              <select id="teamMemberRole" class="url-input">
+                <option value="viewer">Viewer</option>
+                <option value="editor">Editor</option>
+                <option value="admin">Admin</option>
+              </select>
+              <button class="link-button" id="addTeamMemberButton" type="button">Add member</button>
+            </div>
+            <div class="admin-table">
+              ${renderTeamMemberRows(settingsCache.teamMembers || [])}
+            </div>
+          </div>
         </div>
         <div class="mini-card inset-card profile-card">
           <div class="profile-card-head">
@@ -4170,7 +4336,70 @@ function renderSettingsPage() {
     }
   });
 
+  document.getElementById("addTeamMemberButton")?.addEventListener("click", async () => {
+    const name = document.getElementById("teamMemberName")?.value?.trim() || "";
+    const email = document.getElementById("teamMemberEmail")?.value?.trim() || "";
+    const role = document.getElementById("teamMemberRole")?.value || "viewer";
+    if (!email) {
+      return showGlobalMessage("Member email is required.", true);
+    }
+    try {
+      const response = await fetch("/api/team", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, email, role }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || "Unable to add team member.");
+      settingsCache = normalizeSettings(payload.settings || settingsCache);
+      renderSettingsPage();
+      showGlobalMessage("Team member added.", false);
+    } catch (error) {
+      showGlobalMessage(error.message, true);
+    }
+  });
+
+  document.querySelectorAll("[data-remove-team-member]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const memberId = button.getAttribute("data-remove-team-member");
+      if (!memberId) return;
+      try {
+        const response = await fetch(`/api/team/${memberId}/remove`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({}),
+        });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || "Unable to remove team member.");
+        settingsCache = normalizeSettings(payload.settings || settingsCache);
+        renderSettingsPage();
+        showGlobalMessage("Team member removed.", false);
+      } catch (error) {
+        showGlobalMessage(error.message, true);
+      }
+    });
+  });
+
   bindPasswordToggles();
+}
+
+function renderTeamMemberRows(teamMembers) {
+  const items = Array.isArray(teamMembers) ? teamMembers : [];
+  if (!items.length) {
+    return '<div class="empty-state">No team members added yet.</div>';
+  }
+  return items.map((member) => `
+    <div class="admin-row">
+      <div class="admin-main">
+        <strong>${escapeHtml(member.name || member.email)}</strong>
+        <span>${escapeHtml(member.email)}</span>
+        <span>Role: ${escapeHtml((member.role || "viewer").toUpperCase())}</span>
+      </div>
+      <div class="admin-actions">
+        <button class="link-button danger" data-remove-team-member="${escapeHtml(member.id)}">Remove</button>
+      </div>
+    </div>
+  `).join("");
 }
 
 function buildDomainPreview(domain, slug = "sample-link") {
