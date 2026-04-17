@@ -1521,11 +1521,25 @@ function bindAdminUserLinkInsights() {
       actions.insertBefore(viewButton, actions.firstChild);
     }
 
+    let exportButton = actions.querySelector(`[data-admin-export-user="${userId}"]`);
+    if (!exportButton) {
+      exportButton = document.createElement("button");
+      exportButton.type = "button";
+      exportButton.className = "link-button secondary";
+      exportButton.setAttribute("data-admin-export-user", userId);
+      exportButton.textContent = "Export Excel";
+      actions.insertBefore(exportButton, viewButton.nextSibling);
+    }
+
     row.setAttribute("data-admin-toggle-row", userId);
     viewButton.textContent = selectedAdminUserId === userId ? "Hide links" : "View links";
     viewButton.addEventListener("click", async (event) => {
       event.stopPropagation();
       await toggleAdminUserLinks(userId);
+    });
+    exportButton.addEventListener("click", (event) => {
+      event.stopPropagation();
+      window.location.href = `/api/admin/users/${encodeURIComponent(userId)}/export`;
     });
 
     row.addEventListener("click", async (event) => {

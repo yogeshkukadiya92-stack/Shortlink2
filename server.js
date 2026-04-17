@@ -202,6 +202,11 @@ const server = http.createServer(async (req, res) => {
       return await withAdmin(req, res, () => handleAdminUserLinks(userId, res));
     }
 
+    if (req.method === "GET" && pathname.startsWith("/api/admin/users/") && pathname.endsWith("/export")) {
+      const userId = pathname.split("/")[4];
+      return await withAdmin(req, res, () => handleAdminUserExport(userId, req, res));
+    }
+
     if (req.method === "POST" && pathname.startsWith("/api/admin/users/") && pathname.endsWith("/subscription")) {
       const body = await readRequestBody(req);
       const userId = pathname.split("/")[4];
@@ -2009,6 +2014,73 @@ async function handleAdminUserLinks(userId, res) {
     },
     links: normalizedLinks,
   });
+}
+
+async function handleAdminUserExport(userId, req, res) {
+  const users = readUsers();
+  const user = users.find((item) => item.id === userId);
+  if (!user) {
+    return sendJson(res, 404, { error: "User not found." });
+  }
+
+  const links = await readLinksForUserAsync(userId);
+  const activity = readActivitySummary(userId);
+  const billing = serializeBilling(user);
+  const safeLinks = Array.isArray(links) ? links : [];
+
+  const headers = [
+    "User Name",
+    "User Email",
+    "Email Verified",
+    "Subscription Status",
+    "Has Access",
+    "Trial Ends At",
+    "Subscription Starts At",
+    "Subscription Ends At",
+    "Total User Links",
+    "Total Page Views",
+    "Total Time Spent (ms)",
+    "Link Slug",
+    "Short URL",
+    "Destination",
+    "Include QR",
+    "Link Created At",
+  ];
+
+  const baseCols = [
+    String(user.name || ""),
+    String(user.email || ""),
+    user.emailVerified ? "Yes" : "No",
+    String(billing.subscriptionStatus || ""),
+    billing.hasAccess ? "Yes" : "No",
+    billing.trialEndsAt ? new Date(Number(billing.trialEndsAt)).toISOString() : "",
+    billing.subscriptionStartedAt ? new Date(Number(billing.subscriptionStartedAt)).toISOString() : "",
+    billing.subscriptionExpiresAt ? new Date(Number(billing.subscriptionExpiresAt)).toISOString() : "",
+    String(safeLinks.length),
+    String(Number(activity.pageViews || 0)),
+    String(Number(activity.totalTimeMs || 0)),
+  ];
+
+  const rows = safeLinks.length
+    ? safeLinks.map((link) => [
+      ...baseCols,
+      String(link.slug || ""),
+      String(link.shortUrl || ""),
+      String(link.destination || ""),
+      Boolean(link.includeQr) ? "Yes" : "No",
+      link.createdAt ? new Date(link.createdAt).toISOString() : "",
+    ])
+    : [[
+      ...baseCols,
+      "",
+      "",
+      "",
+      "",
+      "",
+    ]];
+
+  const safeName = String(user.name || "user").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "user";
+  return sendCsv(res, `${safeName}-data.csv`, headers, rows);
 }
 
 async function handleAdminTrialUpdate(userId, body, res, adminUser) {
