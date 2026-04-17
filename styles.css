@@ -1838,6 +1838,11 @@ svg {
   margin-bottom: 6px;
 }
 
+.audit-toolbar .url-input {
+  min-width: 180px;
+  flex: 1 1 220px;
+}
+
 .campaign-span-2 {
   grid-column: 1 / -1;
 }

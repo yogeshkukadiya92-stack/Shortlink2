@@ -1409,6 +1409,14 @@ async function renderAdminPage() {
             <p>Latest admin and workspace actions with actor and timestamp.</p>
           </div>
         </div>
+        <div class="campaign-template-row audit-toolbar">
+          <input id="adminAuditSearch" class="url-input" type="text" placeholder="Search actor/action/metadata">
+          <select id="adminAuditActionFilter" class="url-input">
+            <option value="all">All actions</option>
+            <option value="admin.">Admin actions</option>
+            <option value="team.">Team actions</option>
+          </select>
+        </div>
         <div class="admin-table">
           ${renderAuditRows(payload.auditLogs || [])}
         </div>
@@ -1465,6 +1473,12 @@ function bindAdminActions() {
       await runAdminAction(`/api/admin/coupons/${button.getAttribute("data-admin-coupon-delete")}/delete`, {}, "Coupon deleted.");
     });
   });
+
+  const auditSearch = document.getElementById("adminAuditSearch");
+  const auditActionFilter = document.getElementById("adminAuditActionFilter");
+  auditSearch?.addEventListener("input", applyAuditFilters);
+  auditActionFilter?.addEventListener("change", applyAuditFilters);
+  applyAuditFilters();
 }
 
 function renderAuditRows(auditLogs) {
@@ -1484,8 +1498,9 @@ function renderAuditRows(auditLogs) {
         .map(([key, value]) => `${key}: ${String(value)}`)
         .join(" | ")
       : "";
+    const searchable = [action, actorEmail, metadata].join(" ").toLowerCase();
     return `
-      <div class="admin-row">
+      <div class="admin-row audit-row" data-audit-action="${action.toLowerCase()}" data-audit-search="${escapeHtml(searchable)}">
         <div class="admin-main">
           <strong>${action}</strong>
           <span>Actor: ${actorEmail}</span>
@@ -1495,6 +1510,18 @@ function renderAuditRows(auditLogs) {
       </div>
     `;
   }).join("");
+}
+
+function applyAuditFilters() {
+  const search = String(document.getElementById("adminAuditSearch")?.value || "").trim().toLowerCase();
+  const actionPrefix = String(document.getElementById("adminAuditActionFilter")?.value || "all").trim().toLowerCase();
+  document.querySelectorAll(".audit-row").forEach((row) => {
+    const action = String(row.getAttribute("data-audit-action") || "").toLowerCase();
+    const haystack = String(row.getAttribute("data-audit-search") || "").toLowerCase();
+    const actionOk = actionPrefix === "all" ? true : action.startsWith(actionPrefix);
+    const searchOk = !search || haystack.includes(search);
+    row.classList.toggle("hidden", !(actionOk && searchOk));
+  });
 }
 
 async function runAdminAction(url, body, successMessage) {
@@ -4272,6 +4299,18 @@ function renderSettingsPage() {
               ${renderTeamMemberRows(settingsCache.teamMembers || [])}
             </div>
           </div>
+          <div class="form-card">
+            <h3>Retargeting pixel templates</h3>
+            <p class="helper-copy">Save reusable pixel IDs and apply them in Campaign builder.</p>
+            <div class="campaign-builder-grid">
+              <input id="settingsPixelTemplateName" class="url-input" type="text" placeholder="Template name (Meta Lead)">
+              <input id="settingsPixelTemplateId" class="url-input" type="text" placeholder="Pixel ID">
+              <button class="link-button" id="saveSettingsPixelTemplateButton" type="button">Save template</button>
+            </div>
+            <div class="admin-table">
+              ${renderPixelTemplateRows(settingsCache.pixelTemplates || [])}
+            </div>
+          </div>
         </div>
         <div class="mini-card inset-card profile-card">
           <div class="profile-card-head">
@@ -4380,6 +4419,57 @@ function renderSettingsPage() {
     });
   });
 
+  document.getElementById("saveSettingsPixelTemplateButton")?.addEventListener("click", async () => {
+    const name = document.getElementById("settingsPixelTemplateName")?.value?.trim() || "";
+    const pixelId = document.getElementById("settingsPixelTemplateId")?.value?.trim() || "";
+    if (!pixelId) {
+      return showGlobalMessage("Pixel ID is required.", true);
+    }
+    const nextTemplate = {
+      id: crypto.randomUUID(),
+      name: name || "Pixel template",
+      pixelId,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    try {
+      await saveSettings({
+        workspaceName: settingsCache.workspaceName,
+        defaultDomain: settingsCache.defaultDomain,
+        domains: settingsCache.domains,
+        campaigns: settingsCache.campaigns,
+        campaignTemplates: settingsCache.campaignTemplates,
+        pixelTemplates: [nextTemplate, ...(settingsCache.pixelTemplates || []).filter((item) => item.pixelId !== pixelId)],
+      });
+      renderSettingsPage();
+      showGlobalMessage("Pixel template saved.", false);
+    } catch (error) {
+      showGlobalMessage(error.message, true);
+    }
+  });
+
+  document.querySelectorAll("[data-remove-pixel-template]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const templateId = button.getAttribute("data-remove-pixel-template");
+      if (!templateId) return;
+      const nextTemplates = (settingsCache.pixelTemplates || []).filter((item) => item.id !== templateId);
+      try {
+        await saveSettings({
+          workspaceName: settingsCache.workspaceName,
+          defaultDomain: settingsCache.defaultDomain,
+          domains: settingsCache.domains,
+          campaigns: settingsCache.campaigns,
+          campaignTemplates: settingsCache.campaignTemplates,
+          pixelTemplates: nextTemplates,
+        });
+        renderSettingsPage();
+        showGlobalMessage("Pixel template removed.", false);
+      } catch (error) {
+        showGlobalMessage(error.message, true);
+      }
+    });
+  });
+
   bindPasswordToggles();
 }
 
@@ -4397,6 +4487,25 @@ function renderTeamMemberRows(teamMembers) {
       </div>
       <div class="admin-actions">
         <button class="link-button danger" data-remove-team-member="${escapeHtml(member.id)}">Remove</button>
+      </div>
+    </div>
+  `).join("");
+}
+
+function renderPixelTemplateRows(pixelTemplates) {
+  const items = Array.isArray(pixelTemplates) ? pixelTemplates : [];
+  if (!items.length) {
+    return '<div class="empty-state">No pixel templates saved yet.</div>';
+  }
+  return items.map((item) => `
+    <div class="admin-row">
+      <div class="admin-main">
+        <strong>${escapeHtml(item.name || "Pixel template")}</strong>
+        <span>Pixel: ${escapeHtml(item.pixelId || "")}</span>
+        <span>Updated: ${escapeHtml(formatDateDisplay(item.updatedAt || item.createdAt || ""))}</span>
+      </div>
+      <div class="admin-actions">
+        <button class="link-button danger" data-remove-pixel-template="${escapeHtml(item.id)}">Remove</button>
       </div>
     </div>
   `).join("");
