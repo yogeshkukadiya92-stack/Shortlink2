@@ -2308,6 +2308,16 @@ body.compact-ui .admin-row {
   gap: 10px;
 }
 
+.admin-user-links-panel {
+  grid-template-columns: 1fr;
+  gap: 12px;
+  background: linear-gradient(135deg, rgba(238, 245, 255, 0.96), rgba(246, 250, 255, 0.98));
+}
+
+.admin-row-usage[data-admin-toggle-row] {
+  cursor: pointer;
+}
+
 .admin-select,
 .admin-days-input {
   height: 40px;

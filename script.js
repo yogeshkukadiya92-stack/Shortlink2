@@ -74,6 +74,8 @@ let currentUser = null;
 let linksCache = [];
 let selectedLinkSlug = "";
 let isRecycleBinExpanded = false;
+let selectedAdminUserId = "";
+const adminUserLinksState = {};
 let pagesCache = [];
 let selectedQrSlug = null;
 let selectedFormId = "";
@@ -1447,6 +1449,8 @@ async function renderAdminPage() {
 }
 
 function bindAdminActions() {
+  bindAdminUserLinkInsights();
+
   document.querySelectorAll("[data-admin-apply]").forEach((button) => {
     button.addEventListener("click", async () => {
       const userId = button.getAttribute("data-admin-apply");
@@ -1496,6 +1500,177 @@ function bindAdminActions() {
   auditSearch?.addEventListener("input", applyAuditFilters);
   auditActionFilter?.addEventListener("change", applyAuditFilters);
   applyAuditFilters();
+}
+
+function bindAdminUserLinkInsights() {
+  document.querySelectorAll(".admin-user-links-panel").forEach((panel) => panel.remove());
+
+  document.querySelectorAll(".admin-row-usage").forEach((row) => {
+    const userId = row.querySelector("[data-admin-mode]")?.getAttribute("data-admin-mode");
+    const actions = row.querySelector(".admin-actions");
+    if (!userId || !actions) {
+      return;
+    }
+
+    let viewButton = actions.querySelector(`[data-admin-view-links="${userId}"]`);
+    if (!viewButton) {
+      viewButton = document.createElement("button");
+      viewButton.type = "button";
+      viewButton.className = "link-button secondary";
+      viewButton.setAttribute("data-admin-view-links", userId);
+      actions.insertBefore(viewButton, actions.firstChild);
+    }
+
+    row.setAttribute("data-admin-toggle-row", userId);
+    viewButton.textContent = selectedAdminUserId === userId ? "Hide links" : "View links";
+    viewButton.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      await toggleAdminUserLinks(userId);
+    });
+
+    row.addEventListener("click", async (event) => {
+      const interactive = event.target.closest("button, a, input, select, textarea, label");
+      if (interactive) return;
+      await toggleAdminUserLinks(userId);
+    });
+
+    if (selectedAdminUserId === userId) {
+      const panel = document.createElement("div");
+      panel.className = "admin-row admin-user-links-panel";
+      panel.innerHTML = renderAdminUserLinksPanel(userId, adminUserLinksState[userId]);
+      row.insertAdjacentElement("afterend", panel);
+
+      panel.querySelector(`[data-admin-refresh-links="${userId}"]`)?.addEventListener("click", async () => {
+        adminUserLinksState[userId] = { status: "loading", links: [], error: "", summary: null };
+        renderAdminPage();
+        await fetchAdminUserLinks(userId, true);
+        renderAdminPage();
+      });
+
+      panel.querySelectorAll("[data-admin-copy-link]").forEach((button) => {
+        button.addEventListener("click", async () => {
+          const url = button.getAttribute("data-admin-copy-link") || "";
+          if (!url) return;
+          try {
+            await navigator.clipboard.writeText(url);
+            showGlobalMessage(`Copied: ${url}`, false);
+          } catch {
+            showGlobalMessage("Copy failed. Please copy manually.", true);
+          }
+        });
+      });
+    }
+  });
+}
+
+async function toggleAdminUserLinks(userId) {
+  if (!userId) return;
+  if (selectedAdminUserId === userId) {
+    selectedAdminUserId = "";
+    renderAdminPage();
+    return;
+  }
+
+  selectedAdminUserId = userId;
+  if (!adminUserLinksState[userId] || adminUserLinksState[userId].status === "idle") {
+    adminUserLinksState[userId] = { status: "loading", links: [], error: "", summary: null };
+  }
+  renderAdminPage();
+
+  await fetchAdminUserLinks(userId);
+  renderAdminPage();
+}
+
+async function fetchAdminUserLinks(userId, force = false) {
+  if (!userId) return;
+  const current = adminUserLinksState[userId];
+  if (!force && current?.status === "loaded") {
+    return;
+  }
+
+  try {
+    const response = await fetch(`/api/admin/users/${encodeURIComponent(userId)}/links`);
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new Error(payload.error || "Could not load user links.");
+    }
+
+    adminUserLinksState[userId] = {
+      status: "loaded",
+      links: Array.isArray(payload.links) ? payload.links : [],
+      summary: payload.summary || null,
+      error: "",
+    };
+  } catch (error) {
+    adminUserLinksState[userId] = {
+      status: "error",
+      links: [],
+      summary: null,
+      error: error.message || "Could not load user links.",
+    };
+  }
+}
+
+function renderAdminUserLinksPanel(userId, state) {
+  const safeState = state || { status: "idle", links: [], error: "", summary: null };
+  const links = Array.isArray(safeState.links) ? safeState.links : [];
+  const total = Number(safeState.summary?.totalLinks || links.length || 0);
+
+  if (safeState.status === "loading") {
+    return `
+      <div class="admin-main">
+        <strong>User links</strong>
+        <span>Loading links...</span>
+      </div>
+    `;
+  }
+
+  if (safeState.status === "error") {
+    return `
+      <div class="admin-main">
+        <strong>User links</strong>
+        <span>${escapeHtml(safeState.error || "Could not load links.")}</span>
+      </div>
+      <div class="admin-actions">
+        <button class="link-button secondary" type="button" data-admin-refresh-links="${escapeHtml(userId)}">Retry</button>
+      </div>
+    `;
+  }
+
+  return `
+    <div class="admin-main">
+      <strong>User links (${total})</strong>
+      <span>All links created by this user are listed below.</span>
+    </div>
+    <div class="admin-actions">
+      <button class="link-button secondary" type="button" data-admin-refresh-links="${escapeHtml(userId)}">Refresh</button>
+    </div>
+    <div class="admin-table">
+      ${links.length
+        ? links.map((link) => `
+            <div class="admin-row compact">
+              <div class="admin-main">
+                <strong>${escapeHtml(link.slug || "-")}</strong>
+                <span>${escapeHtml(link.shortUrl || "-")}</span>
+                <span>${escapeHtml(link.destination || "-")}</span>
+                <span>Created: ${escapeHtml(formatAdminUserLinkDate(link.createdAt))}</span>
+              </div>
+              <div class="admin-actions">
+                <button class="link-button" type="button" data-admin-copy-link="${escapeHtml(link.shortUrl || "")}">Copy</button>
+                <a class="link-button secondary" href="${escapeHtml(link.shortUrl || "#")}" target="_blank" rel="noreferrer">Open</a>
+              </div>
+            </div>
+          `).join("")
+        : '<div class="empty-state">This user has not created any links yet.</div>'}
+    </div>
+  `;
+}
+
+function formatAdminUserLinkDate(value) {
+  if (!value) return "Unknown";
+  const time = new Date(value).getTime();
+  if (!Number.isFinite(time)) return "Unknown";
+  return new Date(time).toLocaleString();
 }
 
 function renderAuditRows(auditLogs) {
