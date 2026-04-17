@@ -695,11 +695,49 @@ function normalizeLinkRules(rules) {
     const isProtected = Boolean(value.passwordHash || value.isProtected);
     const isOneTime = Boolean(value.isOneTime);
     const oneTimeUsedAt = String(value.oneTimeUsedAt || "").trim();
-    if (!startsAt && !expiresAt && !isPaused && !isProtected && !isOneTime) {
+    const abEnabled = Boolean(value.abEnabled);
+    const abDestinationA = String(value.abDestinationA || "").trim();
+    const abDestinationB = String(value.abDestinationB || "").trim();
+    const abWeightA = Math.min(95, Math.max(5, Number(value.abWeightA || 50) || 50));
+    const pixelId = String(value.pixelId || "").trim();
+    const geoRedirects = Array.isArray(value.geoRedirects) ? value.geoRedirects
+      .map((item) => {
+        if (!item || typeof item !== "object") return null;
+        const country = String(item.country || "").trim().toUpperCase().slice(0, 2);
+        const destination = String(item.destination || "").trim();
+        if (!country || !destination) return null;
+        return { country, destination };
+      })
+      .filter(Boolean) : [];
+    const deviceRedirects = Array.isArray(value.deviceRedirects) ? value.deviceRedirects
+      .map((item) => {
+        if (!item || typeof item !== "object") return null;
+        const device = String(item.device || "").trim().toLowerCase();
+        const destination = String(item.destination || "").trim();
+        if (!["mobile", "desktop", "tablet"].includes(device) || !destination) return null;
+        return { device, destination };
+      })
+      .filter(Boolean) : [];
+
+    if (!startsAt && !expiresAt && !isPaused && !isProtected && !isOneTime && !abEnabled && !pixelId && !geoRedirects.length && !deviceRedirects.length) {
       return;
     }
 
-    normalized[cleanSlug] = { startsAt, expiresAt, isPaused, isProtected, isOneTime, oneTimeUsedAt };
+    normalized[cleanSlug] = {
+      startsAt,
+      expiresAt,
+      isPaused,
+      isProtected,
+      isOneTime,
+      oneTimeUsedAt,
+      abEnabled,
+      abDestinationA,
+      abDestinationB,
+      abWeightA,
+      pixelId,
+      geoRedirects,
+      deviceRedirects,
+    };
   });
 
   return normalized;
@@ -797,7 +835,21 @@ function normalizeFormFields(fields) {
 }
 
 function getLinkRule(slug) {
-  return settingsCache.linkRules?.[slug] || { startsAt: "", expiresAt: "", isPaused: false, isProtected: false, isOneTime: false, oneTimeUsedAt: "" };
+  return settingsCache.linkRules?.[slug] || {
+    startsAt: "",
+    expiresAt: "",
+    isPaused: false,
+    isProtected: false,
+    isOneTime: false,
+    oneTimeUsedAt: "",
+    abEnabled: false,
+    abDestinationA: "",
+    abDestinationB: "",
+    abWeightA: 50,
+    pixelId: "",
+    geoRedirects: [],
+    deviceRedirects: [],
+  };
 }
 
 function getLinkHealthStatus(slug) {
@@ -1776,6 +1828,26 @@ function renderLinksPage(links, query = "") {
                 <label class="field-toggle compact-toggle"><input type="checkbox" data-pause-input="${escapeHtml(link.slug)}" ${rule.isPaused ? "checked" : ""}><span>Pause link</span></label>
                 <label class="field-toggle compact-toggle"><input type="checkbox" data-onetime-input="${escapeHtml(link.slug)}" ${rule.isOneTime ? "checked" : ""}><span>One-time</span></label>
                 <button class="link-button secondary" type="button" data-save-rule="${escapeHtml(link.slug)}">Save rule</button>
+              </div>
+              <div class="goal-action-row">
+                <label class="field-toggle compact-toggle"><input type="checkbox" data-ab-enabled-input="${escapeHtml(link.slug)}" ${rule.abEnabled ? "checked" : ""}><span>A/B split</span></label>
+                <input class="url-input goal-input" type="number" min="5" max="95" step="1" value="${escapeHtml(String(rule.abWeightA || 50))}" data-ab-weight-input="${escapeHtml(link.slug)}" placeholder="A %">
+                <input class="url-input" type="url" value="${escapeHtml(rule.abDestinationA || "")}" data-ab-a-input="${escapeHtml(link.slug)}" placeholder="Destination A">
+                <input class="url-input" type="url" value="${escapeHtml(rule.abDestinationB || "")}" data-ab-b-input="${escapeHtml(link.slug)}" placeholder="Destination B">
+              </div>
+              <div class="goal-action-row">
+                <input class="url-input goal-input" type="text" maxlength="2" value="${escapeHtml((rule.geoRedirects?.[0]?.country || "").toUpperCase())}" data-geo-country-input="${escapeHtml(link.slug)}" placeholder="Country code (IN)">
+                <input class="url-input" type="url" value="${escapeHtml(rule.geoRedirects?.[0]?.destination || "")}" data-geo-destination-input="${escapeHtml(link.slug)}" placeholder="Geo redirect URL">
+                <select class="url-input goal-input" data-device-type-input="${escapeHtml(link.slug)}">
+                  <option value="">Device</option>
+                  <option value="mobile" ${rule.deviceRedirects?.[0]?.device === "mobile" ? "selected" : ""}>Mobile</option>
+                  <option value="desktop" ${rule.deviceRedirects?.[0]?.device === "desktop" ? "selected" : ""}>Desktop</option>
+                  <option value="tablet" ${rule.deviceRedirects?.[0]?.device === "tablet" ? "selected" : ""}>Tablet</option>
+                </select>
+                <input class="url-input" type="url" value="${escapeHtml(rule.deviceRedirects?.[0]?.destination || "")}" data-device-destination-input="${escapeHtml(link.slug)}" placeholder="Device redirect URL">
+              </div>
+              <div class="goal-action-row">
+                <input class="url-input" type="text" value="${escapeHtml(rule.pixelId || "")}" data-pixel-id-input="${escapeHtml(link.slug)}" placeholder="Pixel tag (appends anylink_px)">
               </div>
               ${rule.startsAt ? `<div class="helper-copy">${isScheduled ? `Starts on ${escapeHtml(new Date(rule.startsAt).toLocaleString())}` : `Started on ${escapeHtml(new Date(rule.startsAt).toLocaleString())}`}</div>` : ""}
               ${rule.isOneTime && rule.oneTimeUsedAt ? `<div class="helper-copy">Used on ${escapeHtml(new Date(rule.oneTimeUsedAt).toLocaleString())}</div>` : ""}
@@ -2955,17 +3027,37 @@ function bindGoalActions() {
     const expiryInput = document.querySelector(`[data-expiry-input="${slug}"]`);
     const pauseInput = document.querySelector(`[data-pause-input="${slug}"]`);
     const oneTimeInput = document.querySelector(`[data-onetime-input="${slug}"]`);
+    const abEnabledInput = document.querySelector(`[data-ab-enabled-input="${slug}"]`);
+    const abWeightInput = document.querySelector(`[data-ab-weight-input="${slug}"]`);
+    const abAInput = document.querySelector(`[data-ab-a-input="${slug}"]`);
+    const abBInput = document.querySelector(`[data-ab-b-input="${slug}"]`);
+    const geoCountryInput = document.querySelector(`[data-geo-country-input="${slug}"]`);
+    const geoDestinationInput = document.querySelector(`[data-geo-destination-input="${slug}"]`);
+    const deviceTypeInput = document.querySelector(`[data-device-type-input="${slug}"]`);
+    const deviceDestinationInput = document.querySelector(`[data-device-destination-input="${slug}"]`);
+    const pixelIdInput = document.querySelector(`[data-pixel-id-input="${slug}"]`);
     const startsAt = String(startInput?.value || "").trim();
     const expiresAt = String(expiryInput?.value || "").trim();
     const isPaused = Boolean(pauseInput?.checked);
     const isOneTime = Boolean(oneTimeInput?.checked);
+    const abEnabled = Boolean(abEnabledInput?.checked);
+    const abWeightA = Math.min(95, Math.max(5, Number(abWeightInput?.value || 50) || 50));
+    const abDestinationA = String(abAInput?.value || "").trim();
+    const abDestinationB = String(abBInput?.value || "").trim();
+    const geoCountry = String(geoCountryInput?.value || "").trim().toUpperCase().slice(0, 2);
+    const geoDestination = String(geoDestinationInput?.value || "").trim();
+    const geoRedirects = geoCountry && geoDestination ? [{ country: geoCountry, destination: geoDestination }] : [];
+    const deviceType = String(deviceTypeInput?.value || "").trim().toLowerCase();
+    const deviceDestination = String(deviceDestinationInput?.value || "").trim();
+    const deviceRedirects = deviceType && deviceDestination ? [{ device: deviceType, destination: deviceDestination }] : [];
+    const pixelId = String(pixelIdInput?.value || "").trim();
 
     try {
       const nextRules = {
         ...(settingsCache.linkRules || {}),
       };
 
-      if (!startsAt && !expiresAt && !isPaused && !isOneTime) {
+      if (!startsAt && !expiresAt && !isPaused && !isOneTime && !abEnabled && !pixelId && !geoRedirects.length && !deviceRedirects.length) {
         delete nextRules[slug];
       } else {
         nextRules[slug] = {
@@ -2975,6 +3067,13 @@ function bindGoalActions() {
           isPaused,
           isOneTime,
           oneTimeUsedAt: isOneTime ? (settingsCache.linkRules?.[slug]?.oneTimeUsedAt || "") : "",
+          abEnabled,
+          abDestinationA,
+          abDestinationB,
+          abWeightA,
+          geoRedirects,
+          deviceRedirects,
+          pixelId,
         };
       }
 

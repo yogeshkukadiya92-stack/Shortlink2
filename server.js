@@ -3943,6 +3943,53 @@ function hasProtectedLinkAccess(req, rule, slug) {
   return cookies[getProtectedLinkCookieName(slug)] === rule.accessToken;
 }
 
+function appendPixelParam(url, pixelId) {
+  if (!pixelId) {
+    return url;
+  }
+  try {
+    const parsed = new URL(url);
+    parsed.searchParams.set("anylink_px", pixelId);
+    return parsed.toString();
+  } catch {
+    return url;
+  }
+}
+
+function resolveSmartDestination(baseDestination, rule, req) {
+  const fallback = normalizeUrl(baseDestination) || baseDestination;
+  if (!rule || typeof rule !== "object") {
+    return fallback;
+  }
+
+  const geo = getGeoDetails(req);
+  const country = String(geo.country || "").trim().toUpperCase();
+  if (country && Array.isArray(rule.geoRedirects)) {
+    const geoMatch = rule.geoRedirects.find((item) => String(item.country || "").toUpperCase() === country);
+    if (geoMatch?.destination) {
+      return appendPixelParam(geoMatch.destination, rule.pixelId);
+    }
+  }
+
+  const agent = parseUserAgent(req.headers["user-agent"] || "");
+  const device = String(agent.deviceType || "").toLowerCase();
+  if (device && Array.isArray(rule.deviceRedirects)) {
+    const deviceMatch = rule.deviceRedirects.find((item) => String(item.device || "").toLowerCase() === device);
+    if (deviceMatch?.destination) {
+      return appendPixelParam(deviceMatch.destination, rule.pixelId);
+    }
+  }
+
+  if (rule.abEnabled && rule.abDestinationA && rule.abDestinationB) {
+    const weightA = Math.min(95, Math.max(5, Number(rule.abWeightA || 50) || 50));
+    const roll = Math.random() * 100;
+    const picked = roll < weightA ? rule.abDestinationA : rule.abDestinationB;
+    return appendPixelParam(picked, rule.pixelId);
+  }
+
+  return appendPixelParam(fallback, rule.pixelId);
+}
+
 function renderProtectedLinkPage(link, errorMessage = "") {
   const shortUrl = escapeHtml(link.shortUrl || link.slug);
   const errorBlock = errorMessage ? `<div style="margin:0 0 16px;padding:12px 14px;border-radius:14px;background:#fff1f1;color:#b42318;font-weight:600;">${escapeHtml(errorMessage)}</div>` : "";
@@ -4028,7 +4075,7 @@ async function handleUnlockProtectedLink(slug, body, req, res) {
     "Content-Type": "application/json; charset=utf-8",
     "Set-Cookie": `${getProtectedLinkCookieName(link.slug)}=${rule.accessToken}; Path=/; Max-Age=${protectedLinkLifetimeSeconds}; SameSite=Lax`,
   });
-  res.end(JSON.stringify({ success: true, destination: link.destination }));
+  res.end(JSON.stringify({ success: true, destination: `/${encodeURIComponent(link.slug)}` }));
 }
 
 async function handleRedirect(slug, req, res) {
@@ -4061,10 +4108,11 @@ async function handleRedirect(slug, req, res) {
       } catch {
         // Redirect should still work even if analytics write fails.
       }
+      const destination = resolveSmartDestination(dbMatch.destination, rule, req);
       if (rule?.isOneTime) {
         markOneTimeLinkUsed(dbMatch.userId, dbMatch.slug, req);
       }
-      const headers = { Location: dbMatch.destination };
+      const headers = { Location: destination };
       if (tracking.setCookies.length) {
         headers["Set-Cookie"] = tracking.setCookies;
       }
@@ -4113,10 +4161,11 @@ async function handleRedirect(slug, req, res) {
     } catch {
       // Redirect should still work even if goal email fails.
     }
+    const destination = resolveSmartDestination(match.destination, rule, req);
     if (rule?.isOneTime) {
       markOneTimeLinkUsed(match.userId, match.slug, req);
     }
-    const headers = { Location: match.destination };
+    const headers = { Location: destination };
     if (tracking.setCookies.length) {
       headers["Set-Cookie"] = tracking.setCookies;
     }
@@ -4323,12 +4372,46 @@ function normalizeLinkRules(input, previousRules = {}) {
     const expiresAt = String(value.expiresAt || "").trim();
     const startsAt = String(value.startsAt || "").trim();
     const isPaused = Boolean(value.isPaused);
+    const abEnabled = Boolean(value.abEnabled);
+    const abDestinationA = normalizeUrl(String(value.abDestinationA || "").trim()) || "";
+    const abDestinationB = normalizeUrl(String(value.abDestinationB || "").trim()) || "";
+    const abWeightA = Math.min(95, Math.max(5, Number(value.abWeightA || 50) || 50));
+    const pixelId = String(value.pixelId || "").trim().slice(0, 80);
+    const geoRedirects = Array.isArray(value.geoRedirects)
+      ? value.geoRedirects
+        .map((item) => {
+          if (!item || typeof item !== "object") return null;
+          const country = String(item.country || "").trim().toUpperCase().slice(0, 2);
+          const destination = normalizeUrl(String(item.destination || "").trim());
+          if (!country || !destination) return null;
+          return { country, destination };
+        })
+        .filter(Boolean)
+      : [];
+    const deviceRedirects = Array.isArray(value.deviceRedirects)
+      ? value.deviceRedirects
+        .map((item) => {
+          if (!item || typeof item !== "object") return null;
+          const device = String(item.device || "").trim().toLowerCase();
+          const destination = normalizeUrl(String(item.destination || "").trim());
+          if (!["mobile", "desktop", "tablet"].includes(device) || !destination) return null;
+          return { device, destination };
+        })
+        .filter(Boolean)
+      : [];
     const previous = previousRules?.[slug] || {};
     const nextRule = {
       startsAt,
       expiresAt,
       isPaused,
       isOneTime: Boolean(value.isOneTime || previous.isOneTime),
+      abEnabled,
+      abDestinationA,
+      abDestinationB,
+      abWeightA,
+      geoRedirects,
+      deviceRedirects,
+      pixelId,
     };
 
     const passwordPlain = String(value.passwordPlain || "").trim();
@@ -4349,7 +4432,7 @@ function normalizeLinkRules(input, previousRules = {}) {
       nextRule.oneTimeUsedAt = String(value.oneTimeUsedAt || previous.oneTimeUsedAt || "");
     }
 
-    if (!startsAt && !expiresAt && !isPaused && !nextRule.passwordHash && !nextRule.isOneTime) {
+    if (!startsAt && !expiresAt && !isPaused && !nextRule.passwordHash && !nextRule.isOneTime && !abEnabled && !pixelId && !geoRedirects.length && !deviceRedirects.length) {
       continue;
     }
 
