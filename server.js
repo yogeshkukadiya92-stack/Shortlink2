@@ -208,6 +208,11 @@ const server = http.createServer(async (req, res) => {
       return await withAppAccess(req, res, async (user) => sendJson(res, 200, { links: await readLinksForUserAsync(user.id) }));
     }
 
+    if (req.method === "POST" && pathname === "/api/links/health-check") {
+      const body = await readRequestBody(req);
+      return await withAppAccess(req, res, (user) => handleLinksHealthCheck(body, req, res, user));
+    }
+
     if (req.method === "GET" && pathname === "/api/analytics") {
         return await withAppAccess(req, res, async (user) => sendJson(res, 200, { analytics: await buildAnalyticsReport(user.id, parseAnalyticsFilters(requestUrl.searchParams)) }));
       }
@@ -636,6 +641,8 @@ async function readSettingsForUserAsync(userId, req) {
           conversionGoals: fileExtras?.conversionGoals || {},
           goalAlertState: fileExtras?.goalAlertState || {},
           linkRules: fileExtras?.linkRules || {},
+          linkHealth: fileExtras?.linkHealth || {},
+          campaignTemplates: fileExtras?.campaignTemplates || [],
           trashLinks: fileExtras?.trashLinks || [],
           campaigns: fileExtras?.campaigns || [],
           domainEntries: mergedDomainEntries,
@@ -2633,6 +2640,92 @@ async function handlePublicFormSubmit(slug, body, req, res) {
   return sendJson(res, 201, { success: true, message: normalizedPage.thanksMessage });
 }
 
+async function checkDestinationHealth(url) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 9000);
+  const result = {
+    status: "unknown",
+    httpStatus: 0,
+    checkedAt: new Date().toISOString(),
+    error: "",
+  };
+
+  try {
+    let response = await fetch(url, {
+      method: "HEAD",
+      redirect: "follow",
+      signal: controller.signal,
+    });
+
+    if (response.status === 405 || response.status === 501) {
+      response = await fetch(url, {
+        method: "GET",
+        redirect: "follow",
+        signal: controller.signal,
+      });
+    }
+
+    result.httpStatus = Number(response.status || 0);
+    if (response.ok) {
+      result.status = "healthy";
+    } else if (response.status >= 500) {
+      result.status = "broken";
+    } else {
+      result.status = "degraded";
+    }
+  } catch (error) {
+    result.status = "broken";
+    result.error = error.name === "AbortError" ? "Request timed out" : String(error.message || "Health check failed");
+  } finally {
+    clearTimeout(timeout);
+  }
+
+  return result;
+}
+
+async function handleLinksHealthCheck(body, req, res, user) {
+  const links = await readLinksForUserAsync(user.id);
+  const requestedSlug = sanitizeSlugInput(String(body?.slug || "").trim());
+  const targetLinks = requestedSlug ? links.filter((item) => item.slug === requestedSlug) : links.slice(0, 100);
+
+  if (!targetLinks.length) {
+    return sendJson(res, 404, { error: requestedSlug ? "Link not found." : "No links found." });
+  }
+
+  const settings = await readSettingsForUserAsync(user.id, req);
+  const nextHealth = {
+    ...(settings.linkHealth || {}),
+  };
+  const results = [];
+
+  for (const link of targetLinks) {
+    const health = await checkDestinationHealth(link.destination);
+    nextHealth[link.slug] = health;
+    results.push({
+      slug: link.slug,
+      destination: link.destination,
+      ...health,
+    });
+  }
+
+  const nextSettings = normalizeSettings({
+    ...settings,
+    linkHealth: nextHealth,
+  }, req);
+
+  if (!dbOnlyMode) {
+    const store = readSettingsStore().filter((item) => item.userId !== user.id);
+    store.push(nextSettings);
+    writeSettingsStore(store);
+  }
+
+  return sendJson(res, 200, {
+    checked: results.length,
+    results,
+    settings: nextSettings,
+  });
+}
+
 async function handleDeleteLink(slug, req, res, user) {
   const links = dbOnlyMode ? [] : readLinks();
   const fileMatch = links.find((item) => item.slug === slug && item.userId === user.id) || null;
@@ -2978,6 +3071,8 @@ async function handleSaveSettings(body, req, res, user) {
   const conversionGoals = normalizeConversionGoals(body.conversionGoals || currentSettings.conversionGoals || {});
   const goalAlertState = normalizeGoalAlertState(body.goalAlertState || currentSettings.goalAlertState || {});
   const linkRules = normalizeLinkRules(body.linkRules || currentSettings.linkRules || {}, currentSettings.linkRules || {});
+  const linkHealth = normalizeLinkHealth(body.linkHealth || currentSettings.linkHealth || {});
+  const campaignTemplates = normalizeCampaignTemplates(body.campaignTemplates || currentSettings.campaignTemplates || []);
   const trashLinks = normalizeTrashLinks(body.trashLinks || currentSettings.trashLinks || []);
   const campaigns = normalizeCampaigns(body.campaigns || currentSettings.campaigns || []);
 
@@ -3003,6 +3098,8 @@ async function handleSaveSettings(body, req, res, user) {
     conversionGoals,
     goalAlertState,
     linkRules,
+    linkHealth,
+    campaignTemplates,
     trashLinks,
     campaigns,
   }, req);
@@ -4177,7 +4274,10 @@ function defaultSettings(req) {
     conversionGoals: {},
     goalAlertState: {},
     linkRules: {},
+    linkHealth: {},
+    campaignTemplates: [],
     trashLinks: [],
+    campaigns: [],
   };
 }
 
@@ -4370,6 +4470,64 @@ function buildDomainEntries(domains, defaultDomain, req, sourceEntries = []) {
     });
 }
 
+function normalizeLinkHealth(input) {
+  const health = {};
+
+  for (const [key, value] of Object.entries(input || {})) {
+    const slug = sanitizeSlugInput(String(key || ""));
+    if (!slug || !value || typeof value !== "object") {
+      continue;
+    }
+
+    const status = ["healthy", "degraded", "broken", "unknown"].includes(String(value.status || "").toLowerCase())
+      ? String(value.status || "").toLowerCase()
+      : "unknown";
+    const httpStatus = Number(value.httpStatus || 0);
+    const checkedAt = String(value.checkedAt || "").trim();
+    const error = String(value.error || "").trim();
+
+    health[slug] = {
+      status,
+      httpStatus: httpStatus > 0 ? httpStatus : 0,
+      checkedAt: checkedAt || "",
+      error: error || "",
+    };
+  }
+
+  return health;
+}
+
+function normalizeCampaignTemplates(input) {
+  const templates = [];
+  const seen = new Set();
+
+  for (const item of input || []) {
+    if (!item || typeof item !== "object") {
+      continue;
+    }
+
+    const id = String(item.id || "").trim() || crypto.randomUUID();
+    if (seen.has(id)) {
+      continue;
+    }
+    seen.add(id);
+
+    templates.push({
+      id,
+      name: String(item.name || "").trim() || "Template",
+      source: String(item.source || "").trim(),
+      medium: String(item.medium || "").trim(),
+      campaign: String(item.campaign || "").trim(),
+      term: String(item.term || "").trim(),
+      content: String(item.content || "").trim(),
+      createdAt: String(item.createdAt || new Date().toISOString()),
+      updatedAt: String(item.updatedAt || new Date().toISOString()),
+    });
+  }
+
+  return templates.sort((left, right) => new Date(right.updatedAt || 0).getTime() - new Date(left.updatedAt || 0).getTime());
+}
+
 function normalizeSettings(settings, req) {
   const base = defaultSettings(req);
   const workspaceName = String(settings?.workspaceName || base.workspaceName).trim() || base.workspaceName;
@@ -4401,6 +4559,8 @@ function normalizeSettings(settings, req) {
     conversionGoals: normalizeConversionGoals(settings?.conversionGoals || {}),
     goalAlertState: normalizeGoalAlertState(settings?.goalAlertState || {}),
     linkRules: normalizeLinkRules(settings?.linkRules || {}, settings?.linkRules || {}),
+    linkHealth: normalizeLinkHealth(settings?.linkHealth || {}),
+    campaignTemplates: normalizeCampaignTemplates(settings?.campaignTemplates || []),
     trashLinks: normalizeTrashLinks(settings?.trashLinks || []),
     campaigns: normalizeCampaigns(settings?.campaigns || []),
   };

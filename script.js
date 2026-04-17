@@ -61,6 +61,12 @@ const formBlockCatalog = {
     ["embed", "Embed anything"],
   ],
 };
+const builtInCampaignTemplates = [
+  { id: "tpl-meta-ads", name: "Meta Ads", source: "facebook", medium: "paid-social", campaign: "launch", term: "", content: "ad-a" },
+  { id: "tpl-google-search", name: "Google Search", source: "google", medium: "cpc", campaign: "search", term: "brand", content: "text-a" },
+  { id: "tpl-whatsapp", name: "WhatsApp Broadcast", source: "whatsapp", medium: "broadcast", campaign: "promo", term: "", content: "list-a" },
+  { id: "tpl-email-newsletter", name: "Email Newsletter", source: "newsletter", medium: "email", campaign: "monthly", term: "", content: "header-cta" },
+];
 
 let currentPage = getCurrentPage();
 let currentUser = null;
@@ -86,6 +92,8 @@ let settingsCache = {
   domainAutomation: { provider: "godaddy", connected: false },
   conversionGoals: {},
   linkRules: {},
+  linkHealth: {},
+  campaignTemplates: [],
   trashLinks: [],
   campaigns: [],
 };
@@ -546,9 +554,50 @@ function normalizeSettings(settings) {
     domainAutomation,
     conversionGoals: normalizeConversionGoals(settings.conversionGoals || {}),
     linkRules: normalizeLinkRules(settings.linkRules || {}),
+    linkHealth: normalizeLinkHealth(settings.linkHealth || {}),
+    campaignTemplates: normalizeCampaignTemplates(settings.campaignTemplates || []),
     trashLinks: normalizeTrashLinks(settings.trashLinks || []),
     campaigns: normalizeCampaigns(settings.campaigns || []),
   };
+}
+
+function normalizeLinkHealth(input) {
+  const health = {};
+  for (const [slug, value] of Object.entries(input || {})) {
+    const cleanSlug = sanitizeSlug(slug);
+    if (!cleanSlug || !value || typeof value !== "object") continue;
+    const status = ["healthy", "degraded", "broken", "unknown"].includes(String(value.status || "").toLowerCase())
+      ? String(value.status || "").toLowerCase()
+      : "unknown";
+    health[cleanSlug] = {
+      status,
+      httpStatus: Math.max(0, Number(value.httpStatus || 0)),
+      checkedAt: String(value.checkedAt || ""),
+      error: String(value.error || ""),
+    };
+  }
+  return health;
+}
+
+function normalizeCampaignTemplates(input) {
+  const seen = new Set();
+  return (Array.isArray(input) ? input : []).map((item) => {
+    if (!item || typeof item !== "object") return null;
+    const id = String(item.id || "").trim() || crypto.randomUUID();
+    if (seen.has(id)) return null;
+    seen.add(id);
+    return {
+      id,
+      name: String(item.name || "").trim() || "Template",
+      source: String(item.source || "").trim(),
+      medium: String(item.medium || "").trim(),
+      campaign: String(item.campaign || "").trim(),
+      term: String(item.term || "").trim(),
+      content: String(item.content || "").trim(),
+      createdAt: String(item.createdAt || new Date().toISOString()),
+      updatedAt: String(item.updatedAt || new Date().toISOString()),
+    };
+  }).filter(Boolean).sort((left, right) => new Date(right.updatedAt || 0).getTime() - new Date(left.updatedAt || 0).getTime());
 }
 
 function normalizeCampaigns(items) {
@@ -749,6 +798,20 @@ function normalizeFormFields(fields) {
 
 function getLinkRule(slug) {
   return settingsCache.linkRules?.[slug] || { startsAt: "", expiresAt: "", isPaused: false, isProtected: false, isOneTime: false, oneTimeUsedAt: "" };
+}
+
+function getLinkHealthStatus(slug) {
+  const fallback = { status: "unknown", httpStatus: 0, checkedAt: "", error: "" };
+  const value = settingsCache.linkHealth?.[slug];
+  if (!value || typeof value !== "object") return fallback;
+  return {
+    status: ["healthy", "degraded", "broken", "unknown"].includes(String(value.status || "").toLowerCase())
+      ? String(value.status || "").toLowerCase()
+      : "unknown",
+    httpStatus: Math.max(0, Number(value.httpStatus || 0)),
+    checkedAt: String(value.checkedAt || ""),
+    error: String(value.error || ""),
+  };
 }
 
 function getLinkGoal(slug) {
@@ -1647,7 +1710,10 @@ function renderLinksPage(links, query = "") {
           <h2>Your short links</h2>
           <p>Only links created inside your account appear here.</p>
         </div>
-        <a class="chip-link" href="/home">Create another</a>
+        <div class="goal-action-row">
+          <button class="link-button secondary" type="button" id="checkAllLinksHealthButton">Check all links</button>
+          <a class="chip-link" href="/home">Create another</a>
+        </div>
       </div>
       ${editingLink ? `
         <div class="form-card link-editor-card">
@@ -1671,7 +1737,15 @@ function renderLinksPage(links, query = "") {
         ${filtered.length ? filtered.map((link) => {
           const { goal, clicks, progress, achieved } = getGoalStatus(link);
           const rule = getLinkRule(link.slug);
+          const health = getLinkHealthStatus(link.slug);
           const isScheduled = rule.startsAt && Date.now() < new Date(rule.startsAt).getTime();
+          const healthLabel = health.status === "healthy"
+            ? `Healthy${health.httpStatus ? ` (${health.httpStatus})` : ""}`
+            : health.status === "degraded"
+              ? `Needs check${health.httpStatus ? ` (${health.httpStatus})` : ""}`
+              : health.status === "broken"
+                ? "Broken"
+                : "Not checked";
           return `
             <article class="goal-card">
               <div class="goal-card-head">
@@ -1681,6 +1755,12 @@ function renderLinksPage(links, query = "") {
                 </div>
                 <span class="chip-link ${achieved ? "success" : ""}">${isScheduled ? "Scheduled" : (achieved ? "Goal hit" : `${clicks} clicks`)}</span>
               </div>
+              <div class="goal-action-row">
+                <span class="domain-status ${escapeHtml(health.status)}">${escapeHtml(healthLabel)}</span>
+                ${health.checkedAt ? `<span class="helper-copy">Checked: ${escapeHtml(new Date(health.checkedAt).toLocaleString())}</span>` : ""}
+                <button class="link-button secondary" type="button" data-check-health="${escapeHtml(link.slug)}">Check</button>
+              </div>
+              ${health.error ? `<div class="helper-copy">${escapeHtml(health.error)}</div>` : ""}
               <div class="goal-progress">
                 <div class="goal-progress-bar"><span style="width:${progress}%"></span></div>
                 <span>${goal ? (achieved ? `${clicks} of ${goal} reached` : `${progress}% of ${goal}`) : "No goal set"}</span>
@@ -2813,6 +2893,15 @@ function wireLinkActions() {
 }
 
 function bindGoalActions() {
+  document.getElementById("checkAllLinksHealthButton")?.addEventListener("click", async () => {
+    await runLinksHealthCheck();
+  });
+
+  document.querySelectorAll("[data-check-health]").forEach((button) => button.addEventListener("click", async () => {
+    const slug = button.getAttribute("data-check-health");
+    await runLinksHealthCheck(slug);
+  }));
+
   document.querySelectorAll("[data-save-goal]").forEach((button) => button.addEventListener("click", async () => {
     const slug = button.getAttribute("data-save-goal");
     const input = document.querySelector(`[data-goal-input="${slug}"]`);
@@ -2959,6 +3048,28 @@ function bindGoalActions() {
       showGlobalMessage(error.message, true);
     }
   }));
+}
+
+async function runLinksHealthCheck(slug = "") {
+  try {
+    showGlobalMessage(slug ? `Checking ${slug}...` : "Checking all link destinations...", false);
+    const response = await fetch("/api/links/health-check", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(slug ? { slug } : {}),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(payload.error || "Unable to check link health.");
+    }
+    if (payload.settings) {
+      settingsCache = normalizeSettings(payload.settings);
+    }
+    renderLinksPage(linksCache, searchInput.value.trim().toLowerCase());
+    showGlobalMessage(`Health check completed for ${payload.checked || 0} link${(payload.checked || 0) === 1 ? "" : "s"}.`, false);
+  } catch (error) {
+    showGlobalMessage(error.message, true);
+  }
 }
 
 function renderLinkItems(links, includeDelete) {
@@ -3162,6 +3273,10 @@ function renderQrLinkItems() {
 
 function renderCampaignsPage() {
   const editing = settingsCache.campaigns.find((item) => item.id === selectedCampaignId) || null;
+  const templateMap = new Map();
+  builtInCampaignTemplates.forEach((item) => templateMap.set(item.id, item));
+  (settingsCache.campaignTemplates || []).forEach((item) => templateMap.set(item.id, item));
+  const templateItems = [...templateMap.values()];
   const campaignItems = settingsCache.campaigns.map((item) => {
     const statusLabel = item.status.charAt(0).toUpperCase() + item.status.slice(1);
     return `
@@ -3191,6 +3306,10 @@ function renderCampaignsPage() {
             <p>Create tracked URLs, save your campaign metadata, and optionally generate a short link instantly.</p>
           </div>
           <span class="chip-link">${settingsCache.campaigns.length} saved</span>
+        </div>
+        <div class="campaign-template-row">
+          ${templateItems.map((tpl) => `<button class="link-button secondary" type="button" data-apply-template="${escapeHtml(tpl.id)}">${escapeHtml(tpl.name)}</button>`).join("")}
+          <button class="link-button" type="button" id="saveCampaignTemplateButton">Save as template</button>
         </div>
         <div class="campaign-builder-grid">
           <div>
@@ -3322,6 +3441,61 @@ function bindCampaignBuilder(editing) {
   };
 
   formIds.forEach((id) => document.getElementById(id)?.addEventListener("input", refreshPreview));
+
+  const applyTemplate = (template) => {
+    if (!template) return;
+    document.getElementById("campaignSource").value = template.source || "";
+    document.getElementById("campaignMedium").value = template.medium || "";
+    document.getElementById("campaignCode").value = template.campaign || "";
+    document.getElementById("campaignTerm").value = template.term || "";
+    document.getElementById("campaignContent").value = template.content || "";
+    if (!document.getElementById("campaignName").value.trim()) {
+      document.getElementById("campaignName").value = template.name || "";
+    }
+    refreshPreview();
+  };
+
+  document.querySelectorAll("[data-apply-template]").forEach((button) => button.addEventListener("click", () => {
+    const id = button.getAttribute("data-apply-template");
+    const source = [...builtInCampaignTemplates, ...(settingsCache.campaignTemplates || [])]
+      .find((item) => item.id === id);
+    applyTemplate(source);
+    setInlineBanner(banner, `Template applied: ${source?.name || "Campaign template"}.`, false);
+  }));
+
+  document.getElementById("saveCampaignTemplateButton")?.addEventListener("click", async () => {
+    const current = collectCampaignFormValue(editing);
+    if (!current.name || !current.source || !current.medium || !current.campaign) {
+      setInlineBanner(banner, "Template માટે name + source + medium + campaign required છે.", true);
+      return;
+    }
+
+    const template = {
+      id: crypto.randomUUID(),
+      name: current.name,
+      source: current.source,
+      medium: current.medium,
+      campaign: current.campaign,
+      term: current.term,
+      content: current.content,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    try {
+      await saveSettings({
+        workspaceName: settingsCache.workspaceName,
+        defaultDomain: settingsCache.defaultDomain,
+        domains: settingsCache.domains,
+        campaigns: settingsCache.campaigns,
+        campaignTemplates: [template, ...(settingsCache.campaignTemplates || []).filter((item) => item.name !== template.name)],
+      });
+      renderCampaignsPage();
+      showGlobalMessage(`Template saved: ${template.name}`, false);
+    } catch (error) {
+      setInlineBanner(banner, error.message, true);
+    }
+  });
 
   document.getElementById("saveCampaignButton")?.addEventListener("click", async () => {
     const nextCampaign = collectCampaignFormValue(editing);

@@ -1831,6 +1831,13 @@ svg {
   gap: 14px 16px;
 }
 
+.campaign-template-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+
 .campaign-span-2 {
   grid-column: 1 / -1;
 }
@@ -2898,6 +2905,26 @@ svg {
 .domain-status.app_default {
   background: #e7efff;
   color: #2750c4;
+}
+
+.domain-status.healthy {
+  background: #e7f8ee;
+  color: #1f7a42;
+}
+
+.domain-status.degraded {
+  background: #fff3d6;
+  color: #9a6100;
+}
+
+.domain-status.broken {
+  background: #fce7e5;
+  color: #b43722;
+}
+
+.domain-status.unknown {
+  background: #e8eef8;
+  color: #3d5c93;
 }
 
 .simple-steps {
