@@ -35,6 +35,10 @@ const analyticsSessionLifetimeSeconds = 60 * 60 * 6;
 const verificationLifetimeMs = 1000 * 60 * 30;
 const resetLifetimeMs = 1000 * 60 * 30;
 const trialLifetimeMs = 1000 * 60 * 60 * 24 * 3;
+const sessionSameSite = ["Lax", "Strict", "None"].includes(String(process.env.SESSION_SAMESITE || "Lax"))
+  ? String(process.env.SESSION_SAMESITE || "Lax")
+  : "Lax";
+const maxRequestBodyBytes = Math.max(16_384, Number(process.env.MAX_REQUEST_BODY_BYTES || 300_000));
 const publicAppDomain = process.env.PUBLIC_APP_DOMAIN || "go.shortlinks.in";
 const dbOnlyMode = String(process.env.DB_ONLY_MODE || "").toLowerCase() === "true";
 const customDomainDnsTarget = publicAppDomain;
@@ -60,6 +64,14 @@ const godaddySecondLevelTlds = new Set([
 const razorpayApiBase = "https://api.razorpay.com/v1";
 const builtInAdminEmails = ["yogshkukadiya92@gmail.com", "yogeshkukadiya92@gmail.com"];
 const builtInLifetimeEmails = ["yogeshkukadiya92@gmail.com"];
+const isProduction = String(process.env.NODE_ENV || "").toLowerCase() === "production";
+const allowedOrigins = new Set(
+  String(process.env.ALLOWED_ORIGINS || "")
+    .split(",")
+    .map((value) => value.trim().toLowerCase())
+    .filter(Boolean)
+);
+const rateLimitState = new Map();
 
 const appRoutes = new Set([
   "/",
@@ -93,6 +105,18 @@ const server = http.createServer(async (req, res) => {
   try {
     const requestUrl = new URL(req.url, `http://${req.headers.host || `${host}:${port}`}`);
     const pathname = decodeURIComponent(requestUrl.pathname);
+    applySecurityHeaders(req, res);
+
+    if (!isRequestAllowedByOrigin(req, pathname)) {
+      return sendJson(res, 403, { error: "Blocked by security policy." });
+    }
+
+    const limiterBlock = evaluateRateLimit(req, pathname);
+    if (limiterBlock) {
+      const retrySeconds = Math.max(1, Math.ceil(limiterBlock.retryAfterMs / 1000));
+      res.setHeader("Retry-After", String(retrySeconds));
+      return sendJson(res, 429, { error: "Too many requests. Please try again shortly." });
+    }
 
     if (req.method === "POST" && pathname === "/api/auth/signup") {
       const body = await readRequestBody(req);
@@ -171,6 +195,11 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "GET" && pathname === "/api/admin/overview") {
       return await withAdmin(req, res, () => handleAdminOverview(res));
+    }
+
+    if (req.method === "GET" && pathname.startsWith("/api/admin/users/") && pathname.endsWith("/links")) {
+      const userId = pathname.split("/")[4];
+      return await withAdmin(req, res, () => handleAdminUserLinks(userId, res));
     }
 
     if (req.method === "POST" && pathname.startsWith("/api/admin/users/") && pathname.endsWith("/subscription")) {
@@ -343,7 +372,16 @@ const server = http.createServer(async (req, res) => {
 
     sendJson(res, 404, { error: "Not found" });
   } catch (error) {
-    sendJson(res, 500, { error: "Server error", details: error.message });
+    const message = String(error?.message || "");
+    if (message === "Request body too large") {
+      sendJson(res, 413, { error: "Request body too large." });
+      return;
+    }
+    if (message === "Invalid JSON body") {
+      sendJson(res, 400, { error: "Invalid JSON body." });
+      return;
+    }
+    sendJson(res, 500, { error: "Server error", ...(isProduction ? {} : { details: message }) });
   }
 });
 
@@ -816,6 +854,107 @@ function handleActivityPing(body, res, user) {
     },
   });
 }
+
+function applySecurityHeaders(req, res) {
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "DENY");
+  res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+  res.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=()");
+  res.setHeader("Cross-Origin-Resource-Policy", "same-site");
+  res.setHeader("Cross-Origin-Opener-Policy", "same-origin");
+  if (isProduction) {
+    res.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains; preload");
+  }
+}
+
+function isRequestAllowedByOrigin(req, pathname) {
+  const method = String(req.method || "GET").toUpperCase();
+  if (!["POST", "PUT", "PATCH", "DELETE"].includes(method)) return true;
+  if (!String(pathname || "").startsWith("/api/")) return true;
+  if (pathname === "/api/billing/razorpay/webhook") return true;
+
+  const source = String(req.headers.origin || req.headers.referer || "").trim();
+  if (!source) return true;
+
+  const requestHost = String(req.headers.host || "").trim().toLowerCase();
+  if (!requestHost) return false;
+
+  try {
+    const parsed = new URL(source);
+    const sourceHost = String(parsed.host || "").toLowerCase();
+    const sourceOrigin = String(parsed.origin || "").toLowerCase();
+    return sourceHost === requestHost || allowedOrigins.has(sourceOrigin);
+  } catch {
+    return false;
+  }
+}
+
+function evaluateRateLimit(req, pathname) {
+  const method = String(req.method || "GET").toUpperCase();
+  const lowerPath = String(pathname || "").toLowerCase();
+  if (!lowerPath.startsWith("/api/")) return null;
+  const ip = getRateLimitClientIp(req);
+  if (!ip) return null;
+
+  const limits = [];
+  if (lowerPath.startsWith("/api/auth/")) {
+    limits.push({ key: `auth:${ip}`, max: 45, windowMs: 10 * 60 * 1000 });
+    if (lowerPath.endsWith("/login")) {
+      limits.push({ key: `auth-login:${ip}`, max: 12, windowMs: 5 * 60 * 1000 });
+    }
+  }
+  if (lowerPath.startsWith("/api/admin/")) {
+    limits.push({ key: `admin:${ip}`, max: 120, windowMs: 60 * 1000 });
+  }
+  if (lowerPath.startsWith("/api/unlock/")) {
+    const slug = lowerPath.split("/").pop() || "unknown";
+    limits.push({ key: `unlock:${ip}:${slug}`, max: 20, windowMs: 10 * 60 * 1000 });
+  }
+  if (["POST", "PUT", "PATCH", "DELETE"].includes(method) && lowerPath.startsWith("/api/")) {
+    limits.push({ key: `write:${ip}`, max: 240, windowMs: 60 * 1000 });
+  }
+  limits.push({ key: `global:${ip}`, max: 1200, windowMs: 60 * 1000 });
+
+  for (const limit of limits) {
+    const hit = hitRateLimit(limit.key, limit.max, limit.windowMs);
+    if (hit) return hit;
+  }
+
+  return null;
+}
+
+function hitRateLimit(key, max, windowMs) {
+  const now = Date.now();
+  const current = rateLimitState.get(key);
+  if (!current || now >= current.resetAt) {
+    rateLimitState.set(key, { count: 1, resetAt: now + windowMs });
+    return null;
+  }
+
+  current.count += 1;
+  if (current.count > max) {
+    return { retryAfterMs: Math.max(1, current.resetAt - now) };
+  }
+
+  if (Math.random() < 0.003) pruneRateLimitState(now);
+  return null;
+}
+
+function pruneRateLimitState(now = Date.now()) {
+  for (const [key, value] of rateLimitState.entries()) {
+    if (!value || now >= Number(value.resetAt || 0)) {
+      rateLimitState.delete(key);
+    }
+  }
+}
+
+function getRateLimitClientIp(req) {
+  const forwarded = String(req.headers["x-forwarded-for"] || "").split(",")[0]?.trim();
+  const realIp = String(req.headers["x-real-ip"] || "").trim();
+  const remoteIp = String(req.socket?.remoteAddress || "").trim();
+  return forwarded || realIp || remoteIp || "";
+}
+
 function readRequestBody(req) {
   return new Promise((resolve, reject) => {
     let body = "";
@@ -823,8 +962,9 @@ function readRequestBody(req) {
     req.on("data", (chunk) => {
       body += chunk;
 
-      if (body.length > 1_000_000) {
+      if (Buffer.byteLength(body, "utf8") > maxRequestBodyBytes) {
         reject(new Error("Request body too large"));
+        req.destroy();
       }
     });
 
@@ -847,8 +987,9 @@ function readRawRequestBody(req) {
     req.on("data", (chunk) => {
       body += chunk;
 
-      if (body.length > 1_000_000) {
+      if (Buffer.byteLength(body, "utf8") > maxRequestBodyBytes) {
         reject(new Error("Request body too large"));
+        req.destroy();
       }
     });
 
@@ -1837,6 +1978,39 @@ async function handleAdminSubscriptionUpdate(userId, body, res, adminUser) {
   return sendJson(res, 200, { success: true, billing: serializeBilling(user) });
 }
 
+async function handleAdminUserLinks(userId, res) {
+  const users = readUsers();
+  const user = users.find((item) => item.id === userId);
+  if (!user) {
+    return sendJson(res, 404, { error: "User not found." });
+  }
+
+  const links = await readLinksForUserAsync(userId);
+  const normalizedLinks = (Array.isArray(links) ? links : [])
+    .map((link) => ({
+      id: String(link.id || ""),
+      slug: String(link.slug || ""),
+      destination: String(link.destination || ""),
+      shortUrl: String(link.shortUrl || buildShortUrl(getDefaultShortDomain(), String(link.slug || ""))),
+      includeQr: Boolean(link.includeQr),
+      createdAt: String(link.createdAt || ""),
+    }))
+    .sort((left, right) => Number(new Date(right.createdAt || 0).getTime()) - Number(new Date(left.createdAt || 0).getTime()));
+
+  return sendJson(res, 200, {
+    user: {
+      id: user.id,
+      name: user.name,
+      email: user.email,
+    },
+    summary: {
+      totalLinks: normalizedLinks.length,
+      lastLinkAt: normalizedLinks[0]?.createdAt || "",
+    },
+    links: normalizedLinks,
+  });
+}
+
 async function handleAdminTrialUpdate(userId, body, res, adminUser) {
   const users = readUsers();
   const user = users.find((item) => item.id === userId);
@@ -1957,7 +2131,7 @@ function buildSessionCookie(value, options = {}) {
     `${sessionCookieName}=${value}`,
     "Path=/",
     "HttpOnly",
-    "SameSite=Lax",
+    `SameSite=${sessionSameSite}`,
   ];
 
   if (process.env.NODE_ENV === "production") {
@@ -1975,8 +2149,12 @@ function buildClientCookie(name, value, options = {}) {
   const parts = [
     `${name}=${encodeURIComponent(value)}`,
     "Path=/",
-    "SameSite=Lax",
+    `SameSite=${options.sameSite || "Lax"}`,
   ];
+
+  if (options.httpOnly) {
+    parts.push("HttpOnly");
+  }
 
   if (process.env.NODE_ENV === "production") {
     parts.push("Secure");
@@ -2010,11 +2188,11 @@ function getTrackingContext(req) {
   const setCookies = [];
 
   if (!cookies[analyticsVisitorCookieName]) {
-    setCookies.push(buildClientCookie(analyticsVisitorCookieName, visitorId, { maxAge: analyticsVisitorLifetimeSeconds }));
+    setCookies.push(buildClientCookie(analyticsVisitorCookieName, visitorId, { maxAge: analyticsVisitorLifetimeSeconds, httpOnly: true, sameSite: "Lax" }));
   }
 
   if (!cookies[analyticsSessionCookieName]) {
-    setCookies.push(buildClientCookie(analyticsSessionCookieName, sessionId, { maxAge: analyticsSessionLifetimeSeconds }));
+    setCookies.push(buildClientCookie(analyticsSessionCookieName, sessionId, { maxAge: analyticsSessionLifetimeSeconds, httpOnly: true, sameSite: "Lax" }));
   }
 
   return {
@@ -4212,7 +4390,7 @@ async function handleUnlockProtectedLink(slug, body, req, res) {
 
   res.writeHead(200, {
     "Content-Type": "application/json; charset=utf-8",
-    "Set-Cookie": `${getProtectedLinkCookieName(link.slug)}=${rule.accessToken}; Path=/; Max-Age=${protectedLinkLifetimeSeconds}; SameSite=Lax`,
+    "Set-Cookie": `${getProtectedLinkCookieName(link.slug)}=${rule.accessToken}; Path=/; Max-Age=${protectedLinkLifetimeSeconds}; HttpOnly; SameSite=Lax${isProduction ? "; Secure" : ""}`,
   });
   res.end(JSON.stringify({ success: true, destination: `/${encodeURIComponent(link.slug)}` }));
 }
@@ -5129,7 +5307,12 @@ function serveFile(filePath, res) {
 }
 
 function sendJson(res, statusCode, payload) {
-  res.writeHead(statusCode, { "Content-Type": "application/json; charset=utf-8" });
+  res.writeHead(statusCode, {
+    "Content-Type": "application/json; charset=utf-8",
+    "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate",
+    Pragma: "no-cache",
+    Expires: "0",
+  });
   res.end(JSON.stringify(payload));
 }
 
