@@ -1894,12 +1894,25 @@ function renderLinksPage(links, query = "") {
   const trashMarkup = renderTrashLinkItems(settingsCache.trashLinks || []);
   const editingLink = filtered.find((link) => link.slug === selectedLinkSlug) || linksCache.find((link) => link.slug === selectedLinkSlug) || null;
   const editDomainOptions = settingsCache.domains.map((domain) => `<option value="${escapeHtml(domain)}" ${editingLink && getLinkDomain(editingLink) === domain ? "selected" : ""}>${escapeHtml(domain)}</option>`).join("");
+  const editingRule = editingLink ? getLinkRule(editingLink.slug) : null;
+  const editingGoal = editingLink ? getLinkGoal(editingLink.slug) : 0;
+  const editingHealth = editingLink ? getLinkHealthStatus(editingLink.slug) : null;
+  const editingScheduled = editingRule ? (editingRule.startsAt && Date.now() < new Date(editingRule.startsAt).getTime()) : false;
+  const editingHealthLabel = editingHealth
+    ? (editingHealth.status === "healthy"
+      ? `Healthy${editingHealth.httpStatus ? ` (${editingHealth.httpStatus})` : ""}`
+      : editingHealth.status === "degraded"
+        ? `Needs check${editingHealth.httpStatus ? ` (${editingHealth.httpStatus})` : ""}`
+        : editingHealth.status === "broken"
+          ? "Broken"
+          : "Not checked")
+    : "Not checked";
   mainContent.innerHTML = `
     <section class="surface-card">
       <div class="surface-header">
         <div>
           <h2>Your short links</h2>
-          <p>Only links created inside your account appear here.</p>
+          <p>Compact list view. Click Edit to open full settings for one link.</p>
         </div>
         <div class="goal-action-row">
           <button class="link-button secondary" type="button" id="checkAllLinksHealthButton">Check all links</button>
@@ -1911,7 +1924,7 @@ function renderLinksPage(links, query = "") {
           <div class="surface-header">
             <div>
               <h3>Edit link</h3>
-              <p>Update destination, slug, and QR preference. Scheduling, pause, expiry, and one-time rules stay below.</p>
+              <p>All details for <strong>${escapeHtml(editingLink.slug)}</strong> are shown here only.</p>
             </div>
             <button class="link-button secondary" type="button" id="closeLinkEditorButton">Close</button>
           </div>
@@ -1922,86 +1935,52 @@ function renderLinksPage(links, query = "") {
             <label class="field-toggle compact-toggle"><input type="checkbox" id="editLinkQrInput" ${editingLink.includeQr ? "checked" : ""}><span>Include QR</span></label>
             <button class="link-button" type="button" id="saveLinkEditButton" data-edit-link="${escapeHtml(editingLink.slug)}">Save changes</button>
           </div>
+          <div class="goal-action-row">
+            <span class="domain-status ${escapeHtml(editingHealth?.status || "pending")}">${escapeHtml(editingHealthLabel)}</span>
+            ${editingHealth.checkedAt ? `<span class="helper-copy">Checked: ${escapeHtml(new Date(editingHealth.checkedAt).toLocaleString())}</span>` : ""}
+            <button class="link-button secondary" type="button" data-check-health="${escapeHtml(editingLink.slug)}">Check</button>
+          </div>
+          ${editingHealth.error ? `<div class="helper-copy">${escapeHtml(editingHealth.error)}</div>` : ""}
+          <div class="goal-action-row">
+            <input class="url-input goal-input" type="number" min="1" step="1" value="${editingGoal || ""}" placeholder="Target clicks" data-goal-input="${escapeHtml(editingLink.slug)}">
+            <button class="link-button" type="button" data-save-goal="${escapeHtml(editingLink.slug)}">Save goal</button>
+            ${editingGoal ? `<button class="link-button secondary" type="button" data-clear-goal="${escapeHtml(editingLink.slug)}">Clear</button>` : ""}
+            ${editingScheduled ? `<span class="chip-link">Scheduled</span>` : ""}
+          </div>
+          <div class="goal-action-row">
+            <input class="url-input schedule-rule-input" type="datetime-local" value="${escapeHtml(editingRule.startsAt || "")}" data-start-input="${escapeHtml(editingLink.slug)}">
+            <input class="url-input goal-input" type="date" value="${escapeHtml(editingRule.expiresAt || "")}" data-expiry-input="${escapeHtml(editingLink.slug)}">
+            <label class="field-toggle compact-toggle"><input type="checkbox" data-pause-input="${escapeHtml(editingLink.slug)}" ${editingRule.isPaused ? "checked" : ""}><span>Pause link</span></label>
+            <label class="field-toggle compact-toggle"><input type="checkbox" data-onetime-input="${escapeHtml(editingLink.slug)}" ${editingRule.isOneTime ? "checked" : ""}><span>One-time</span></label>
+            <button class="link-button secondary" type="button" data-save-rule="${escapeHtml(editingLink.slug)}">Save rule</button>
+          </div>
+          <div class="goal-action-row">
+            <label class="field-toggle compact-toggle"><input type="checkbox" data-ab-enabled-input="${escapeHtml(editingLink.slug)}" ${editingRule.abEnabled ? "checked" : ""}><span>A/B split</span></label>
+            <input class="url-input goal-input" type="number" min="5" max="95" step="1" value="${escapeHtml(String(editingRule.abWeightA || 50))}" data-ab-weight-input="${escapeHtml(editingLink.slug)}" placeholder="A %">
+            <input class="url-input" type="url" value="${escapeHtml(editingRule.abDestinationA || "")}" data-ab-a-input="${escapeHtml(editingLink.slug)}" placeholder="Destination A">
+            <input class="url-input" type="url" value="${escapeHtml(editingRule.abDestinationB || "")}" data-ab-b-input="${escapeHtml(editingLink.slug)}" placeholder="Destination B">
+          </div>
+          <div class="goal-action-row">
+            <input class="url-input goal-input" type="text" maxlength="2" value="${escapeHtml((editingRule.geoRedirects?.[0]?.country || "").toUpperCase())}" data-geo-country-input="${escapeHtml(editingLink.slug)}" placeholder="Country code (IN)">
+            <input class="url-input" type="url" value="${escapeHtml(editingRule.geoRedirects?.[0]?.destination || "")}" data-geo-destination-input="${escapeHtml(editingLink.slug)}" placeholder="Geo redirect URL">
+            <select class="url-input goal-input" data-device-type-input="${escapeHtml(editingLink.slug)}">
+              <option value="">Device</option>
+              <option value="mobile" ${editingRule.deviceRedirects?.[0]?.device === "mobile" ? "selected" : ""}>Mobile</option>
+              <option value="desktop" ${editingRule.deviceRedirects?.[0]?.device === "desktop" ? "selected" : ""}>Desktop</option>
+              <option value="tablet" ${editingRule.deviceRedirects?.[0]?.device === "tablet" ? "selected" : ""}>Tablet</option>
+            </select>
+            <input class="url-input" type="url" value="${escapeHtml(editingRule.deviceRedirects?.[0]?.destination || "")}" data-device-destination-input="${escapeHtml(editingLink.slug)}" placeholder="Device redirect URL">
+          </div>
+          <div class="goal-action-row">
+            <input class="url-input" type="text" value="${escapeHtml(editingRule.pixelId || "")}" data-pixel-id-input="${escapeHtml(editingLink.slug)}" placeholder="Pixel tag (appends anylink_px)">
+          </div>
+          <div class="goal-action-row">
+            <input class="url-input password-rule-input" type="text" placeholder="${editingRule.isProtected ? "Change password" : "Protect with password"}" data-password-input="${escapeHtml(editingLink.slug)}">
+            <button class="link-button secondary" type="button" data-save-password="${escapeHtml(editingLink.slug)}">${editingRule.isProtected ? "Update password" : "Set password"}</button>
+            ${editingRule.isProtected ? `<button class="link-button danger" type="button" data-clear-password="${escapeHtml(editingLink.slug)}">Remove password</button>` : ""}
+          </div>
         </div>
       ` : ""}
-      <div class="goal-grid">
-        ${filtered.length ? filtered.map((link) => {
-          const { goal, clicks, progress, achieved } = getGoalStatus(link);
-          const rule = getLinkRule(link.slug);
-          const health = getLinkHealthStatus(link.slug);
-          const isScheduled = rule.startsAt && Date.now() < new Date(rule.startsAt).getTime();
-          const healthLabel = health.status === "healthy"
-            ? `Healthy${health.httpStatus ? ` (${health.httpStatus})` : ""}`
-            : health.status === "degraded"
-              ? `Needs check${health.httpStatus ? ` (${health.httpStatus})` : ""}`
-              : health.status === "broken"
-                ? "Broken"
-                : "Not checked";
-          return `
-            <article class="goal-card">
-              <div class="goal-card-head">
-                <div>
-                  <strong>${escapeHtml(link.slug)}</strong>
-                  <p>${escapeHtml(getLinkUrl(link))}</p>
-                </div>
-                <span class="chip-link ${achieved ? "success" : ""}">${isScheduled ? "Scheduled" : (achieved ? "Goal hit" : `${clicks} clicks`)}</span>
-              </div>
-              <div class="goal-action-row">
-                <span class="domain-status ${escapeHtml(health.status)}">${escapeHtml(healthLabel)}</span>
-                ${health.checkedAt ? `<span class="helper-copy">Checked: ${escapeHtml(new Date(health.checkedAt).toLocaleString())}</span>` : ""}
-                <button class="link-button secondary" type="button" data-check-health="${escapeHtml(link.slug)}">Check</button>
-              </div>
-              ${health.error ? `<div class="helper-copy">${escapeHtml(health.error)}</div>` : ""}
-              <div class="goal-progress">
-                <div class="goal-progress-bar"><span style="width:${progress}%"></span></div>
-                <span>${goal ? (achieved ? `${clicks} of ${goal} reached` : `${progress}% of ${goal}`) : "No goal set"}</span>
-              </div>
-              <div class="goal-action-row">
-                <input class="url-input goal-input" type="number" min="1" step="1" value="${goal || ""}" placeholder="Target clicks" data-goal-input="${escapeHtml(link.slug)}">
-                <button class="link-button" type="button" data-save-goal="${escapeHtml(link.slug)}">Save goal</button>
-                ${goal ? `<button class="link-button secondary" type="button" data-clear-goal="${escapeHtml(link.slug)}">Clear</button>` : ""}
-              </div>
-              <div class="goal-action-row">
-                <input class="url-input schedule-rule-input" type="datetime-local" value="${escapeHtml(rule.startsAt || "")}" data-start-input="${escapeHtml(link.slug)}">
-                <input class="url-input goal-input" type="date" value="${escapeHtml(rule.expiresAt || "")}" data-expiry-input="${escapeHtml(link.slug)}">
-                <label class="field-toggle compact-toggle"><input type="checkbox" data-pause-input="${escapeHtml(link.slug)}" ${rule.isPaused ? "checked" : ""}><span>Pause link</span></label>
-                <label class="field-toggle compact-toggle"><input type="checkbox" data-onetime-input="${escapeHtml(link.slug)}" ${rule.isOneTime ? "checked" : ""}><span>One-time</span></label>
-                <button class="link-button secondary" type="button" data-save-rule="${escapeHtml(link.slug)}">Save rule</button>
-              </div>
-              <div class="goal-action-row">
-                <label class="field-toggle compact-toggle"><input type="checkbox" data-ab-enabled-input="${escapeHtml(link.slug)}" ${rule.abEnabled ? "checked" : ""}><span>A/B split</span></label>
-                <input class="url-input goal-input" type="number" min="5" max="95" step="1" value="${escapeHtml(String(rule.abWeightA || 50))}" data-ab-weight-input="${escapeHtml(link.slug)}" placeholder="A %">
-                <input class="url-input" type="url" value="${escapeHtml(rule.abDestinationA || "")}" data-ab-a-input="${escapeHtml(link.slug)}" placeholder="Destination A">
-                <input class="url-input" type="url" value="${escapeHtml(rule.abDestinationB || "")}" data-ab-b-input="${escapeHtml(link.slug)}" placeholder="Destination B">
-              </div>
-              <div class="goal-action-row">
-                <input class="url-input goal-input" type="text" maxlength="2" value="${escapeHtml((rule.geoRedirects?.[0]?.country || "").toUpperCase())}" data-geo-country-input="${escapeHtml(link.slug)}" placeholder="Country code (IN)">
-                <input class="url-input" type="url" value="${escapeHtml(rule.geoRedirects?.[0]?.destination || "")}" data-geo-destination-input="${escapeHtml(link.slug)}" placeholder="Geo redirect URL">
-                <select class="url-input goal-input" data-device-type-input="${escapeHtml(link.slug)}">
-                  <option value="">Device</option>
-                  <option value="mobile" ${rule.deviceRedirects?.[0]?.device === "mobile" ? "selected" : ""}>Mobile</option>
-                  <option value="desktop" ${rule.deviceRedirects?.[0]?.device === "desktop" ? "selected" : ""}>Desktop</option>
-                  <option value="tablet" ${rule.deviceRedirects?.[0]?.device === "tablet" ? "selected" : ""}>Tablet</option>
-                </select>
-                <input class="url-input" type="url" value="${escapeHtml(rule.deviceRedirects?.[0]?.destination || "")}" data-device-destination-input="${escapeHtml(link.slug)}" placeholder="Device redirect URL">
-              </div>
-              <div class="goal-action-row">
-                <input class="url-input" type="text" value="${escapeHtml(rule.pixelId || "")}" data-pixel-id-input="${escapeHtml(link.slug)}" placeholder="Pixel tag (appends anylink_px)">
-              </div>
-              ${rule.startsAt ? `<div class="helper-copy">${isScheduled ? `Starts on ${escapeHtml(new Date(rule.startsAt).toLocaleString())}` : `Started on ${escapeHtml(new Date(rule.startsAt).toLocaleString())}`}</div>` : ""}
-              ${rule.isOneTime && rule.oneTimeUsedAt ? `<div class="helper-copy">Used on ${escapeHtml(new Date(rule.oneTimeUsedAt).toLocaleString())}</div>` : ""}
-              <div class="goal-action-row">
-                <input class="url-input password-rule-input" type="text" placeholder="${rule.isProtected ? "Change password" : "Protect with password"}" data-password-input="${escapeHtml(link.slug)}">
-                <button class="link-button secondary" type="button" data-save-password="${escapeHtml(link.slug)}">${rule.isProtected ? "Update password" : "Set password"}</button>
-                ${rule.isProtected ? `<button class="link-button danger" type="button" data-clear-password="${escapeHtml(link.slug)}">Remove password</button>` : ""}
-              </div>
-              <div class="goal-action-row">
-                <button class="link-button secondary" type="button" data-edit-link-card="${escapeHtml(link.slug)}">Edit link</button>
-              </div>
-            </article>
-          `;
-        }).join("") : '<div class="empty-state">No links yet. Create your first short link to start setting goals.</div>'}
-      </div>
       <div class="links-list">${renderLinkItems(filtered, true)}</div>
       <div class="recycle-bin-panel">
         <div class="surface-header recycle-bin-header">
@@ -3314,9 +3293,22 @@ function renderLinkItems(links, includeDelete) {
   if (!links.length) return '<div class="empty-state">No links yet. Create your first AnyLink above.</div>';
 
   return links.map((link) => {
-    const createdAt = new Date(link.createdAt).toLocaleString();
     const liveUrl = getLinkUrl(link);
-    return `<div class="link-item"><div class="link-copy"><a href="${escapeHtml(liveUrl)}" target="_blank" rel="noreferrer">${escapeHtml(liveUrl)}</a><strong>${escapeHtml(link.slug)}</strong><p>${escapeHtml(link.destination)}</p><p>Created: ${escapeHtml(createdAt)}</p></div><div class="link-actions"><button class="link-button" data-copy="${escapeHtml(liveUrl)}">Copy</button><a class="link-button secondary" href="${escapeHtml(liveUrl)}" target="_blank" rel="noreferrer">Open</a><a class="link-button secondary" href="/qr-codes" data-open-qr="${escapeHtml(link.slug)}">QR</a><button class="link-button secondary" data-edit-link-card="${escapeHtml(link.slug)}">Edit</button>${includeDelete ? `<button class="link-button danger" data-delete="${escapeHtml(link.slug)}">Delete</button>` : ""}</div></div>`;
+    return `
+      <div class="link-item">
+        <div class="link-copy">
+          <strong>${escapeHtml(link.slug)}</strong>
+          <a href="${escapeHtml(liveUrl)}" target="_blank" rel="noreferrer">${escapeHtml(liveUrl)}</a>
+        </div>
+        <div class="link-actions">
+          <button class="link-button" data-copy="${escapeHtml(liveUrl)}">Copy</button>
+          <a class="link-button secondary" href="${escapeHtml(liveUrl)}" target="_blank" rel="noreferrer">Open</a>
+          <a class="link-button secondary" href="/qr-codes" data-open-qr="${escapeHtml(link.slug)}">QR</a>
+          <button class="link-button secondary" data-edit-link-card="${escapeHtml(link.slug)}">Edit</button>
+          ${includeDelete ? `<button class="link-button danger" data-delete="${escapeHtml(link.slug)}">Delete</button>` : ""}
+        </div>
+      </div>
+    `;
   }).join("");
 }
 
