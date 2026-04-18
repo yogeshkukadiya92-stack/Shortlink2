@@ -68,6 +68,15 @@ const builtInCampaignTemplates = [
   { id: "tpl-whatsapp", name: "WhatsApp Broadcast", source: "whatsapp", medium: "broadcast", campaign: "promo", term: "", content: "list-a" },
   { id: "tpl-email-newsletter", name: "Email Newsletter", source: "newsletter", medium: "email", campaign: "monthly", term: "", content: "header-cta" },
 ];
+const webhookEventOptions = [
+  "link.created",
+  "link.updated",
+  "link.deleted",
+  "link.clicked",
+  "form.submitted",
+  "subscription.activated",
+  "subscription.updated",
+];
 
 let currentPage = getCurrentPage();
 let currentUser = null;
@@ -94,6 +103,7 @@ let settingsCache = {
   defaultDomain: getDefaultShortDomain(),
   domains: [getDefaultShortDomain()],
   domainAutomation: { provider: "godaddy", connected: false },
+  webhooks: [],
   conversionGoals: {},
   linkRules: {},
   linkHealth: {},
@@ -573,6 +583,7 @@ function normalizeSettings(settings) {
     domainEntries,
     providerDnsTarget,
     domainAutomation,
+    webhooks: normalizeWebhookEndpoints(settings.webhooks || []),
     conversionGoals: normalizeConversionGoals(settings.conversionGoals || {}),
     linkRules: normalizeLinkRules(settings.linkRules || {}),
     linkHealth: normalizeLinkHealth(settings.linkHealth || {}),
@@ -582,6 +593,57 @@ function normalizeSettings(settings) {
     trashLinks: normalizeTrashLinks(settings.trashLinks || []),
     campaigns: normalizeCampaigns(settings.campaigns || []),
   };
+}
+
+function normalizeWebhookEvents(input) {
+  const source = Array.isArray(input)
+    ? input
+    : String(input || "")
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean);
+  const seen = new Set();
+  const events = [];
+  source.forEach((item) => {
+    const eventName = String(item || "").trim().toLowerCase();
+    if (!eventName || !webhookEventOptions.includes(eventName) || seen.has(eventName)) return;
+    seen.add(eventName);
+    events.push(eventName);
+  });
+  return events.length ? events : [...webhookEventOptions];
+}
+
+function normalizeWebhookEndpoints(items) {
+  const seen = new Set();
+  return (Array.isArray(items) ? items : [])
+    .map((item) => {
+      if (!item || typeof item !== "object") return null;
+      const id = String(item.id || "").trim();
+      const url = String(item.url || "").trim();
+      if (!id || !url) return null;
+      return {
+        id,
+        name: String(item.name || "Automation webhook").trim() || "Automation webhook",
+        url,
+        isActive: item.isActive !== false,
+        events: normalizeWebhookEvents(item.events || []),
+        createdAt: String(item.createdAt || ""),
+        updatedAt: String(item.updatedAt || ""),
+        lastTriggeredAt: String(item.lastTriggeredAt || ""),
+        lastStatus: Math.max(0, Number(item.lastStatus || 0)),
+        lastError: String(item.lastError || ""),
+        totalSuccess: Math.max(0, Number(item.totalSuccess || 0)),
+        totalFailed: Math.max(0, Number(item.totalFailed || 0)),
+        signingSecret: String(item.signingSecret || ""),
+        signingSecretPreview: String(item.signingSecretPreview || ""),
+      };
+    })
+    .filter((item) => {
+      if (!item || seen.has(item.id)) return false;
+      seen.add(item.id);
+      return true;
+    })
+    .sort((left, right) => new Date(right.updatedAt || 0).getTime() - new Date(left.updatedAt || 0).getTime());
 }
 
 function normalizeLinkHealth(input) {
@@ -4506,6 +4568,24 @@ function renderSettingsPage() {
             </div>
           </div>
           <div class="form-card">
+            <h3>Webhook API (Automation)</h3>
+            <p class="helper-copy">Connect Zapier, Make, n8n, or any automation by adding a webhook URL.</p>
+            <div class="campaign-builder-grid">
+              <input id="webhookNameInput" class="url-input" type="text" placeholder="Webhook name (Zapier CRM)">
+              <input id="webhookUrlInput" class="url-input" type="url" placeholder="https://hooks.example.com/anylink">
+              <select id="webhookPresetInput" class="url-input">
+                <option value="all">All events</option>
+                <option value="links">Links only</option>
+                <option value="forms">Forms only</option>
+                <option value="billing">Billing only</option>
+              </select>
+              <button class="link-button" id="saveWebhookButton" type="button">Save webhook</button>
+            </div>
+            <div class="admin-table">
+              ${renderWebhookRows(settingsCache.webhooks || [])}
+            </div>
+          </div>
+          <div class="form-card">
             <h3>Retargeting pixel templates</h3>
             <p class="helper-copy">Save reusable pixel IDs and apply them in Campaign builder.</p>
             <div class="campaign-builder-grid">
@@ -4625,6 +4705,112 @@ function renderSettingsPage() {
     });
   });
 
+  const mapWebhookPresetToEvents = (preset) => {
+    if (preset === "links") return ["link.created", "link.updated", "link.deleted", "link.clicked"];
+    if (preset === "forms") return ["form.submitted"];
+    if (preset === "billing") return ["subscription.activated", "subscription.updated"];
+    return [...webhookEventOptions];
+  };
+
+  document.getElementById("saveWebhookButton")?.addEventListener("click", async () => {
+    const name = document.getElementById("webhookNameInput")?.value?.trim() || "Automation webhook";
+    const url = document.getElementById("webhookUrlInput")?.value?.trim() || "";
+    const preset = document.getElementById("webhookPresetInput")?.value || "all";
+    const events = mapWebhookPresetToEvents(preset);
+    if (!url) {
+      return showGlobalMessage("Webhook URL is required.", true);
+    }
+    try {
+      const response = await fetch("/api/webhooks", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, url, events, isActive: true }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || "Unable to save webhook.");
+      settingsCache = normalizeSettings(payload.settings || settingsCache);
+      renderSettingsPage();
+      const secretMessage = payload.webhook?.signingSecret
+        ? ` Save this secret: ${payload.webhook.signingSecret}`
+        : "";
+      showGlobalMessage(`Webhook connected successfully.${secretMessage}`, false);
+    } catch (error) {
+      showGlobalMessage(error.message, true);
+    }
+  });
+
+  document.querySelectorAll("[data-webhook-test]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const id = button.getAttribute("data-webhook-test");
+      if (!id) return;
+      try {
+        const response = await fetch(`/api/webhooks/${encodeURIComponent(id)}/test`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({}),
+        });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || payload.message || "Webhook test failed.");
+        showGlobalMessage(payload.message || "Webhook test delivered.", false);
+        await refreshSettings();
+        renderSettingsPage();
+      } catch (error) {
+        showGlobalMessage(error.message, true);
+      }
+    });
+  });
+
+  document.querySelectorAll("[data-webhook-toggle]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const id = button.getAttribute("data-webhook-toggle");
+      if (!id) return;
+      const existing = (settingsCache.webhooks || []).find((item) => item.id === id);
+      if (!existing) return;
+      try {
+        const response = await fetch("/api/webhooks", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            id: existing.id,
+            name: existing.name,
+            url: existing.url,
+            events: existing.events,
+            isActive: !existing.isActive,
+          }),
+        });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || "Unable to update webhook status.");
+        settingsCache = normalizeSettings(payload.settings || settingsCache);
+        renderSettingsPage();
+        showGlobalMessage(existing.isActive ? "Webhook paused." : "Webhook activated.", false);
+      } catch (error) {
+        showGlobalMessage(error.message, true);
+      }
+    });
+  });
+
+  document.querySelectorAll("[data-webhook-delete]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const id = button.getAttribute("data-webhook-delete");
+      if (!id) return;
+      if (!window.confirm("Remove this webhook endpoint?")) return;
+      try {
+        const response = await fetch(`/api/webhooks/${encodeURIComponent(id)}/delete`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({}),
+        });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || "Unable to remove webhook.");
+        settingsCache = normalizeSettings(payload.settings || settingsCache);
+        renderSettingsPage();
+        showGlobalMessage("Webhook removed.", false);
+      } catch (error) {
+        showGlobalMessage(error.message, true);
+      }
+    });
+  });
+
   document.getElementById("saveSettingsPixelTemplateButton")?.addEventListener("click", async () => {
     const name = document.getElementById("settingsPixelTemplateName")?.value?.trim() || "";
     const pixelId = document.getElementById("settingsPixelTemplateId")?.value?.trim() || "";
@@ -4696,6 +4882,39 @@ function renderTeamMemberRows(teamMembers) {
       </div>
     </div>
   `).join("");
+}
+
+function renderWebhookRows(webhooks) {
+  const items = Array.isArray(webhooks) ? webhooks : [];
+  if (!items.length) {
+    return '<div class="empty-state">No webhooks connected yet.</div>';
+  }
+  return items.map((item) => {
+    const statusLabel = item.isActive ? "Active" : "Paused";
+    const delivery = item.lastTriggeredAt
+      ? `Last delivery: ${escapeHtml(formatDateDisplay(item.lastTriggeredAt))} (${item.lastStatus || 0})`
+      : "Last delivery: not sent yet";
+    const eventsLabel = (item.events || []).join(", ");
+    const errorLine = item.lastError ? `<span class="text-danger">Last error: ${escapeHtml(item.lastError)}</span>` : "";
+    return `
+      <div class="admin-row">
+        <div class="admin-main">
+          <strong>${escapeHtml(item.name || "Automation webhook")} <span class="analytics-tag">${escapeHtml(statusLabel)}</span></strong>
+          <span>${escapeHtml(item.url)}</span>
+          <span>Events: ${escapeHtml(eventsLabel)}</span>
+          <span>${delivery}</span>
+          <span>Success: ${Number(item.totalSuccess || 0)} • Failed: ${Number(item.totalFailed || 0)}</span>
+          ${item.signingSecretPreview ? `<span>Secret: ${escapeHtml(item.signingSecretPreview)}</span>` : ""}
+          ${errorLine}
+        </div>
+        <div class="admin-actions">
+          <button class="link-button secondary" data-webhook-test="${escapeHtml(item.id)}">Test</button>
+          <button class="link-button" data-webhook-toggle="${escapeHtml(item.id)}">${item.isActive ? "Pause" : "Activate"}</button>
+          <button class="link-button danger" data-webhook-delete="${escapeHtml(item.id)}">Remove</button>
+        </div>
+      </div>
+    `;
+  }).join("");
 }
 
 function renderPixelTemplateRows(pixelTemplates) {

@@ -72,6 +72,16 @@ const allowedOrigins = new Set(
     .filter(Boolean)
 );
 const rateLimitState = new Map();
+const webhookAllowedEvents = new Set([
+  "link.created",
+  "link.updated",
+  "link.deleted",
+  "link.clicked",
+  "form.submitted",
+  "subscription.activated",
+  "subscription.updated",
+]);
+const webhookDeliveryTimeoutMs = Math.max(3000, Number(process.env.WEBHOOK_DELIVERY_TIMEOUT_MS || 9000));
 
 const appRoutes = new Set([
   "/",
@@ -185,7 +195,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === "POST" && pathname === "/api/billing/refresh") {
-      return await withAuth(req, res, (user) => handleRefreshSubscription(user, res));
+      return await withAuth(req, res, (user) => handleRefreshSubscription(user, req, res));
     }
 
     if (req.method === "POST" && pathname === "/api/billing/razorpay/webhook") {
@@ -309,6 +319,25 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "DELETE" && pathname.startsWith("/api/trash-links/")) {
       const slug = pathname.split("/").pop();
       return await withAppAccess(req, res, (user) => handleDeleteTrashLinkForever(slug, req, res, user));
+    }
+
+    if (req.method === "GET" && pathname === "/api/webhooks") {
+      return await withAppAccess(req, res, (user) => handleListWebhooks(req, res, user));
+    }
+
+    if (req.method === "POST" && pathname === "/api/webhooks") {
+      const body = await readRequestBody(req);
+      return await withAppAccess(req, res, (user) => handleUpsertWebhook(body, req, res, user));
+    }
+
+    if (req.method === "POST" && pathname.startsWith("/api/webhooks/") && pathname.endsWith("/test")) {
+      const webhookId = pathname.split("/")[3];
+      return await withAppAccess(req, res, (user) => handleTestWebhook(webhookId, req, res, user));
+    }
+
+    if (req.method === "POST" && pathname.startsWith("/api/webhooks/") && pathname.endsWith("/delete")) {
+      const webhookId = pathname.split("/")[3];
+      return await withAppAccess(req, res, (user) => handleDeleteWebhook(webhookId, req, res, user));
     }
 
     if (req.method === "GET" && pathname === "/api/settings") {
@@ -689,7 +718,7 @@ async function readSettingsForUserAsync(userId, req) {
             verificationErrors: [],
           })),
         ];
-        return normalizeSettings({
+      return normalizeSettings({
           userId,
           workspaceName: dbSettings.workspaceName,
           defaultDomain: dbSettings.defaultDomain,
@@ -704,6 +733,7 @@ async function readSettingsForUserAsync(userId, req) {
           campaignTemplates: fileExtras?.campaignTemplates || [],
           pixelTemplates: fileExtras?.pixelTemplates || [],
           teamMembers: fileExtras?.teamMembers || [],
+          webhooks: fileExtras?.webhooks || [],
           trashLinks: fileExtras?.trashLinks || [],
           campaigns: fileExtras?.campaigns || [],
           domainEntries: mergedDomainEntries,
@@ -1531,6 +1561,11 @@ async function handleCreateSubscription(user, req, res, body = {}) {
       couponCode: coupon.code,
     });
     const refreshedUser = (await getAuthenticatedUserAsync(req)) || user;
+    queueWebhookEvent(user.id, "subscription.activated", {
+      source: "coupon",
+      couponCode: coupon.code,
+      billing: serializeBilling(refreshedUser),
+    }, req).catch(() => {});
     return sendJson(res, 200, {
       success: true,
       provider: "coupon",
@@ -1551,6 +1586,11 @@ async function handleCreateSubscription(user, req, res, body = {}) {
       couponCode: coupon.code,
     });
     const refreshedUser = (await getAuthenticatedUserAsync(req)) || user;
+    queueWebhookEvent(user.id, "subscription.activated", {
+      source: "coupon",
+      couponCode: coupon.code,
+      billing: serializeBilling(refreshedUser),
+    }, req).catch(() => {});
     return sendJson(res, 200, {
       success: true,
       provider: "coupon",
@@ -1707,10 +1747,18 @@ async function handleRazorpayWebhook(rawBody, req, res) {
     razorpayLastEventAt: Date.now(),
   });
 
+  const eventName = accessUpdate.subscriptionStatus === "active" ? "subscription.activated" : "subscription.updated";
+  queueWebhookEvent(userId, eventName, {
+    source: "razorpay_webhook",
+    razorpayEvent: event,
+    subscriptionId,
+    update: accessUpdate,
+  }, req).catch(() => {});
+
   return sendJson(res, 200, { received: true, event });
 }
 
-async function handleRefreshSubscription(user, res) {
+async function handleRefreshSubscription(user, req, res) {
   const razorpayKeyId = String(process.env.RAZORPAY_KEY_ID || "").trim();
   const razorpayKeySecret = String(process.env.RAZORPAY_KEY_SECRET || "").trim();
 
@@ -1753,6 +1801,15 @@ async function handleRefreshSubscription(user, res) {
         razorpayLastEvent: "manual_refresh",
         razorpayLastEventAt: Date.now(),
       });
+      const refreshedForWebhook = getAuthenticatedUserById(user.id) || { ...user, ...(normalized || {}) };
+      const eventName = String(normalized.subscriptionStatus || "").toLowerCase() === "active"
+        ? "subscription.activated"
+        : "subscription.updated";
+      queueWebhookEvent(user.id, eventName, {
+        source: "manual_refresh",
+        subscriptionId,
+        billing: serializeBilling(refreshedForWebhook),
+      }, req).catch(() => {});
     }
 
     const refreshedUser = getAuthenticatedUserById(user.id) || { ...user, ...(normalized || {}) };
@@ -2439,6 +2496,16 @@ async function handleCreateLink(body, req, res, user) {
     // Activity summary should not block link creation.
   }
 
+  queueWebhookEvent(user.id, "link.created", {
+    link: {
+      id: String(nextLink.id),
+      slug: nextLink.slug,
+      destination: nextLink.destination,
+      shortUrl: nextLink.shortUrl,
+      includeQr: nextLink.includeQr,
+      createdAt: nextLink.createdAt,
+    },
+  }, req).catch(() => {});
   sendJson(res, 201, { link: nextLink });
 }
 
@@ -2556,6 +2623,17 @@ async function handleUpdateLink(slug, body, req, res, user) {
     }
   }
 
+  queueWebhookEvent(user.id, "link.updated", {
+    previousSlug: currentSlug,
+    link: {
+      id: String(updatedLink.id),
+      slug: updatedLink.slug,
+      destination: updatedLink.destination,
+      shortUrl: updatedLink.shortUrl,
+      includeQr: updatedLink.includeQr,
+      createdAt: updatedLink.createdAt,
+    },
+  }, req).catch(() => {});
   sendJson(res, 200, { link: updatedLink });
 }
 
@@ -2950,6 +3028,24 @@ async function handlePublicFormSubmit(slug, body, req, res) {
     // JSON remains fallback during DB migration.
   }
 
+  queueWebhookEvent(normalizedPage.userId, "form.submitted", {
+    form: {
+      id: normalizedPage.id || "",
+      slug: normalizedPage.slug,
+      title: normalizedPage.title,
+      headline: normalizedPage.headline,
+    },
+    submission: {
+      submittedAt: new Date().toISOString(),
+      ip: getClientIp(req),
+      country: geo.country,
+      city: geo.city,
+      browser: agent.browser,
+      platform: agent.platform,
+      device: agent.deviceType,
+      answers,
+    },
+  }, req).catch(() => {});
   return sendJson(res, 201, { success: true, message: normalizedPage.thanksMessage });
 }
 
@@ -3103,6 +3199,16 @@ async function handleDeleteLink(slug, req, res, user) {
     // Trash sync is best-effort while migration is in progress.
   }
 
+  queueWebhookEvent(user.id, "link.deleted", {
+    link: {
+      id: String(trashedItem.id || ""),
+      slug: trashedItem.slug,
+      destination: trashedItem.destination,
+      shortUrl: trashedItem.shortUrl,
+      includeQr: Boolean(trashedItem.includeQr),
+      deletedAt: trashedItem.deletedAt,
+    },
+  }, req).catch(() => {});
   return sendJson(res, 200, { success: true, trashLink: trashedItem, trashLinks: nextTrashLinks });
 }
 
@@ -3388,6 +3494,7 @@ async function handleSaveSettings(body, req, res, user) {
   const campaignTemplates = normalizeCampaignTemplates(body.campaignTemplates || currentSettings.campaignTemplates || []);
   const pixelTemplates = normalizePixelTemplates(body.pixelTemplates || currentSettings.pixelTemplates || []);
   const teamMembers = normalizeTeamMembers(body.teamMembers || currentSettings.teamMembers || []);
+  const webhooks = normalizeWebhookEndpoints(body.webhooks || currentSettings.webhooks || []);
   const trashLinks = normalizeTrashLinks(body.trashLinks || currentSettings.trashLinks || []);
   const campaigns = normalizeCampaigns(body.campaigns || currentSettings.campaigns || []);
 
@@ -3417,6 +3524,7 @@ async function handleSaveSettings(body, req, res, user) {
     campaignTemplates,
     pixelTemplates,
     teamMembers,
+    webhooks,
     trashLinks,
     campaigns,
   }, req);
@@ -3548,6 +3656,237 @@ async function handleRemoveTeamMember(memberId, req, res, user) {
     appendAuditLog("team.member.remove", { userId: user.id, email: user.email, type: "user" }, { workspaceUserId: user.id, memberEmail: match.email, role: match.role });
   }
   return sendJson(res, 200, { teamMembers: nextSettings.teamMembers, settings: nextSettings });
+}
+
+function serializeWebhookEndpointForClient(endpoint, includeSecret = false) {
+  if (!endpoint) return null;
+  const secret = String(endpoint.secret || "");
+  return {
+    id: endpoint.id,
+    name: endpoint.name,
+    url: endpoint.url,
+    events: Array.isArray(endpoint.events) ? endpoint.events : [...webhookAllowedEvents],
+    isActive: endpoint.isActive !== false,
+    createdAt: endpoint.createdAt || "",
+    updatedAt: endpoint.updatedAt || "",
+    lastTriggeredAt: endpoint.lastTriggeredAt || "",
+    lastStatus: Number(endpoint.lastStatus || 0),
+    lastError: endpoint.lastError || "",
+    totalSuccess: Math.max(0, Number(endpoint.totalSuccess || 0)),
+    totalFailed: Math.max(0, Number(endpoint.totalFailed || 0)),
+    signingSecret: includeSecret ? secret : "",
+    signingSecretPreview: secret ? `${secret.slice(0, 10)}...${secret.slice(-6)}` : "",
+  };
+}
+
+async function persistWebhookSettingsForUser(userId, req, webhooks) {
+  const settings = await readSettingsForUserAsync(userId, req);
+  const nextSettings = normalizeSettings({
+    ...settings,
+    webhooks: normalizeWebhookEndpoints(webhooks),
+  }, req);
+
+  if (!dbOnlyMode) {
+    const store = readSettingsStore().filter((item) => item.userId !== userId);
+    store.push(nextSettings);
+    writeSettingsStore(store);
+  }
+
+  return nextSettings;
+}
+
+async function handleListWebhooks(req, res, user) {
+  const settings = await readSettingsForUserAsync(user.id, req);
+  const webhooks = normalizeWebhookEndpoints(settings.webhooks || []).map((item) => serializeWebhookEndpointForClient(item, false));
+  return sendJson(res, 200, { webhooks });
+}
+
+async function handleUpsertWebhook(body, req, res, user) {
+  const settings = await readSettingsForUserAsync(user.id, req);
+  const existing = normalizeWebhookEndpoints(settings.webhooks || []);
+  const id = String(body?.id || "").trim();
+  const name = String(body?.name || "").trim() || "Automation webhook";
+  const url = String(body?.url || "").trim();
+  const isActive = body?.isActive !== false;
+  const events = normalizeWebhookEvents(body?.events || []);
+
+  if (!url) {
+    return sendJson(res, 400, { error: "Webhook URL is required." });
+  }
+
+  let parsedUrl = "";
+  try {
+    const parsed = new URL(url);
+    if (!["http:", "https:"].includes(parsed.protocol)) {
+      return sendJson(res, 400, { error: "Webhook URL must use http or https." });
+    }
+    parsedUrl = parsed.toString();
+  } catch {
+    return sendJson(res, 400, { error: "Enter a valid webhook URL." });
+  }
+
+  const nowIso = new Date().toISOString();
+  const current = id ? existing.find((item) => item.id === id) : null;
+  const webhook = normalizeWebhookEndpoint({
+    ...(current || {}),
+    id: current?.id || id || crypto.randomUUID(),
+    name,
+    url: parsedUrl,
+    events,
+    isActive,
+    updatedAt: nowIso,
+    createdAt: current?.createdAt || nowIso,
+    secret: current?.secret || `whsec_${crypto.randomBytes(24).toString("hex")}`,
+  });
+
+  if (!webhook) {
+    return sendJson(res, 400, { error: "Unable to save webhook. Check your URL and fields." });
+  }
+
+  const nextWebhooks = [webhook, ...existing.filter((item) => item.id !== webhook.id)];
+  const nextSettings = await persistWebhookSettingsForUser(user.id, req, nextWebhooks);
+  appendAuditLog("webhook.upsert", { userId: user.id, email: user.email, type: "user" }, { webhookId: webhook.id, webhookUrl: webhook.url });
+  return sendJson(res, 200, {
+    success: true,
+    webhook: serializeWebhookEndpointForClient(webhook, true),
+    webhooks: nextSettings.webhooks.map((item) => serializeWebhookEndpointForClient(item, false)),
+    settings: nextSettings,
+  });
+}
+
+async function handleDeleteWebhook(webhookId, req, res, user) {
+  const settings = await readSettingsForUserAsync(user.id, req);
+  const existing = normalizeWebhookEndpoints(settings.webhooks || []);
+  const match = existing.find((item) => item.id === webhookId);
+  if (!match) {
+    return sendJson(res, 404, { error: "Webhook not found." });
+  }
+  const nextSettings = await persistWebhookSettingsForUser(user.id, req, existing.filter((item) => item.id !== webhookId));
+  appendAuditLog("webhook.delete", { userId: user.id, email: user.email, type: "user" }, { webhookId: match.id, webhookUrl: match.url });
+  return sendJson(res, 200, {
+    success: true,
+    webhooks: nextSettings.webhooks.map((item) => serializeWebhookEndpointForClient(item, false)),
+    settings: nextSettings,
+  });
+}
+
+async function handleTestWebhook(webhookId, req, res, user) {
+  const settings = await readSettingsForUserAsync(user.id, req);
+  const endpoint = normalizeWebhookEndpoints(settings.webhooks || []).find((item) => item.id === webhookId);
+  if (!endpoint) {
+    return sendJson(res, 404, { error: "Webhook not found." });
+  }
+  const result = await deliverWebhookEvent(user.id, endpoint, "subscription.updated", {
+    source: "manual_test",
+    message: "AnyLink test webhook delivery",
+    triggeredBy: user.email,
+  }, req);
+  return sendJson(res, result.ok ? 200 : 502, {
+    success: result.ok,
+    status: result.status,
+    message: result.ok ? "Test event sent successfully." : "Test event failed. Check URL or automation endpoint.",
+    error: result.ok ? "" : result.error,
+  });
+}
+
+function signWebhookBody(secret, timestamp, payloadBody) {
+  const raw = `${timestamp}.${payloadBody}`;
+  const digest = crypto.createHmac("sha256", String(secret || "")).update(raw).digest("hex");
+  return `sha256=${digest}`;
+}
+
+async function persistWebhookDeliveryResult(userId, webhookId, req, outcome) {
+  try {
+    const settings = await readSettingsForUserAsync(userId, req);
+    const existing = normalizeWebhookEndpoints(settings.webhooks || []);
+    const target = existing.find((item) => item.id === webhookId);
+    if (!target) return;
+    const nowIso = new Date().toISOString();
+    const nextWebhooks = existing.map((item) => {
+      if (item.id !== webhookId) return item;
+      return normalizeWebhookEndpoint({
+        ...item,
+        updatedAt: nowIso,
+        lastTriggeredAt: nowIso,
+        lastStatus: Number(outcome.status || 0),
+        lastError: outcome.ok ? "" : String(outcome.error || "Webhook delivery failed."),
+        totalSuccess: Number(item.totalSuccess || 0) + (outcome.ok ? 1 : 0),
+        totalFailed: Number(item.totalFailed || 0) + (outcome.ok ? 0 : 1),
+      });
+    }).filter(Boolean);
+    await persistWebhookSettingsForUser(userId, req, nextWebhooks);
+  } catch {
+    // Webhook stats are best effort.
+  }
+}
+
+async function deliverWebhookEvent(userId, endpoint, eventName, data, req) {
+  const timestamp = Date.now().toString();
+  const deliveryId = crypto.randomUUID();
+  const settings = await readSettingsForUserAsync(userId, req);
+  const payload = {
+    id: deliveryId,
+    event: eventName,
+    createdAt: new Date().toISOString(),
+    workspace: {
+      userId,
+      workspaceName: settings.workspaceName || "AnyLink Workspace",
+      defaultDomain: settings.defaultDomain || publicAppDomain,
+    },
+    data: data || {},
+  };
+  const payloadBody = JSON.stringify(payload);
+  const signature = signWebhookBody(endpoint.secret || "", timestamp, payloadBody);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), webhookDeliveryTimeoutMs);
+  try {
+    const response = await fetch(endpoint.url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "User-Agent": "AnyLink-Webhook/1.0",
+        "X-AnyLink-Event": eventName,
+        "X-AnyLink-Delivery": deliveryId,
+        "X-AnyLink-Timestamp": timestamp,
+        "X-AnyLink-Signature": signature,
+      },
+      body: payloadBody,
+      signal: controller.signal,
+    });
+    clearTimeout(timeout);
+    const ok = response.ok;
+    const outcome = {
+      ok,
+      status: Number(response.status || 0),
+      error: ok ? "" : `HTTP ${response.status}`,
+    };
+    await persistWebhookDeliveryResult(userId, endpoint.id, req, outcome);
+    return outcome;
+  } catch (error) {
+    clearTimeout(timeout);
+    const outcome = {
+      ok: false,
+      status: 0,
+      error: error?.name === "AbortError" ? "Delivery timed out." : String(error?.message || "Delivery failed."),
+    };
+    await persistWebhookDeliveryResult(userId, endpoint.id, req, outcome);
+    return outcome;
+  }
+}
+
+async function queueWebhookEvent(userId, eventName, data, req) {
+  const normalizedEvent = String(eventName || "").trim().toLowerCase();
+  if (!userId || !webhookAllowedEvents.has(normalizedEvent)) {
+    return;
+  }
+  try {
+    const settings = await readSettingsForUserAsync(userId, req);
+    const targets = normalizeWebhookEndpoints(settings.webhooks || []).filter((item) => item.isActive && item.events.includes(normalizedEvent));
+    if (!targets.length) return;
+    await Promise.allSettled(targets.map((endpoint) => deliverWebhookEvent(userId, endpoint, normalizedEvent, data, req)));
+  } catch {
+    // Webhooks should never block product workflows.
+  }
 }
 
 async function handleVerifyDomain(domain, req, res, user) {
@@ -4492,8 +4831,18 @@ async function handleRedirect(slug, req, res) {
         return;
       }
       try {
-        await recordDbClickEvent(dbMatch.id, dbMatch.userId, buildClickEvent(req, tracking));
+        const clickEvent = buildClickEvent(req, tracking);
+        await recordDbClickEvent(dbMatch.id, dbMatch.userId, clickEvent);
         await maybeSendGoalAchievementEmail(dbMatch, Number(dbMatch.clickCount || 0) + 1, req);
+        queueWebhookEvent(dbMatch.userId, "link.clicked", {
+          link: {
+            id: String(dbMatch.id || ""),
+            slug: dbMatch.slug,
+            destination: dbMatch.destination,
+            shortUrl: dbMatch.shortUrl,
+          },
+          click: clickEvent,
+        }, req).catch(() => {});
       } catch {
         // Redirect should still work even if analytics write fails.
       }
@@ -4543,13 +4892,22 @@ async function handleRedirect(slug, req, res) {
       res.end(renderProtectedLinkPage(match, new URL(req.url, `http://${req.headers.host || publicAppDomain}`).searchParams.get("error") || ""));
       return;
     }
-    recordLinkVisit(match, req, tracking);
+    const clickEvent = recordLinkVisit(match, req, tracking);
     writeLinks(links);
     try {
       await maybeSendGoalAchievementEmail(match, Number(match.analytics?.totalClicks || 0), req);
     } catch {
       // Redirect should still work even if goal email fails.
     }
+    queueWebhookEvent(match.userId, "link.clicked", {
+      link: {
+        id: String(match.id || ""),
+        slug: match.slug,
+        destination: match.destination,
+        shortUrl: match.shortUrl,
+      },
+      click: clickEvent,
+    }, req).catch(() => {});
     const destination = resolveSmartDestination(match.destination, rule, req);
     if (rule?.isOneTime) {
       markOneTimeLinkUsed(match.userId, match.slug, req);
@@ -4716,6 +5074,7 @@ function defaultSettings(req) {
     campaignTemplates: [],
     pixelTemplates: [],
     teamMembers: [],
+    webhooks: [],
     trashLinks: [],
     campaigns: [],
   };
@@ -5047,6 +5406,71 @@ function normalizeTeamMembers(input) {
   return members.sort((left, right) => new Date(right.updatedAt || 0).getTime() - new Date(left.updatedAt || 0).getTime());
 }
 
+function normalizeWebhookEvents(input) {
+  const source = Array.isArray(input)
+    ? input
+    : String(input || "")
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean);
+  const seen = new Set();
+  const events = [];
+  for (const raw of source) {
+    const eventName = String(raw || "").trim().toLowerCase();
+    if (!webhookAllowedEvents.has(eventName) || seen.has(eventName)) continue;
+    seen.add(eventName);
+    events.push(eventName);
+  }
+  return events.length ? events : [...webhookAllowedEvents];
+}
+
+function normalizeWebhookEndpoint(input) {
+  if (!input || typeof input !== "object") return null;
+  const id = String(input.id || "").trim() || crypto.randomUUID();
+  const name = String(input.name || "Automation webhook").trim() || "Automation webhook";
+  const urlValue = String(input.url || "").trim();
+  if (!urlValue) return null;
+  let url = "";
+  try {
+    const parsed = new URL(urlValue);
+    if (!["http:", "https:"].includes(parsed.protocol)) {
+      return null;
+    }
+    url = parsed.toString();
+  } catch {
+    return null;
+  }
+  const secret = String(input.secret || "").trim() || `whsec_${crypto.randomBytes(24).toString("hex")}`;
+  const nowIso = new Date().toISOString();
+  return {
+    id,
+    name,
+    url,
+    events: normalizeWebhookEvents(input.events),
+    isActive: input.isActive !== false,
+    secret,
+    createdAt: String(input.createdAt || nowIso),
+    updatedAt: String(input.updatedAt || nowIso),
+    lastTriggeredAt: String(input.lastTriggeredAt || ""),
+    lastStatus: Number(input.lastStatus || 0),
+    lastError: String(input.lastError || ""),
+    totalSuccess: Math.max(0, Number(input.totalSuccess || 0)),
+    totalFailed: Math.max(0, Number(input.totalFailed || 0)),
+  };
+}
+
+function normalizeWebhookEndpoints(input) {
+  const endpoints = [];
+  const seen = new Set();
+  for (const item of Array.isArray(input) ? input : []) {
+    const normalized = normalizeWebhookEndpoint(item);
+    if (!normalized || seen.has(normalized.id)) continue;
+    seen.add(normalized.id);
+    endpoints.push(normalized);
+  }
+  return endpoints.sort((left, right) => new Date(right.updatedAt || 0).getTime() - new Date(left.updatedAt || 0).getTime());
+}
+
 function normalizeSettings(settings, req) {
   const base = defaultSettings(req);
   const workspaceName = String(settings?.workspaceName || base.workspaceName).trim() || base.workspaceName;
@@ -5082,6 +5506,7 @@ function normalizeSettings(settings, req) {
     campaignTemplates: normalizeCampaignTemplates(settings?.campaignTemplates || []),
     pixelTemplates: normalizePixelTemplates(settings?.pixelTemplates || []),
     teamMembers: normalizeTeamMembers(settings?.teamMembers || []),
+    webhooks: normalizeWebhookEndpoints(settings?.webhooks || []),
     trashLinks: normalizeTrashLinks(settings?.trashLinks || []),
     campaigns: normalizeCampaigns(settings?.campaigns || []),
   };
