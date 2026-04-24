@@ -164,7 +164,7 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "POST" && pathname === "/api/auth/reset-password") {
       const body = await readRequestBody(req);
-      return handleResetPassword(body, req, res);
+      return await handleResetPassword(body, req, res);
     }
 
     if (req.method === "POST" && pathname === "/api/auth/send-verification") {
@@ -1427,88 +1427,210 @@ async function handleAuthMe(req, res) {
 
 async function handleForgotPassword(body, req, res) {
   const email = String(body.email || "").trim().toLowerCase();
-  const users = readUsers();
-  let user = users.find((item) => item.email === email);
+  const users = dbOnlyMode ? [] : readUsers();
+  let user = !dbOnlyMode ? users.find((item) => item.email === email) : null;
+  let dbUser = null;
 
-  if (!user) {
-    try {
-      const dbUser = await findUserByEmail(email);
-      if (dbUser) {
-        user = {
-          id: dbUser.id,
-          name: dbUser.name || email.split("@")[0] || "User",
-          email: String(dbUser.email || "").trim().toLowerCase(),
-          passwordHash: String(dbUser.passwordHash || ""),
-          salt: "",
-          emailVerified: Boolean(dbUser.emailVerified),
-          isAdmin: Boolean(dbUser.isAdmin),
-          subscriptionStatus: String(dbUser.subscriptionStatus || "inactive").toLowerCase(),
-          trialStartedAt: dbUser.trialStartedAt ? new Date(dbUser.trialStartedAt).getTime() : 0,
-          trialEndsAt: dbUser.trialEndsAt ? new Date(dbUser.trialEndsAt).getTime() : 0,
-          subscriptionStartedAt: dbUser.subscriptionStartedAt ? new Date(dbUser.subscriptionStartedAt).getTime() : 0,
-          subscriptionExpiresAt: dbUser.subscriptionExpiresAt ? new Date(dbUser.subscriptionExpiresAt).getTime() : 0,
-          createdAt: dbUser.createdAt ? new Date(dbUser.createdAt).toISOString() : new Date().toISOString(),
-          resetToken: "",
-          resetExpiresAt: 0,
-          verificationToken: "",
-          verificationExpiresAt: 0,
-        };
-        users.push(user);
-      }
-    } catch {
-      // Keep file-backed fallback if DB lookup is unavailable.
+  try {
+    dbUser = await findUserByEmail(email);
+    if (!user && dbUser && !dbOnlyMode) {
+      user = {
+        id: dbUser.id,
+        name: dbUser.name || email.split("@")[0] || "User",
+        email: String(dbUser.email || "").trim().toLowerCase(),
+        passwordHash: String(dbUser.passwordHash || ""),
+        salt: "",
+        emailVerified: Boolean(dbUser.emailVerified),
+        isAdmin: Boolean(dbUser.isAdmin),
+        subscriptionStatus: String(dbUser.subscriptionStatus || "inactive").toLowerCase(),
+        trialStartedAt: dbUser.trialStartedAt ? new Date(dbUser.trialStartedAt).getTime() : 0,
+        trialEndsAt: dbUser.trialEndsAt ? new Date(dbUser.trialEndsAt).getTime() : 0,
+        subscriptionStartedAt: dbUser.subscriptionStartedAt ? new Date(dbUser.subscriptionStartedAt).getTime() : 0,
+        subscriptionExpiresAt: dbUser.subscriptionExpiresAt ? new Date(dbUser.subscriptionExpiresAt).getTime() : 0,
+        createdAt: dbUser.createdAt ? new Date(dbUser.createdAt).toISOString() : new Date().toISOString(),
+        resetToken: "",
+        resetOtp: "",
+        resetExpiresAt: 0,
+        verificationToken: "",
+        verificationExpiresAt: 0,
+      };
+      users.push(user);
     }
+  } catch {
+    // Keep file-backed fallback if DB lookup is unavailable.
   }
 
-  if (!user) {
+  if (!user && !dbUser) {
     return sendJson(res, 200, {
       success: true,
       delivery: "email",
-      message: "If that email exists, a password reset link has been sent.",
+      message: "If that email exists, a password reset OTP has been sent.",
     });
   }
 
-  user.resetToken = createToken();
-  user.resetExpiresAt = Date.now() + resetLifetimeMs;
-  writeUsers(users);
+  const resetToken = createToken();
+  const resetOtp = createOtp();
+  const resetExpiresAt = Date.now() + resetLifetimeMs;
 
-  const resetUrl = buildAuthUrl(req, "reset", user.resetToken);
+  if (dbUser) {
+    try {
+      await prisma.authToken.deleteMany({
+        where: {
+          userId: dbUser.id,
+          type: { in: ["password_reset", "password_reset_otp"] },
+        },
+      });
+      await prisma.authToken.createMany({
+        data: [
+          {
+            userId: dbUser.id,
+            type: "password_reset",
+            token: resetToken,
+            expiresAt: new Date(resetExpiresAt),
+          },
+          {
+            userId: dbUser.id,
+            type: "password_reset_otp",
+            token: buildResetOtpToken(email, resetOtp),
+            expiresAt: new Date(resetExpiresAt),
+          },
+        ],
+      });
+    } catch (error) {
+      console.error("Unable to create reset OTP:", error?.message || error);
+      if (dbOnlyMode) {
+        return sendJson(res, 500, { error: "Unable to generate a reset OTP right now." });
+      }
+    }
+  }
+
+  if (user && !dbOnlyMode) {
+    user.resetToken = resetToken;
+    user.resetOtp = resetOtp;
+    user.resetExpiresAt = resetExpiresAt;
+    writeUsers(users);
+  }
+
+  const resetUrl = buildAuthUrl(req, "reset", resetToken);
   const emailSent = await sendTransactionalEmail({
-    to: user.email,
-    subject: "Reset your AnyLink password",
-    html: `<div style="font-family:Segoe UI,Arial,sans-serif;line-height:1.6;color:#183153"><h2 style="margin:0 0 12px;">Reset your password</h2><p style="margin:0 0 14px;">We received a request to reset your AnyLink password.</p><p style="margin:0 0 20px;"><a href="${resetUrl}" style="display:inline-block;background:#2852e0;color:#ffffff;text-decoration:none;padding:12px 18px;border-radius:12px;font-weight:700;">Reset password</a></p><p style="margin:0;color:#5f7399;">If you did not request this, you can safely ignore this email.</p></div>`,
-    text: `Reset your AnyLink password: ${resetUrl}`,
+    to: email,
+    subject: "Your ShortLink password reset OTP",
+    html: `<div style="font-family:Segoe UI,Arial,sans-serif;line-height:1.6;color:#183153"><h2 style="margin:0 0 12px;">Reset your password</h2><p style="margin:0 0 14px;">Use this OTP to reset your ShortLink password. It expires in 30 minutes.</p><p style="font-size:28px;letter-spacing:8px;font-weight:800;margin:0 0 18px;color:#0c2d66;">${resetOtp}</p><p style="margin:0 0 20px;">Or click the secure reset button below.</p><p style="margin:0 0 20px;"><a href="${resetUrl}" style="display:inline-block;background:#2852e0;color:#ffffff;text-decoration:none;padding:12px 18px;border-radius:12px;font-weight:700;">Reset password</a></p><p style="margin:0;color:#5f7399;">If you did not request this, you can safely ignore this email.</p></div>`,
+    text: `Your ShortLink password reset OTP is ${resetOtp}. It expires in 30 minutes. Reset link: ${resetUrl}`,
   });
 
   return sendJson(res, 200, {
     success: true,
     delivery: emailSent ? "email" : "link",
-    message: emailSent ? "Password reset link sent to your email." : "Email is not configured yet. Use the reset link below.",
+    message: emailSent ? "Password reset OTP sent to your email." : "Email is not configured yet. Use the reset link below.",
     resetUrl: emailSent ? "" : resetUrl,
   });
 }
 
-function handleResetPassword(body, req, res) {
+async function handleResetPassword(body, req, res) {
   const token = String(body.token || "").trim();
+  const email = String(body.email || "").trim().toLowerCase();
+  const otp = String(body.otp || body.code || "").replace(/\D/g, "").slice(0, 6);
   const password = String(body.password || "");
-  const users = readUsers();
-  const user = users.find((item) => item.resetToken === token && Number(item.resetExpiresAt) > Date.now());
-
-  if (!user) {
-    return sendJson(res, 400, { error: "This reset link is invalid or expired." });
-  }
 
   if (password.length < 6) {
     return sendJson(res, 400, { error: "Password must be at least 6 characters." });
   }
 
-  user.salt = crypto.randomBytes(16).toString("hex");
-  user.passwordHash = hashPassword(password, user.salt);
-  user.resetToken = "";
-  user.resetExpiresAt = 0;
-  writeUsers(users);
+  const resetLookup = await findValidPasswordResetRequest({ token, email, otp });
+
+  if (!resetLookup) {
+    return sendJson(res, 400, { error: "This reset OTP or link is invalid or expired." });
+  }
+
+  const { combined } = buildStoredPassword(password);
+
+  if (resetLookup.dbUser) {
+    await updateDbUser(resetLookup.dbUser.id, { passwordHash: combined });
+    await prisma.authToken.updateMany({
+      where: {
+        userId: resetLookup.dbUser.id,
+        type: { in: ["password_reset", "password_reset_otp"] },
+        usedAt: null,
+      },
+      data: { usedAt: new Date() },
+    });
+  }
+
+  if (resetLookup.fileUser && !dbOnlyMode) {
+    const users = readUsers();
+    const user = users.find((item) => item.id === resetLookup.fileUser.id);
+    if (user) {
+      user.passwordHash = combined;
+      user.salt = "";
+      user.resetToken = "";
+      user.resetOtp = "";
+      user.resetExpiresAt = 0;
+      writeUsers(users);
+    }
+  }
 
   return sendJson(res, 200, { success: true, message: "Password updated. You can sign in now." });
+}
+
+async function findValidPasswordResetRequest({ token, email, otp }) {
+  const now = new Date();
+
+  if (token) {
+    try {
+      const dbToken = await prisma.authToken.findFirst({
+        where: {
+          token,
+          type: "password_reset",
+          usedAt: null,
+          expiresAt: { gt: now },
+        },
+        include: { user: true },
+      });
+      if (dbToken?.user) {
+        return { dbUser: dbToken.user, fileUser: null };
+      }
+    } catch {
+      if (dbOnlyMode) return null;
+    }
+  }
+
+  if (email && otp.length === 6) {
+    try {
+      const dbUser = await findUserByEmail(email);
+      if (dbUser) {
+        const dbOtp = await prisma.authToken.findFirst({
+          where: {
+            userId: dbUser.id,
+            token: buildResetOtpToken(email, otp),
+            type: "password_reset_otp",
+            usedAt: null,
+            expiresAt: { gt: now },
+          },
+        });
+        if (dbOtp) {
+          return { dbUser, fileUser: null };
+        }
+      }
+    } catch {
+      if (dbOnlyMode) return null;
+    }
+  }
+
+  if (!dbOnlyMode) {
+    const users = readUsers();
+    const fileUser = users.find((item) => {
+      const expiresAt = Number(item.resetExpiresAt || 0);
+      const tokenMatches = token && item.resetToken === token;
+      const otpMatches = email && otp.length === 6 && item.email === email && item.resetOtp === otp;
+      return expiresAt > Date.now() && (tokenMatches || otpMatches);
+    });
+    if (fileUser) {
+      return { dbUser: null, fileUser };
+    }
+  }
+
+  return null;
 }
 
 async function handleSendVerification(body, req, res) {
@@ -5784,6 +5906,17 @@ function buildShortUrl(domain, slug) {
 
 function createToken() {
   return crypto.randomBytes(24).toString("hex");
+}
+
+function createOtp() {
+  return String(crypto.randomInt(100000, 1000000));
+}
+
+function buildResetOtpToken(email, otp) {
+  return crypto
+    .createHash("sha256")
+    .update(`${String(email || "").trim().toLowerCase()}:${String(otp || "").trim()}`)
+    .digest("hex");
 }
 
 function isAdminUser(user) {

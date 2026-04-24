@@ -1816,6 +1816,7 @@ function renderAuthPage() {
   const authQuery = getAuthQuery();
   const authMode = authQuery.get("mode") || "signin";
   const token = authQuery.get("token") || "";
+  const resetEmail = authQuery.get("email") || "";
   const activeMode = ["signin", "signup", "forgot", "reset", "verify"].includes(authMode) ? authMode : "signin";
   const isSignin = activeMode === "signin";
   const isSignup = activeMode === "signup";
@@ -1835,18 +1836,23 @@ function renderAuthPage() {
           </form>`
     : isForgot
       ? `<form class="auth-form" id="forgotForm">
-            <p class="helper-copy auth-helper-copy">Enter your email and we will generate a secure password reset link for your account.</p>
+            <p class="helper-copy auth-helper-copy">Enter your email and we will send a secure 6-digit OTP to reset your password.</p>
             <label class="field-label" for="forgotEmail">Email</label>
             <input class="url-input" id="forgotEmail" type="email" placeholder="you@example.com" required>
-            <button class="primary-action auth-submit" type="submit">Send reset link</button>
+            <button class="primary-action auth-submit" type="submit">Send reset OTP</button>
             <button class="auth-inline-link" type="button" id="backToSignin">Back to sign in</button>
           </form>`
       : isReset
         ? `<form class="auth-form" id="resetForm">
-            <p class="helper-copy auth-helper-copy">Create a new password for your account.</p>
+            <p class="helper-copy auth-helper-copy">${token ? "Create a new password for your account." : "Enter the OTP from your email and create a new password."}</p>
+            ${token ? "" : `<label class="field-label" for="resetEmail">Email</label>
+            <input class="url-input" id="resetEmail" type="email" placeholder="you@example.com" value="${escapeHtml(resetEmail)}" required>
+            <label class="field-label" for="resetOtp">Reset OTP</label>
+            <input class="url-input" id="resetOtp" type="text" inputmode="numeric" maxlength="6" placeholder="6-digit OTP" required>`}
             <label class="field-label" for="resetPassword">New password</label>
             <div class="password-field"><input class="url-input" id="resetPassword" type="password" placeholder="Minimum 6 characters" required><button class="password-toggle" type="button" data-password-toggle="resetPassword">Show</button></div>
             <button class="primary-action auth-submit" type="submit">Reset password</button>
+            <button class="auth-inline-link" type="button" id="backToSignin">Back to sign in</button>
           </form>`
         : isVerify
           ? `<div class="auth-form auth-state-panel">
@@ -1898,6 +1904,7 @@ function renderAuthPage() {
       const nextUrl = new URL(window.location.href);
       nextUrl.searchParams.set("mode", mode);
       nextUrl.searchParams.delete("token");
+      nextUrl.searchParams.delete("email");
       window.history.replaceState({}, "", nextUrl);
       renderAuthPage();
     });
@@ -1907,6 +1914,7 @@ function renderAuthPage() {
     const nextUrl = new URL(window.location.href);
     nextUrl.searchParams.set("mode", "forgot");
     nextUrl.searchParams.delete("token");
+    nextUrl.searchParams.delete("email");
     window.history.replaceState({}, "", nextUrl);
     renderAuthPage();
   });
@@ -1915,6 +1923,7 @@ function renderAuthPage() {
     const nextUrl = new URL(window.location.href);
     nextUrl.searchParams.set("mode", "signin");
     nextUrl.searchParams.delete("token");
+    nextUrl.searchParams.delete("email");
     window.history.replaceState({}, "", nextUrl);
     renderAuthPage();
   });
@@ -1940,26 +1949,37 @@ function renderAuthPage() {
 
   forgotForm?.addEventListener("submit", async (event) => {
     event.preventDefault();
-    setInlineBanner(authBanner, "Sending reset link...", false);
+    setInlineBanner(authBanner, "Sending reset OTP...", false);
     try {
+      const email = document.getElementById("forgotEmail").value.trim();
       const response = await fetch("/api/auth/forgot-password", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: document.getElementById("forgotEmail").value.trim() }),
+        body: JSON.stringify({ email }),
       });
       const payload = await response.json();
       if (!response.ok) {
-        setInlineBanner(authBanner, payload.error || "Could not generate reset link.", true);
+        setInlineBanner(authBanner, payload.error || "Could not send reset OTP.", true);
         return;
       }
-      setInlineBanner(authBanner, payload.delivery === "link" && payload.resetUrl ? `Email is not configured yet. Use this reset link: ${payload.resetUrl}` : (payload.message || "Password reset link sent to your email."), false);
+      if (payload.delivery === "email") {
+        const nextUrl = new URL(window.location.href);
+        nextUrl.searchParams.set("mode", "reset");
+        nextUrl.searchParams.set("email", email);
+        nextUrl.searchParams.delete("token");
+        window.history.replaceState({}, "", nextUrl);
+        renderAuthPage();
+        setInlineBanner(document.getElementById("authBanner"), payload.message || "Password reset OTP sent to your email.", false);
+        return;
+      }
+      setInlineBanner(authBanner, payload.delivery === "link" && payload.resetUrl ? `Email is not configured yet. Use this reset link: ${payload.resetUrl}` : (payload.message || "Password reset OTP sent to your email."), false);
     } catch (error) {
       setInlineBanner(authBanner, error.message, true);
     }
   });
 
-  if (resetForm && token) {
-    setInlineBanner(authBanner, "Enter a new password to finish resetting your account.", false);
+  if (resetForm) {
+    setInlineBanner(authBanner, token ? "Enter a new password to finish resetting your account." : "Enter the OTP from your email to reset your password.", false);
     resetForm.addEventListener("submit", async (event) => {
       event.preventDefault();
       setInlineBanner(authBanner, "Resetting password...", false);
@@ -1969,6 +1989,8 @@ function renderAuthPage() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             token,
+            email: document.getElementById("resetEmail")?.value.trim() || resetEmail,
+            otp: document.getElementById("resetOtp")?.value.trim() || "",
             password: document.getElementById("resetPassword").value,
           }),
         });
