@@ -2,6 +2,7 @@ const http = require("http");
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
+const { prisma } = require("./lib/prisma");
 const { URL } = require("url");
 const { createUser: createDbUser, findUserByEmail, findUserById, updateUser: updateDbUser, listUsers: listDbUsers } = require("./repositories/usersRepository");
 const { createSession: createDbSession, deleteSessionByToken: deleteDbSessionByToken, findSessionByToken } = require("./repositories/sessionsRepository");
@@ -117,7 +118,7 @@ const server = http.createServer(async (req, res) => {
     const pathname = decodeURIComponent(requestUrl.pathname);
     applySecurityHeaders(req, res);
 
-    if (!isRequestAllowedByOrigin(req, pathname)) {
+    if (!(await isRequestAllowedByOrigin(req, pathname))) {
       return sendJson(res, 403, { error: "Blocked by security policy." });
     }
 
@@ -902,7 +903,33 @@ function applySecurityHeaders(req, res) {
   }
 }
 
-function isRequestAllowedByOrigin(req, pathname) {
+let cachedCsrfAllowedHostnames = new Set();
+let cachedCsrfAllowedHostnamesExpiresAt = 0;
+
+async function getCsrfAllowedHostnames() {
+  const now = Date.now();
+  if (now < cachedCsrfAllowedHostnamesExpiresAt && cachedCsrfAllowedHostnames.size) {
+    return cachedCsrfAllowedHostnames;
+  }
+
+  const next = new Set([String(publicAppDomain || "").trim().toLowerCase()].filter(Boolean));
+
+  try {
+    const domains = await prisma.customDomain.findMany({ select: { host: true } });
+    for (const domain of domains || []) {
+      const host = String(domain?.host || "").trim().toLowerCase();
+      if (host) next.add(host);
+    }
+  } catch {
+    // If DB is temporarily unavailable, fall back to the default domain only.
+  }
+
+  cachedCsrfAllowedHostnames = next;
+  cachedCsrfAllowedHostnamesExpiresAt = now + 60 * 1000;
+  return next;
+}
+
+async function isRequestAllowedByOrigin(req, pathname) {
   const method = String(req.method || "GET").toUpperCase();
   if (!["POST", "PUT", "PATCH", "DELETE"].includes(method)) return true;
   if (!String(pathname || "").startsWith("/api/")) return true;
@@ -911,14 +938,25 @@ function isRequestAllowedByOrigin(req, pathname) {
   const source = String(req.headers.origin || req.headers.referer || "").trim();
   if (!source) return true;
 
-  const requestHost = String(req.headers.host || "").trim().toLowerCase();
-  if (!requestHost) return false;
+  const forwardedHostHeader = String(
+    req.headers["x-original-host"] ||
+    req.headers["x-forwarded-host"] ||
+    req.headers.host ||
+    ""
+  ).trim().toLowerCase();
+  if (!forwardedHostHeader) return false;
+  const requestHostname = forwardedHostHeader.split(",")[0].trim().split(":")[0] || "";
+  if (!requestHostname) return false;
 
   try {
     const parsed = new URL(source);
-    const sourceHost = String(parsed.host || "").toLowerCase();
+    const sourceHost = String(parsed.hostname || "").toLowerCase();
     const sourceOrigin = String(parsed.origin || "").toLowerCase();
-    return sourceHost === requestHost || allowedOrigins.has(sourceOrigin);
+    if (sourceHost && sourceHost === requestHostname) return true;
+    if (allowedOrigins.has(sourceOrigin)) return true;
+
+    const allowedHostnames = await getCsrfAllowedHostnames();
+    return allowedHostnames.has(sourceHost) && allowedHostnames.has(requestHostname);
   } catch {
     return false;
   }
