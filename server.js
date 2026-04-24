@@ -3,7 +3,7 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 const { URL } = require("url");
-const { createUser: createDbUser, findUserByEmail, findUserById, updateUser: updateDbUser } = require("./repositories/usersRepository");
+const { createUser: createDbUser, findUserByEmail, findUserById, updateUser: updateDbUser, listUsers: listDbUsers } = require("./repositories/usersRepository");
 const { createSession: createDbSession, deleteSessionByToken: deleteDbSessionByToken, findSessionByToken } = require("./repositories/sessionsRepository");
 const { getWorkspaceSettings: getDbWorkspaceSettings, upsertWorkspaceSettings } = require("./repositories/settingsRepository");
 const { listLinksByUser, createLink: createDbLink, updateLinkBySlug, deleteLinkBySlug, findLinkBySlug } = require("./repositories/linksRepository");
@@ -204,7 +204,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === "GET" && pathname === "/api/admin/overview") {
-      return await withAdmin(req, res, () => handleAdminOverview(res));
+      return await withAdmin(req, res, () => handleAdminOverview(req, res));
     }
 
     if (req.method === "GET" && pathname.startsWith("/api/admin/users/") && pathname.endsWith("/links")) {
@@ -1390,7 +1390,37 @@ async function handleAuthMe(req, res) {
 async function handleForgotPassword(body, req, res) {
   const email = String(body.email || "").trim().toLowerCase();
   const users = readUsers();
-  const user = users.find((item) => item.email === email);
+  let user = users.find((item) => item.email === email);
+
+  if (!user) {
+    try {
+      const dbUser = await findUserByEmail(email);
+      if (dbUser) {
+        user = {
+          id: dbUser.id,
+          name: dbUser.name || email.split("@")[0] || "User",
+          email: String(dbUser.email || "").trim().toLowerCase(),
+          passwordHash: String(dbUser.passwordHash || ""),
+          salt: "",
+          emailVerified: Boolean(dbUser.emailVerified),
+          isAdmin: Boolean(dbUser.isAdmin),
+          subscriptionStatus: String(dbUser.subscriptionStatus || "inactive").toLowerCase(),
+          trialStartedAt: dbUser.trialStartedAt ? new Date(dbUser.trialStartedAt).getTime() : 0,
+          trialEndsAt: dbUser.trialEndsAt ? new Date(dbUser.trialEndsAt).getTime() : 0,
+          subscriptionStartedAt: dbUser.subscriptionStartedAt ? new Date(dbUser.subscriptionStartedAt).getTime() : 0,
+          subscriptionExpiresAt: dbUser.subscriptionExpiresAt ? new Date(dbUser.subscriptionExpiresAt).getTime() : 0,
+          createdAt: dbUser.createdAt ? new Date(dbUser.createdAt).toISOString() : new Date().toISOString(),
+          resetToken: "",
+          resetExpiresAt: 0,
+          verificationToken: "",
+          verificationExpiresAt: 0,
+        };
+        users.push(user);
+      }
+    } catch {
+      // Keep file-backed fallback if DB lookup is unavailable.
+    }
+  }
 
   if (!user) {
     return sendJson(res, 200, {
@@ -1446,7 +1476,37 @@ function handleResetPassword(body, req, res) {
 async function handleSendVerification(body, req, res) {
   const email = String(body.email || "").trim().toLowerCase();
   const users = readUsers();
-  const user = users.find((item) => item.email === email);
+  let user = users.find((item) => item.email === email);
+
+  if (!user) {
+    try {
+      const dbUser = await findUserByEmail(email);
+      if (dbUser) {
+        user = {
+          id: dbUser.id,
+          name: dbUser.name || email.split("@")[0] || "User",
+          email: String(dbUser.email || "").trim().toLowerCase(),
+          passwordHash: String(dbUser.passwordHash || ""),
+          salt: "",
+          emailVerified: Boolean(dbUser.emailVerified),
+          isAdmin: Boolean(dbUser.isAdmin),
+          subscriptionStatus: String(dbUser.subscriptionStatus || "inactive").toLowerCase(),
+          trialStartedAt: dbUser.trialStartedAt ? new Date(dbUser.trialStartedAt).getTime() : 0,
+          trialEndsAt: dbUser.trialEndsAt ? new Date(dbUser.trialEndsAt).getTime() : 0,
+          subscriptionStartedAt: dbUser.subscriptionStartedAt ? new Date(dbUser.subscriptionStartedAt).getTime() : 0,
+          subscriptionExpiresAt: dbUser.subscriptionExpiresAt ? new Date(dbUser.subscriptionExpiresAt).getTime() : 0,
+          createdAt: dbUser.createdAt ? new Date(dbUser.createdAt).toISOString() : new Date().toISOString(),
+          resetToken: "",
+          resetExpiresAt: 0,
+          verificationToken: "",
+          verificationExpiresAt: 0,
+        };
+        users.push(user);
+      }
+    } catch {
+      // Keep file-backed fallback if DB lookup is unavailable.
+    }
+  }
 
   if (!user) {
     return sendJson(res, 404, { error: "No account found for that email." });
@@ -1911,20 +1971,48 @@ function getAuthenticatedUserById(userId) {
   return null;
 }
 
-function handleAdminOverview(res) {
-  const users = readUsers();
-  const sessions = readSessions();
-  const links = readLinks();
+async function readAdminUsersAsync() {
+  const fileUsers = readUsers();
+  let dbUsers = [];
 
-  const userSummaries = users.map((user) => {
+  try {
+    dbUsers = await listDbUsers();
+  } catch {
+    dbUsers = [];
+  }
+
+  const mergedById = new Map();
+  for (const user of fileUsers) {
+    if (!user?.id) continue;
+    mergedById.set(user.id, user);
+  }
+
+  for (const dbUser of dbUsers) {
+    if (!dbUser?.id) continue;
+    const normalized = normalizeDbUser(dbUser);
+    const existing = mergedById.get(normalized.id);
+    mergedById.set(normalized.id, {
+      ...(existing || {}),
+      ...normalized,
+    });
+  }
+
+  return [...mergedById.values()];
+}
+
+async function handleAdminOverview(req, res) {
+  const users = await readAdminUsersAsync();
+  const sessions = readSessions();
+  const userSummaries = await Promise.all(users.map(async (user) => {
     const userSessions = sessions.filter((session) => session.userId === user.id);
-    const userLinks = links.filter((link) => link.userId === user.id);
+    const userLinks = await readLinksForUserAsync(user.id);
+    const safeUserLinks = Array.isArray(userLinks) ? userLinks : [];
     const activity = readActivitySummary(user.id);
     return {
       ...serializeUser(user),
       billing: serializeBilling(user),
-      totalLinks: userLinks.length,
-      lastLinkAt: userLinks[0]?.createdAt || "",
+      totalLinks: safeUserLinks.length,
+      lastLinkAt: safeUserLinks[0]?.createdAt || "",
       activeSessions: userSessions.length,
       usage: {
         totalTimeMs: Number(activity.totalTimeMs || 0),
@@ -1936,7 +2024,7 @@ function handleAdminOverview(res) {
         topPages: summarizeTopPages(activity.pages || {}),
       },
     };
-  });
+  }));
 
   const sessionSummaries = sessions
     .map((session) => {
@@ -2041,7 +2129,7 @@ async function handleAdminSubscriptionUpdate(userId, body, res, adminUser) {
 }
 
 async function handleAdminUserLinks(userId, res) {
-  const users = readUsers();
+  const users = await readAdminUsersAsync();
   const user = users.find((item) => item.id === userId);
   if (!user) {
     return sendJson(res, 404, { error: "User not found." });
@@ -2074,7 +2162,7 @@ async function handleAdminUserLinks(userId, res) {
 }
 
 async function handleAdminUserExport(userId, req, res) {
-  const users = readUsers();
+  const users = await readAdminUsersAsync();
   const user = users.find((item) => item.id === userId);
   if (!user) {
     return sendJson(res, 404, { error: "User not found." });
@@ -5741,6 +5829,11 @@ async function sendTransactionalEmail({ to, subject, html, text }) {
         reply_to: config.replyTo || undefined,
       }),
     });
+
+    if (!response.ok) {
+      const details = await response.text().catch(() => "");
+      console.error("Resend send failed:", response.status, details);
+    }
 
     return response.ok;
   } catch {
