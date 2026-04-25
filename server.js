@@ -5954,15 +5954,22 @@ function isAdminUser(user) {
 }
 
 function buildAuthUrl(req, mode, token) {
-  const hostHeader = req?.headers?.host || "127.0.0.1:3000";
-  const protocol = getRequestProtocol(req, hostHeader);
-  return `${protocol}://${hostHeader}/auth?mode=${encodeURIComponent(mode)}&token=${encodeURIComponent(token)}`;
+  const { protocol, host } = getPublicBaseUrl(req);
+  return `${protocol}://${host}/auth?mode=${encodeURIComponent(mode)}&token=${encodeURIComponent(token)}`;
 }
 
 function buildAbsoluteUrl(req, pathname) {
-  const hostHeader = req?.headers?.host || "127.0.0.1:3000";
-  const protocol = getRequestProtocol(req, hostHeader);
-  return `${protocol}://${hostHeader}${pathname}`;
+  const { protocol, host } = getPublicBaseUrl(req);
+  return `${protocol}://${host}${pathname}`;
+}
+
+function getPublicBaseUrl(req) {
+  const hostHeader = String(req?.headers?.host || "").trim().toLowerCase();
+  const defaultHost = String(publicAppDomain || "go.shortlinks.in").trim().toLowerCase();
+  const isLocal = /^(localhost|127\.0\.0\.1)(:\d+)?$/i.test(hostHeader);
+  const host = isLocal && hostHeader ? hostHeader : defaultHost;
+  const protocol = getRequestProtocol(req, host);
+  return { protocol, host };
 }
 
 function getEmailDeliveryConfig() {
