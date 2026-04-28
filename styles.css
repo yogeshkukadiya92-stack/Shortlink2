@@ -179,13 +179,17 @@ svg {
 }
 
 .create-button {
-  display: block;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   text-align: center;
   width: 100%;
   background: linear-gradient(135deg, #2855df, #4570f3 58%, #08a6bc);
   color: #fff;
   border-radius: 16px;
-  padding: 18px 16px;
+  min-height: 54px;
+  padding: 12px 16px;
+  line-height: 1.2;
   font-size: 0.95rem;
   font-weight: 700;
   box-shadow: 0 24px 36px rgba(40, 85, 223, 0.28);
@@ -197,6 +201,7 @@ svg {
   gap: 8px;
   border-top: 1px solid var(--line);
   padding-top: 18px;
+  margin-top: 6px;
 }
 
 .nav-item {
@@ -848,7 +853,8 @@ body.compact-ui .sidebar {
 }
 
 body.compact-ui .create-button {
-  padding: 12px 14px;
+  min-height: 44px;
+  padding: 8px 14px;
   border-radius: 12px;
   font-size: 0.88rem;
 }
@@ -2912,7 +2918,8 @@ body.compact-ui .admin-row {
   }
 
   .create-button {
-    padding: 16px 14px;
+    min-height: 48px;
+    padding: 10px 14px;
     font-size: 0.92rem;
   }
 
@@ -3285,6 +3292,12 @@ body.ultra-theme .primary-action {
     inset 0 1px 0 rgba(255, 255, 255, 0.34);
 }
 
+body.ultra-theme .create-button {
+  min-height: 50px;
+  padding: 10px 14px;
+  line-height: 1.1;
+}
+
 body.ultra-theme .create-button::after,
 body.ultra-theme .upgrade-button::after,
 body.ultra-theme .aside-upgrade::after,
@@ -3306,6 +3319,7 @@ body.ultra-theme .primary-action:hover {
 body.ultra-theme .side-nav {
   gap: 6px;
   padding-top: 14px;
+  margin-top: 4px;
 }
 
 body.ultra-theme .nav-item {
@@ -3605,6 +3619,11 @@ body.ultra-theme .domain-status {
 body.ultra-theme.compact-ui .sidebar {
   padding: 10px 10px 12px;
   gap: 10px;
+}
+
+body.ultra-theme.compact-ui .create-button {
+  min-height: 42px;
+  padding: 8px 12px;
 }
 
 body.ultra-theme.compact-ui .nav-item {
