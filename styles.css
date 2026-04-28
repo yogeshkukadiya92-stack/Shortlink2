@@ -179,9 +179,8 @@ svg {
 }
 
 .create-button {
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  display: grid;
+  place-items: center;
   text-align: center;
   width: 100%;
   background: linear-gradient(135deg, #2855df, #4570f3 58%, #08a6bc);
@@ -189,11 +188,18 @@ svg {
   border-radius: 16px;
   min-height: 56px;
   padding: 0 16px;
-  line-height: 1.32;
+  line-height: 1;
   white-space: nowrap;
   font-size: 0.95rem;
   font-weight: 800;
   box-shadow: 0 24px 36px rgba(40, 85, 223, 0.28);
+}
+
+.create-button > span {
+  position: relative;
+  display: block;
+  line-height: 1;
+  transform: translateY(-1px);
 }
 
 .side-nav {
@@ -3301,9 +3307,13 @@ body.ultra-theme .create-button {
   line-height: 1.32;
   letter-spacing: 0.01em;
   text-shadow: 0 1px 1px rgba(8, 25, 66, 0.28);
+  overflow: visible;
 }
 
-body.ultra-theme .create-button::after,
+body.ultra-theme .create-button::after {
+  display: none;
+}
+
 body.ultra-theme .upgrade-button::after,
 body.ultra-theme .aside-upgrade::after,
 body.ultra-theme .primary-action::after {
