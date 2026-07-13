@@ -1,10 +1,10 @@
-const CACHE_NAME = "shortlink-shell-v3";
+const CACHE_NAME = "shortlink-shell-v4";
 const APP_SHELL = [
   "/",
   "/home",
   "/auth",
-  "/styles.css?v=39",
-  "/script.js?v=49",
+  "/styles.css?v=40",
+  "/script.js?v=50",
   "/manifest.webmanifest",
   "/assets/brand-icon.svg",
 ];

@@ -19,6 +19,12 @@ async function deleteSessionByToken(token) {
   });
 }
 
+async function deleteSessionsByUserId(userId) {
+  return prisma.session.deleteMany({
+    where: { userId },
+  });
+}
+
 async function deleteExpiredSessions(now = new Date()) {
   return prisma.session.deleteMany({
     where: {
@@ -33,5 +39,6 @@ module.exports = {
   findSessionByToken,
   createSession,
   deleteSessionByToken,
+  deleteSessionsByUserId,
   deleteExpiredSessions,
 };

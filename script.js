@@ -1451,7 +1451,8 @@ async function renderAdminPage() {
               <div class="admin-main">
                 <strong>${escapeHtml(user.name)}</strong>
                 <span>${escapeHtml(user.email)}</span>
-                <span>${user.emailVerified ? "Verified" : "Not verified"} · ${escapeHtml(user.billing.subscriptionStatus)}</span>
+                <span>${user.emailVerified ? "Verified" : "Not verified"} · ${escapeHtml(user.billing.subscriptionStatus)}${user.isBlocked ? ' · <strong class="danger-text">Blocked</strong>' : ""}</span>
+                ${user.isBlocked ? `<span class="danger-text">Blocked ${user.blockedAt ? `on ${escapeHtml(new Date(user.blockedAt).toLocaleString())}` : ""}${user.blockedReason ? ` · ${escapeHtml(user.blockedReason)}` : ""}</span>` : ""}
                 <span>${user.totalLinks} live links · ${user.usage.linksCreated} created · ${user.activeSessions} sessions</span>
                 <span>${user.usage.pageViews} page views · ${formatDuration(user.usage.totalTimeMs)} spent · Last active: ${user.usage.lastActiveAt ? escapeHtml(new Date(user.usage.lastActiveAt).toLocaleString()) : "Never"}</span>
                 <span>Last page: ${escapeHtml(user.usage.lastPage || "—")} ${user.usage.topPages?.length ? `· Top pages: ${escapeHtml(user.usage.topPages.map((item) => `${item.page} (${item.count})`).join(", "))}` : ""}</span>
@@ -1466,6 +1467,8 @@ async function renderAdminPage() {
                 <input class="admin-days-input" data-admin-days="${escapeHtml(user.id)}" type="number" min="1" value="${user.billing.subscriptionStatus === "trialing" ? 3 : 30}" />
                 <button class="link-button" data-admin-apply="${escapeHtml(user.id)}">Apply</button>
                 ${user.emailVerified ? "" : `<button class="link-button secondary" data-admin-verify="${escapeHtml(user.id)}">Verify</button>`}
+                ${user.isAdmin ? "" : `<button class="link-button ${user.isBlocked ? "secondary" : "danger"}" data-admin-block="${escapeHtml(user.id)}" data-admin-blocked="${user.isBlocked ? "true" : "false"}">${user.isBlocked ? "Unblock" : "Block"}</button>`}
+                ${user.totalLinks ? `<button class="link-button danger" data-admin-delete-user-links="${escapeHtml(user.id)}">Delete links</button>` : ""}
               </div>
             </div>
           `).join("")}
@@ -1581,6 +1584,32 @@ function bindAdminActions() {
     });
   });
 
+  document.querySelectorAll("[data-admin-block]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const userId = button.getAttribute("data-admin-block");
+      const isBlocked = button.getAttribute("data-admin-blocked") === "true";
+      const reason = isBlocked ? "" : window.prompt("Why are you blocking this user? This note stays in the admin audit trail.", "Misuse prevention") || "";
+      if (!isBlocked && reason === "") return;
+      await runAdminAction(
+        `/api/admin/users/${encodeURIComponent(userId)}/block`,
+        { blocked: !isBlocked, reason },
+        isBlocked ? "User unblocked." : "User blocked and active sessions revoked."
+      );
+    });
+  });
+
+  document.querySelectorAll("[data-admin-delete-user-links]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const userId = button.getAttribute("data-admin-delete-user-links");
+      if (!window.confirm("Delete all links created by this user? This cannot be undone from the admin panel.")) return;
+      await runAdminAction(
+        `/api/admin/users/${encodeURIComponent(userId)}/delete-links`,
+        {},
+        "User links deleted."
+      );
+    });
+  });
+
   document.querySelectorAll("[data-admin-revoke]").forEach((button) => {
     button.addEventListener("click", async () => {
       await runAdminAction(`/api/admin/sessions/${button.getAttribute("data-admin-revoke")}/revoke`, {}, "Session revoked.");
@@ -1684,6 +1713,14 @@ function bindAdminUserLinkInsights() {
           }
         });
       });
+
+      panel.querySelectorAll("[data-admin-delete-user-link]").forEach((button) => {
+        button.addEventListener("click", async () => {
+          const slug = button.getAttribute("data-admin-delete-user-link") || "";
+          if (!slug || !window.confirm(`Delete link ${slug}? This removes it for the user immediately.`)) return;
+          await runAdminDeleteUserLink(userId, slug);
+        });
+      });
     }
   });
 }
@@ -1783,6 +1820,7 @@ function renderAdminUserLinksPanel(userId, state) {
               <div class="admin-actions">
                 <button class="link-button" type="button" data-admin-copy-link="${escapeHtml(link.shortUrl || "")}">Copy</button>
                 <a class="link-button secondary" href="${escapeHtml(link.shortUrl || "#")}" target="_blank" rel="noreferrer">Open</a>
+                <button class="link-button danger" type="button" data-admin-delete-user-link="${escapeHtml(link.slug || "")}">Delete</button>
               </div>
             </div>
           `).join("")
@@ -1796,6 +1834,25 @@ function formatAdminUserLinkDate(value) {
   const time = new Date(value).getTime();
   if (!Number.isFinite(time)) return "Unknown";
   return new Date(time).toLocaleString();
+}
+
+async function runAdminDeleteUserLink(userId, slug) {
+  try {
+    const response = await fetch(`/api/admin/users/${encodeURIComponent(userId)}/links/${encodeURIComponent(slug)}`, {
+      method: "DELETE",
+    });
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new Error(payload.error || "Could not delete this link.");
+    }
+
+    adminUserLinksState[userId] = { status: "loading", links: [], error: "", summary: null };
+    showGlobalMessage(`Deleted link: ${slug}`, false);
+    await fetchAdminUserLinks(userId, true);
+    await renderAdminPage();
+  } catch (error) {
+    showGlobalMessage(error.message, true);
+  }
 }
 
 function renderAuditRows(auditLogs) {
@@ -5140,9 +5197,6 @@ function showGlobalMessage(message, isError) {
   window.clearTimeout(showGlobalMessage.timeoutId);
   showGlobalMessage.timeoutId = window.setTimeout(() => banner.classList.remove("visible"), 2200);
 }
-
-
-
 
 
 

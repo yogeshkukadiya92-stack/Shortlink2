@@ -5,7 +5,7 @@ const crypto = require("crypto");
 const { prisma } = require("./lib/prisma");
 const { URL } = require("url");
 const { createUser: createDbUser, findUserByEmail, findUserById, updateUser: updateDbUser, listUsers: listDbUsers } = require("./repositories/usersRepository");
-const { createSession: createDbSession, deleteSessionByToken: deleteDbSessionByToken, findSessionByToken } = require("./repositories/sessionsRepository");
+const { createSession: createDbSession, deleteSessionByToken: deleteDbSessionByToken, deleteSessionsByUserId, findSessionByToken } = require("./repositories/sessionsRepository");
 const { getWorkspaceSettings: getDbWorkspaceSettings, upsertWorkspaceSettings } = require("./repositories/settingsRepository");
 const { listLinksByUser, createLink: createDbLink, updateLinkBySlug, deleteLinkBySlug, findLinkBySlug } = require("./repositories/linksRepository");
 const { listDomainsByUser, upsertDomain, removeDomainsNotIn } = require("./repositories/domainsRepository");
@@ -216,6 +216,24 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "GET" && pathname.startsWith("/api/admin/users/") && pathname.endsWith("/export")) {
       const userId = pathname.split("/")[4];
       return await withAdmin(req, res, () => handleAdminUserExport(userId, req, res));
+    }
+
+    if (req.method === "POST" && pathname.startsWith("/api/admin/users/") && pathname.endsWith("/block")) {
+      const body = await readRequestBody(req);
+      const userId = pathname.split("/")[4];
+      return await withAdmin(req, res, (adminUser) => handleAdminBlockUser(userId, body, res, adminUser));
+    }
+
+    if (req.method === "POST" && pathname.startsWith("/api/admin/users/") && pathname.endsWith("/delete-links")) {
+      const userId = pathname.split("/")[4];
+      return await withAdmin(req, res, (adminUser) => handleAdminDeleteUserLinks(userId, "", req, res, adminUser));
+    }
+
+    if (req.method === "DELETE" && pathname.startsWith("/api/admin/users/") && pathname.includes("/links/")) {
+      const parts = pathname.split("/");
+      const userId = parts[4];
+      const slug = parts.slice(6).join("/");
+      return await withAdmin(req, res, (adminUser) => handleAdminDeleteUserLinks(userId, slug, req, res, adminUser));
     }
 
     if (req.method === "POST" && pathname.startsWith("/api/admin/users/") && pathname.endsWith("/subscription")) {
@@ -581,6 +599,63 @@ function readUsers() {
 
 function writeUsers(users) {
   writeJsonFile(usersFile, users);
+}
+
+function getUserAccessOverride(userId) {
+  return readUsers().find((item) => item.id === userId) || null;
+}
+
+function mergeUserAccessOverride(user) {
+  if (!user?.id) {
+    return user;
+  }
+
+  const override = getUserAccessOverride(user.id);
+  if (!override) {
+    return user;
+  }
+
+  return {
+    ...user,
+    isBlocked: Boolean(override.isBlocked),
+    blockedAt: Number(override.blockedAt || 0),
+    blockedReason: String(override.blockedReason || ""),
+  };
+}
+
+function persistUserAccessOverride(user, updates = {}) {
+  if (!user?.id) {
+    return null;
+  }
+
+  const users = readUsers();
+  const index = users.findIndex((item) => item.id === user.id);
+  const existing = index >= 0 ? users[index] : {};
+  const nextUser = {
+    ...existing,
+    id: user.id,
+    name: existing.name || user.name || "User",
+    email: existing.email || user.email || "",
+    emailVerified: Boolean(existing.emailVerified || user.emailVerified),
+    isAdmin: Boolean(existing.isAdmin || user.isAdmin),
+    subscriptionStatus: existing.subscriptionStatus || user.subscriptionStatus || "inactive",
+    trialStartedAt: Number(existing.trialStartedAt || user.trialStartedAt || 0),
+    trialEndsAt: Number(existing.trialEndsAt || user.trialEndsAt || 0),
+    subscriptionStartedAt: Number(existing.subscriptionStartedAt || user.subscriptionStartedAt || 0),
+    subscriptionExpiresAt: Number(existing.subscriptionExpiresAt || user.subscriptionExpiresAt || 0),
+    createdAt: existing.createdAt || user.createdAt || Date.now(),
+    ...updates,
+    updatedAt: Date.now(),
+  };
+
+  if (index >= 0) {
+    users[index] = nextUser;
+  } else {
+    users.push(nextUser);
+  }
+
+  writeUsers(users);
+  return nextUser;
 }
 
 function readSessions() {
@@ -1078,6 +1153,10 @@ async function withAuth(req, res, handler) {
     return sendJson(res, 401, { error: "Authentication required." });
   }
 
+  if (isUserBlocked(user)) {
+    return sendJson(res, 423, { error: "This account has been blocked by an administrator." });
+  }
+
   return handler(user);
 }
 
@@ -1134,7 +1213,7 @@ async function getAuthenticatedUserAsync(req) {
   try {
     const session = await findSessionByToken(token);
     if (session?.user) {
-      return normalizeDbUser(session.user);
+      return mergeUserAccessOverride(normalizeDbUser(session.user));
     }
   } catch {
     if (dbOnlyMode) {
@@ -1144,6 +1223,10 @@ async function getAuthenticatedUserAsync(req) {
   }
 
   return dbOnlyMode ? null : getAuthenticatedUser(req);
+}
+
+function isUserBlocked(user) {
+  return Boolean(user?.isBlocked || user?.blockedAt || String(user?.subscriptionStatus || "").toLowerCase() === "blocked");
 }
 
 function buildStoredPassword(password) {
@@ -1292,7 +1375,7 @@ async function handleLogin(body, req, res) {
   try {
     const dbUser = await findUserByEmail(email);
     if (dbUser && verifyPassword(password, dbUser)) {
-      user = normalizeDbUser(dbUser);
+      user = mergeUserAccessOverride(normalizeDbUser(dbUser));
     }
   } catch {
     user = null;
@@ -1307,6 +1390,10 @@ async function handleLogin(body, req, res) {
 
   if (!user) {
     return sendJson(res, 401, { error: "Invalid email or password." });
+  }
+
+  if (isUserBlocked(user)) {
+    return sendJson(res, 423, { error: "This account has been blocked by an administrator." });
   }
 
   return await createSessionResponse(user, req, res, 200);
@@ -2388,6 +2475,90 @@ async function handleAdminUserExport(userId, req, res) {
   return sendCsv(res, `${safeName}-data.csv`, headers, rows);
 }
 
+async function handleAdminBlockUser(userId, body, res, adminUser) {
+  const users = await readAdminUsersAsync();
+  const user = users.find((item) => item.id === userId);
+  if (!user) {
+    return sendJson(res, 404, { error: "User not found." });
+  }
+
+  if (user.id === adminUser?.id) {
+    return sendJson(res, 400, { error: "You cannot block your own admin account." });
+  }
+
+  if (isAdminUser(user)) {
+    return sendJson(res, 400, { error: "Admin accounts cannot be blocked from this panel." });
+  }
+
+  const shouldBlock = body.blocked !== false;
+  const reason = String(body.reason || "").trim().slice(0, 240);
+  const nextUser = persistUserAccessOverride(user, {
+    isBlocked: shouldBlock,
+    blockedAt: shouldBlock ? Date.now() : 0,
+    blockedReason: shouldBlock ? reason : "",
+  });
+
+  if (shouldBlock) {
+    writeSessions(readSessions().filter((session) => session.userId !== user.id));
+    try {
+      await deleteSessionsByUserId(user.id);
+    } catch {
+      // The auth guard still blocks DB sessions through the local access override.
+    }
+  }
+
+  appendAuditLog(shouldBlock ? "admin.user.block" : "admin.user.unblock", { userId: adminUser?.id, email: adminUser?.email, type: "admin" }, {
+    targetUserId: user.id,
+    targetEmail: user.email,
+    reason,
+  });
+  return sendJson(res, 200, { success: true, user: serializeUser(nextUser) });
+}
+
+async function handleAdminDeleteUserLinks(userId, slug, req, res, adminUser) {
+  const users = await readAdminUsersAsync();
+  const user = users.find((item) => item.id === userId);
+  if (!user) {
+    return sendJson(res, 404, { error: "User not found." });
+  }
+
+  const normalizedSlug = String(slug || "").trim();
+  const links = await readLinksForUserAsync(userId);
+  const targetLinks = normalizedSlug
+    ? links.filter((link) => link.slug === normalizedSlug)
+    : links;
+
+  if (!targetLinks.length) {
+    return sendJson(res, 404, { error: normalizedSlug ? "Link not found." : "This user has no links to delete." });
+  }
+
+  const fileLinks = readLinks();
+  const targetSlugs = new Set(targetLinks.map((link) => link.slug));
+  if (!dbOnlyMode) {
+    writeLinks(fileLinks.filter((link) => !(link.userId === userId && targetSlugs.has(link.slug))));
+  }
+
+  let deletedCount = 0;
+  for (const link of targetLinks) {
+    try {
+      await deleteLinkBySlug(link.slug, userId);
+      deletedCount += 1;
+    } catch {
+      if (dbOnlyMode) {
+        return sendJson(res, 500, { error: "Unable to delete this user's links right now." });
+      }
+    }
+  }
+
+  appendAuditLog(normalizedSlug ? "admin.user.link.delete" : "admin.user.links.delete", { userId: adminUser?.id, email: adminUser?.email, type: "admin" }, {
+    targetUserId: user.id,
+    targetEmail: user.email,
+    slug: normalizedSlug,
+    deletedCount: dbOnlyMode ? deletedCount : targetLinks.length,
+  });
+  return sendJson(res, 200, { success: true, deletedCount: dbOnlyMode ? deletedCount : targetLinks.length });
+}
+
 async function handleAdminTrialUpdate(userId, body, res, adminUser) {
   const users = readUsers();
   const user = users.find((item) => item.id === userId);
@@ -2591,6 +2762,9 @@ function serializeUser(user) {
     email: user.email,
     emailVerified: Boolean(user.emailVerified),
     isAdmin: isAdminUser(user),
+    isBlocked: isUserBlocked(user),
+    blockedAt: Number(user.blockedAt || 0),
+    blockedReason: String(user.blockedReason || ""),
   };
 }
 
@@ -2623,6 +2797,10 @@ function serializeBilling(user) {
 }
 
 function hasActiveAccess(user) {
+  if (isUserBlocked(user)) {
+    return false;
+  }
+
   if (hasLifetimeAccess(user)) {
     return true;
   }
@@ -6083,13 +6261,6 @@ function sendJson(res, statusCode, payload) {
   });
   res.end(JSON.stringify(payload));
 }
-
-
-
-
-
-
-
 
 
 

@@ -2316,6 +2316,11 @@ body.compact-ui .admin-row {
   overflow-wrap: anywhere;
 }
 
+.danger-text {
+  color: #b42318 !important;
+  font-weight: 800;
+}
+
 .admin-actions {
   display: flex;
   flex-wrap: wrap;
