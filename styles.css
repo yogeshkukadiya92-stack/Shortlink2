@@ -3781,3 +3781,120 @@ body.ultra-theme.compact-ui :is(
     transform: translate3d(0, 0, 0);
   }
 }
+
+/* Cross-app production polish: accessibility, touch, overflow, and resilient states. */
+html {
+  scroll-behavior: smooth;
+  text-size-adjust: 100%;
+}
+
+body,
+.app-shell,
+.content-area {
+  min-height: 100dvh;
+}
+
+.skip-link {
+  position: fixed;
+  top: 12px;
+  left: 12px;
+  z-index: 1000;
+  padding: 10px 14px;
+  border-radius: 10px;
+  background: #10254a;
+  color: #fff;
+  font-weight: 800;
+  box-shadow: 0 10px 30px rgba(16, 37, 74, 0.3);
+  transform: translateY(-160%);
+  transition: transform 0.18s ease;
+}
+
+.skip-link:focus {
+  transform: translateY(0);
+}
+
+:where(a, button, input, select, textarea, [tabindex]):focus-visible {
+  outline: 3px solid #0b72e7;
+  outline-offset: 3px;
+  box-shadow: 0 0 0 5px rgba(11, 114, 231, 0.16);
+}
+
+:where(input, select, textarea):user-invalid {
+  border-color: #c62828;
+  box-shadow: 0 0 0 3px rgba(198, 40, 40, 0.12);
+}
+
+:where(button, input, select, textarea):disabled,
+[aria-disabled="true"] {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
+button,
+.link-button,
+.nav-item,
+.auth-inline-link {
+  touch-action: manipulation;
+}
+
+.main-panel,
+.content-area,
+.surface-card,
+.mini-card,
+.auth-card,
+.link-item,
+.admin-row {
+  min-width: 0;
+}
+
+:where(.surface-card, .mini-card, .auth-card, .link-item, .admin-row) :where(p, span, strong, a) {
+  overflow-wrap: anywhere;
+}
+
+.result-banner:not(.hidden) {
+  border-left: 4px solid #16834f;
+}
+
+.result-banner.error:not(.hidden) {
+  border-left-color: #c62828;
+}
+
+.sidebar {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(85, 107, 144, 0.45) transparent;
+}
+
+@media (max-width: 640px) {
+  input,
+  select,
+  textarea {
+    font-size: 16px !important;
+  }
+
+  :where(button, .link-button, .auth-inline-link) {
+    min-height: 44px;
+  }
+
+  .surface-header > :where(button, a),
+  .link-actions > :where(button, a),
+  .admin-actions > :where(button, a) {
+    flex: 1 1 140px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+}
+
+@media (prefers-contrast: more) {
+  body.ultra-theme {
+    --muted: #354c72;
+    --line: #7892bd;
+  }
+
+  :where(.surface-card, .mini-card, .auth-card, .link-item) {
+    border-width: 2px;
+  }
+}

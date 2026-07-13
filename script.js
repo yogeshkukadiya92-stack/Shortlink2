@@ -180,6 +180,7 @@ document.querySelectorAll(".side-nav .nav-item, .sidebar-footer .nav-item").forE
     }
     sidebar.classList.add("collapsed");
     document.body.classList.remove("mobile-nav-open");
+    syncSidebarAccessibility();
   });
 });
 
@@ -188,10 +189,12 @@ sidebarToggle.addEventListener("click", () => {
     const willOpen = sidebar.classList.contains("collapsed");
     sidebar.classList.toggle("collapsed", !willOpen);
     document.body.classList.toggle("mobile-nav-open", willOpen);
+    syncSidebarAccessibility();
     return;
   }
 
   sidebar.classList.toggle("collapsed");
+  syncSidebarAccessibility();
 });
 
 window.addEventListener("resize", syncResponsiveShell);
@@ -280,6 +283,7 @@ document.addEventListener("click", (event) => {
   ) {
     sidebar.classList.add("collapsed");
     document.body.classList.remove("mobile-nav-open");
+    syncSidebarAccessibility();
   }
 
   if (profileMenu && !profileMenu.contains(event.target)) {
@@ -287,6 +291,26 @@ document.addEventListener("click", (event) => {
     profileMenuButton.setAttribute("aria-expanded", "false");
   }
 });
+
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape") return;
+
+  if (!profileDropdown.classList.contains("hidden")) {
+    profileDropdown.classList.add("hidden");
+    profileMenuButton.setAttribute("aria-expanded", "false");
+    profileMenuButton.focus();
+  }
+
+  if (isMobileShell() && !sidebar.classList.contains("collapsed")) {
+    sidebar.classList.add("collapsed");
+    document.body.classList.remove("mobile-nav-open");
+    syncSidebarAccessibility();
+    sidebarToggle.focus();
+  }
+});
+
+const accessibilityObserver = new MutationObserver(() => enhanceRenderedAccessibility());
+accessibilityObserver.observe(mainContent, { childList: true, subtree: true });
 
 initialize();
 
@@ -368,6 +392,31 @@ function syncResponsiveShell() {
     document.body.classList.remove("mobile-shell", "mobile-nav-open");
     sidebar.classList.remove("collapsed");
   }
+  syncSidebarAccessibility();
+}
+
+function syncSidebarAccessibility() {
+  const isClosed = isMobileShell() && sidebar.classList.contains("collapsed");
+  sidebar.setAttribute("aria-hidden", String(isClosed));
+  sidebarToggle.setAttribute("aria-expanded", String(!isClosed));
+  sidebarToggle.setAttribute("aria-label", isClosed ? "Open navigation" : "Close navigation");
+}
+
+function enhanceRenderedAccessibility() {
+  mainContent.querySelectorAll("input, select, textarea").forEach((control) => {
+    if (control.getAttribute("aria-label") || control.getAttribute("aria-labelledby")) return;
+    if (control.id && document.querySelector(`label[for="${CSS.escape(control.id)}"]`)) return;
+    const fallback = control.getAttribute("placeholder") || control.getAttribute("name") || control.id;
+    if (fallback) control.setAttribute("aria-label", fallback);
+  });
+
+  mainContent.querySelectorAll('button:not([aria-label])').forEach((button) => {
+    if (button.textContent.trim()) return;
+    const fallback = button.getAttribute("title") || button.dataset.action;
+    if (fallback) button.setAttribute("aria-label", fallback);
+  });
+
+  mainContent.querySelectorAll("img:not([alt])").forEach((image) => image.setAttribute("alt", ""));
 }
 
 function applyDensityMode() {
@@ -1402,10 +1451,10 @@ async function renderAdminPage() {
               <div class="admin-main">
                 <strong>${escapeHtml(user.name)}</strong>
                 <span>${escapeHtml(user.email)}</span>
-                <span>${user.emailVerified ? "Verified" : "Not verified"} � ${escapeHtml(user.billing.subscriptionStatus)}</span>
-                <span>${user.totalLinks} live links � ${user.usage.linksCreated} created � ${user.activeSessions} sessions</span>
-                <span>${user.usage.pageViews} page views � ${formatDuration(user.usage.totalTimeMs)} spent � Last active: ${user.usage.lastActiveAt ? escapeHtml(new Date(user.usage.lastActiveAt).toLocaleString()) : "Never"}</span>
-                <span>Last page: ${escapeHtml(user.usage.lastPage || "- ")} ${user.usage.topPages?.length ? `� Top pages: ${escapeHtml(user.usage.topPages.map((item) => `${item.page} (${item.count})`).join(", "))}` : ""}</span>
+                <span>${user.emailVerified ? "Verified" : "Not verified"} · ${escapeHtml(user.billing.subscriptionStatus)}</span>
+                <span>${user.totalLinks} live links · ${user.usage.linksCreated} created · ${user.activeSessions} sessions</span>
+                <span>${user.usage.pageViews} page views · ${formatDuration(user.usage.totalTimeMs)} spent · Last active: ${user.usage.lastActiveAt ? escapeHtml(new Date(user.usage.lastActiveAt).toLocaleString()) : "Never"}</span>
+                <span>Last page: ${escapeHtml(user.usage.lastPage || "—")} ${user.usage.topPages?.length ? `· Top pages: ${escapeHtml(user.usage.topPages.map((item) => `${item.page} (${item.count})`).join(", "))}` : ""}</span>
               </div>
               <div class="admin-actions">
                 <select class="admin-select" data-admin-mode="${escapeHtml(user.id)}">
@@ -5030,8 +5079,11 @@ function inferDnsRecordForDomain(domain) {
 }
 
 function setInlineBanner(element, message, isError) {
+  if (!element) return;
   element.textContent = message;
   element.classList.remove("hidden", "error");
+  element.setAttribute("role", isError ? "alert" : "status");
+  element.setAttribute("aria-live", isError ? "assertive" : "polite");
   if (isError) element.classList.add("error");
 }
 
@@ -5048,7 +5100,11 @@ function bindPasswordToggles() {
       const shouldShow = input.type === "password";
       input.type = shouldShow ? "text" : "password";
       button.textContent = shouldShow ? "Hide" : "Show";
+      button.setAttribute("aria-pressed", String(shouldShow));
+      button.setAttribute("aria-label", `${shouldShow ? "Hide" : "Show"} password`);
     });
+    button.setAttribute("aria-pressed", "false");
+    button.setAttribute("aria-label", "Show password");
   });
 }
 
@@ -5084,9 +5140,6 @@ function showGlobalMessage(message, isError) {
   window.clearTimeout(showGlobalMessage.timeoutId);
   showGlobalMessage.timeoutId = window.setTimeout(() => banner.classList.remove("visible"), 2200);
 }
-
-
-
 
 
 
