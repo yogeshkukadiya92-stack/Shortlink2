@@ -87,6 +87,7 @@ let selectedAdminUserId = "";
 const adminUserLinksState = {};
 let pagesCache = [];
 let selectedQrSlug = null;
+let qrLinkSearchQuery = "";
 let selectedFormId = "";
 let formBuilderDraftCache = null;
 let analyticsRange = "30d";
@@ -95,7 +96,6 @@ let analyticsCustomEnd = "";
 let qrCustomization = {
   foreground: "#2046d9",
   background: "#ffffff",
-  logoText: "SL",
 };
 let selectedCampaignId = "";
 let settingsCache = {
@@ -2391,15 +2391,18 @@ function renderQrPage() {
       <div>
         <div class="surface-header"><div><h2>QR Code workspace</h2><p>Generate scannable QR codes for links inside your private account.</p></div></div>
         <div class="qr-panel">
-          <div class="qr-box">${sample ? `<img class="qr-image" id="qrPreviewImage" src="${escapeHtml(qrImageUrl)}" alt="QR code for ${escapeHtml(qrTargetUrl)}">` : `<div class="qr-grid"></div>`}</div>
+          <div class="qr-preview-card">
+            <div class="qr-box">${sample ? `<img class="qr-image" id="qrPreviewImage" src="${escapeHtml(qrImageUrl)}" alt="QR code for ${escapeHtml(qrTargetUrl)}">` : `<div class="qr-grid"></div>`}</div>
+            ${sample ? `<strong class="qr-preview-name">${escapeHtml(sample.slug)}</strong>` : ""}
+          </div>
           <div class="qr-copy">
-            <strong>${sample ? escapeHtml(qrTargetUrl) : "Create a link first"}</strong>
+            <strong>${sample ? escapeHtml(sample.slug) : "Create a link first"}</strong>
+            ${sample ? `<a class="qr-target-link" href="${escapeHtml(qrTargetUrl)}" target="_blank" rel="noreferrer">${escapeHtml(qrTargetUrl)}</a>` : ""}
             <p>${sample ? "Use this QR in posters, packaging, menus, business cards, or flyers." : "Once you create a link on Home, it can appear here as a QR-ready item."}</p>
             ${sample ? `
               <div class="qr-customizer-grid">
                 <label class="field-label qr-color-field">Foreground<input id="qrForeground" type="color" value="${escapeHtml(qrCustomization.foreground)}"></label>
                 <label class="field-label qr-color-field">Background<input id="qrBackground" type="color" value="${escapeHtml(qrCustomization.background)}"></label>
-                <label class="field-label qr-logo-field">Logo text<input id="qrLogoText" class="url-input" type="text" maxlength="3" value="${escapeHtml(qrCustomization.logoText)}" placeholder="SL"></label>
               </div>
             ` : ""}
             <div class="qr-action-row">
@@ -2413,15 +2416,27 @@ function renderQrPage() {
           </div>
         </div>
       </div>
-      <div class="stack-card-group"><article class="mini-card inset-card"><h3>Your QR-ready links</h3><div class="qr-link-list">${renderQrLinkItems()}</div></article></div>
+      <div class="stack-card-group">
+        <article class="mini-card inset-card qr-library-card">
+          <div class="qr-library-header">
+            <div><h3>All links</h3><p>Select any link to create its QR code.</p></div>
+            <span class="chip-link">${linksCache.length}</span>
+          </div>
+          ${linksCache.length ? `<label class="qr-search-field"><span class="sr-only">Search links for QR code</span><input id="qrLinkSearch" class="url-input" type="search" value="${escapeHtml(qrLinkSearchQuery)}" placeholder="Search all links…" autocomplete="off"></label>` : ""}
+          <div class="qr-link-list" id="qrLinkList">${renderQrLinkItems(qrLinkSearchQuery)}</div>
+        </article>
+      </div>
     </section>
   `;
 
-  document.querySelectorAll("[data-select-qr]").forEach((button) => {
-    button.addEventListener("click", () => {
-      selectedQrSlug = button.getAttribute("data-select-qr");
-      renderQrPage();
-    });
+  bindQrLinkSelection();
+  document.getElementById("qrLinkSearch")?.addEventListener("input", (event) => {
+    qrLinkSearchQuery = event.target.value;
+    const list = document.getElementById("qrLinkList");
+    if (list) {
+      list.innerHTML = renderQrLinkItems(qrLinkSearchQuery);
+      bindQrLinkSelection();
+    }
   });
 
   if (sample) {
@@ -3748,17 +3763,13 @@ function getLinkDomain(link) {
 function buildQrImageUrl(targetUrl, options = {}) {
   const color = String(options.foreground || "#2046d9").replace("#", "");
   const bgcolor = String(options.background || "#ffffff").replace("#", "");
-  return `https://api.qrserver.com/v1/create-qr-code/?size=520x520&data=${encodeURIComponent(targetUrl)}&color=${encodeURIComponent(color)}&bgcolor=${encodeURIComponent(bgcolor)}`;
+  return `/api/qr-code?size=520&format=png&ecc=H&data=${encodeURIComponent(targetUrl)}&color=${encodeURIComponent(color)}&bgcolor=${encodeURIComponent(bgcolor)}`;
 }
 
 function buildQrSvgUrl(targetUrl, options = {}) {
   const color = String(options.foreground || "#2046d9").replace("#", "");
   const bgcolor = String(options.background || "#ffffff").replace("#", "");
-  return `https://api.qrserver.com/v1/create-qr-code/?size=520x520&format=svg&data=${encodeURIComponent(targetUrl)}&color=${encodeURIComponent(color)}&bgcolor=${encodeURIComponent(bgcolor)}`;
-}
-
-function getQrLogoText() {
-  return String(qrCustomization.logoText || "SL").trim().slice(0, 3).toUpperCase() || "SL";
+  return `/api/qr-code?size=520&format=svg&ecc=H&data=${encodeURIComponent(targetUrl)}&color=${encodeURIComponent(color)}&bgcolor=${encodeURIComponent(bgcolor)}`;
 }
 
 function downloadBlob(filename, blob) {
@@ -3780,99 +3791,124 @@ function loadImage(src) {
   });
 }
 
-async function buildQrCanvas(targetUrl) {
+function drawCanvasText(context, value, y, maxWidth, font, color) {
+  context.font = font;
+  context.fillStyle = color;
+  context.textAlign = "center";
+  context.textBaseline = "middle";
+  const text = String(value || "");
+  if (context.measureText(text).width <= maxWidth) {
+    context.fillText(text, 320, y);
+    return;
+  }
+
+  let shortened = text;
+  while (shortened.length > 8 && context.measureText(`${shortened}…`).width > maxWidth) {
+    shortened = shortened.slice(0, -1);
+  }
+  context.fillText(`${shortened}…`, 320, y);
+}
+
+async function buildQrCanvas(sample, targetUrl) {
   const canvas = document.createElement("canvas");
-  canvas.width = 520;
-  canvas.height = 520;
+  canvas.width = 640;
+  canvas.height = 760;
   const context = canvas.getContext("2d");
-  context.fillStyle = qrCustomization.background;
+  context.fillStyle = "#ffffff";
   context.fillRect(0, 0, canvas.width, canvas.height);
 
   const qrImage = await loadImage(buildQrImageUrl(targetUrl, qrCustomization));
-  context.drawImage(qrImage, 0, 0, canvas.width, canvas.height);
+  context.imageSmoothingEnabled = false;
+  context.drawImage(qrImage, 60, 32, 520, 520);
 
-  const logoText = getQrLogoText();
-  if (logoText) {
-    const centerSize = 108;
-    const x = (canvas.width - centerSize) / 2;
-    const y = (canvas.height - centerSize) / 2;
-    context.fillStyle = "#ffffff";
-    context.beginPath();
-    context.roundRect(x, y, centerSize, centerSize, 26);
-    context.fill();
-    context.strokeStyle = qrCustomization.foreground;
-    context.lineWidth = 6;
-    context.stroke();
-    context.fillStyle = qrCustomization.foreground;
-    context.font = "800 44px Segoe UI";
-    context.textAlign = "center";
-    context.textBaseline = "middle";
-    context.fillText(logoText, canvas.width / 2, canvas.height / 2 + 2);
-  }
+  drawCanvasText(context, sample.slug, 610, 560, "800 34px Segoe UI, Arial, sans-serif", "#172b55");
+  drawCanvasText(context, targetUrl, 660, 560, "500 20px Segoe UI, Arial, sans-serif", "#52668e");
+  drawCanvasText(context, "Scan to open link", 730, 560, "600 18px Segoe UI, Arial, sans-serif", "#6d7fa1");
 
   return canvas;
 }
 
 async function exportQrPng(sample, targetUrl) {
-  const canvas = await buildQrCanvas(targetUrl);
-  canvas.toBlob((blob) => blob && downloadBlob(`anylink-${sample.slug}-qr.png`, blob), "image/png");
+  const canvas = await buildQrCanvas(sample, targetUrl);
+  const blob = await new Promise((resolve, reject) => {
+    canvas.toBlob((result) => result ? resolve(result) : reject(new Error("Unable to create PNG file.")), "image/png");
+  });
+  downloadBlob(`anylink-${sample.slug}-qr.png`, blob);
 }
 
 async function exportQrSvg(sample, targetUrl) {
-  const qrSvg = await fetch(buildQrSvgUrl(targetUrl, qrCustomization)).then((response) => response.text());
-  const baseSvg = qrSvg.replace(/<\/svg>\s*$/i, "");
-  const logoText = getQrLogoText();
-  const overlay = logoText
-    ? `<g><rect x="206" y="206" width="108" height="108" rx="24" fill="#ffffff" stroke="${qrCustomization.foreground}" stroke-width="6"/><text x="260" y="268" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="42" font-weight="800" fill="${qrCustomization.foreground}">${escapeHtml(logoText)}</text></g>`
-    : "";
-  const finalSvg = `${baseSvg}${overlay}</svg>`;
+  const response = await fetch(buildQrSvgUrl(targetUrl, qrCustomization));
+  if (!response.ok) throw new Error("Unable to generate SVG QR code.");
+  const qrSvg = await response.text();
+  const innerSvg = qrSvg
+    .replace(/<\?xml[^>]*>\s*/i, "")
+    .replace(/<!DOCTYPE[^>]*>\s*/i, "")
+    .replace(/^.*?<svg[^>]*>/is, "")
+    .replace(/<\/svg>\s*$/i, "");
+  const finalSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="640" height="760" viewBox="0 0 640 760"><rect width="640" height="760" fill="#ffffff"/><g transform="translate(60 32)">${innerSvg}</g><text x="320" y="640" text-anchor="middle" font-family="Segoe UI,Arial,sans-serif" font-size="34" font-weight="800" fill="#172b55">${escapeHtml(sample.slug)}</text><text x="320" y="690" text-anchor="middle" font-family="Segoe UI,Arial,sans-serif" font-size="20" font-weight="500" fill="#52668e">${escapeHtml(targetUrl)}</text><text x="320" y="730" text-anchor="middle" font-family="Segoe UI,Arial,sans-serif" font-size="18" font-weight="600" fill="#6d7fa1">Scan to open link</text></svg>`;
   downloadBlob(`anylink-${sample.slug}-qr.svg`, new Blob([finalSvg], { type: "image/svg+xml;charset=utf-8" }));
 }
 
 async function exportQrPdf(sample, targetUrl) {
-  const canvas = await buildQrCanvas(targetUrl);
-  const dataUrl = canvas.toDataURL("image/png");
   const printWindow = window.open("", "_blank", "width=720,height=920");
   if (!printWindow) {
-    showGlobalMessage("Pop-up blocked. Allow pop-ups to export PDF.", true);
-    return;
+    throw new Error("Pop-up blocked. Allow pop-ups to save the QR as PDF.");
   }
-  printWindow.document.write(`<!DOCTYPE html><html><head><title>QR PDF</title><style>body{font-family:Segoe UI,Arial,sans-serif;padding:32px;text-align:center}img{width:360px;height:360px;display:block;margin:0 auto 18px}h1{font-size:22px;margin:0 0 10px}p{color:#4d628c;word-break:break-all}</style></head><body><h1>${escapeHtml(sample.slug)}</h1><img src="${dataUrl}" alt="QR code"><p>${escapeHtml(targetUrl)}</p><script>window.onload=()=>setTimeout(()=>window.print(),200);<\/script></body></html>`);
+
+  printWindow.document.write("<!DOCTYPE html><html><head><title>Preparing QR PDF…</title></head><body style=\"font-family:Segoe UI,Arial,sans-serif;padding:32px;text-align:center;color:#172b55\">Preparing your QR code…</body></html>");
   printWindow.document.close();
+
+  try {
+    const canvas = await buildQrCanvas(sample, targetUrl);
+    const dataUrl = canvas.toDataURL("image/png");
+    printWindow.document.open();
+    printWindow.document.write(`<!DOCTYPE html><html><head><title>${escapeHtml(sample.slug)} QR</title><style>@page{size:auto;margin:12mm}body{font-family:Segoe UI,Arial,sans-serif;margin:0;text-align:center}img{width:min(100%,640px);height:auto;display:block;margin:0 auto}@media print{body{-webkit-print-color-adjust:exact;print-color-adjust:exact}}</style></head><body><img src="${dataUrl}" alt="QR code for ${escapeHtml(targetUrl)}"><script>window.onload=()=>setTimeout(()=>window.print(),250);<\/script></body></html>`);
+    printWindow.document.close();
+  } catch (error) {
+    printWindow.close();
+    throw error;
+  }
 }
 
 function bindQrCustomizer(sample, targetUrl) {
   const previewImage = document.getElementById("qrPreviewImage");
   const foregroundInput = document.getElementById("qrForeground");
   const backgroundInput = document.getElementById("qrBackground");
-  const logoInput = document.getElementById("qrLogoText");
 
   const rerenderPreview = () => {
     qrCustomization.foreground = foregroundInput.value;
     qrCustomization.background = backgroundInput.value;
-    qrCustomization.logoText = logoInput.value.trim().slice(0, 3).toUpperCase() || "SL";
     previewImage.src = buildQrImageUrl(targetUrl, qrCustomization);
   };
 
   foregroundInput?.addEventListener("input", rerenderPreview);
   backgroundInput?.addEventListener("input", rerenderPreview);
-  logoInput?.addEventListener("input", rerenderPreview);
 
   document.getElementById("openQrButton")?.addEventListener("click", () => {
     window.open(buildQrImageUrl(targetUrl, qrCustomization), "_blank", "noreferrer");
   });
 
-  document.getElementById("downloadQrPngButton")?.addEventListener("click", async () => {
-    await exportQrPng(sample, targetUrl);
-  });
+  const bindExport = (buttonId, action, successMessage) => {
+    document.getElementById(buttonId)?.addEventListener("click", async (event) => {
+      const button = event.currentTarget;
+      const originalLabel = button.textContent;
+      button.disabled = true;
+      button.textContent = "Preparing…";
+      try {
+        await action(sample, targetUrl);
+        showGlobalMessage(successMessage, false);
+      } catch (error) {
+        showGlobalMessage(error.message || "Unable to download this QR code.", true);
+      } finally {
+        button.disabled = false;
+        button.textContent = originalLabel;
+      }
+    });
+  };
 
-  document.getElementById("downloadQrSvgButton")?.addEventListener("click", async () => {
-    await exportQrSvg(sample, targetUrl);
-  });
-
-  document.getElementById("downloadQrPdfButton")?.addEventListener("click", async () => {
-    await exportQrPdf(sample, targetUrl);
-  });
+  bindExport("downloadQrPngButton", exportQrPng, "PNG QR downloaded.");
+  bindExport("downloadQrSvgButton", exportQrSvg, "SVG QR downloaded.");
+  bindExport("downloadQrPdfButton", exportQrPdf, "PDF is ready to save or print.");
 }
 
 function getSelectedQrLink() {
@@ -3883,10 +3919,28 @@ function getSelectedQrLink() {
   return linksCache.find((item) => item.includeQr) || linksCache[0] || null;
 }
 
-function renderQrLinkItems() {
+function bindQrLinkSelection() {
+  document.querySelectorAll("[data-select-qr]").forEach((button) => {
+    button.addEventListener("click", () => {
+      selectedQrSlug = button.getAttribute("data-select-qr");
+      renderQrPage();
+    });
+  });
+}
+
+function renderQrLinkItems(query = "") {
   if (!linksCache.length) return '<div class="empty-state">No links available yet. Create one from Home first.</div>';
 
-  return linksCache.slice(0, 6).map((link) => `<button class="qr-link-item ${link.slug === (getSelectedQrLink()?.slug || "") ? "active" : ""}" data-select-qr="${escapeHtml(link.slug)}"><strong>${escapeHtml(link.slug)}</strong><span>${escapeHtml(getLinkUrl(link))}</span></button>`).join("");
+  const normalizedQuery = String(query || "").trim().toLowerCase();
+  const filteredLinks = normalizedQuery
+    ? linksCache.filter((link) => `${link.slug} ${getLinkUrl(link)} ${link.destination || ""}`.toLowerCase().includes(normalizedQuery))
+    : linksCache;
+
+  if (!filteredLinks.length) {
+    return '<div class="empty-state">No links match your search.</div>';
+  }
+
+  return filteredLinks.map((link) => `<button class="qr-link-item ${link.slug === (getSelectedQrLink()?.slug || "") ? "active" : ""}" type="button" data-select-qr="${escapeHtml(link.slug)}" aria-pressed="${link.slug === (getSelectedQrLink()?.slug || "") ? "true" : "false"}"><strong>${escapeHtml(link.slug)}</strong><span>${escapeHtml(getLinkUrl(link))}</span></button>`).join("");
 }
 
 function renderCampaignsPage() {
@@ -5197,10 +5251,6 @@ function showGlobalMessage(message, isError) {
   window.clearTimeout(showGlobalMessage.timeoutId);
   showGlobalMessage.timeoutId = window.setTimeout(() => banner.classList.remove("visible"), 2200);
 }
-
-
-
-
 
 
 

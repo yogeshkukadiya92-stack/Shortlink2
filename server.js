@@ -63,6 +63,7 @@ const godaddySecondLevelTlds = new Set([
   "mil.in",
 ]);
 const razorpayApiBase = "https://api.razorpay.com/v1";
+const qrCodeApiBase = "https://api.qrserver.com/v1/create-qr-code/";
 const builtInAdminEmails = ["yogshkukadiya92@gmail.com", "yogeshkukadiya92@gmail.com"];
 const builtInLifetimeEmails = ["yogeshkukadiya92@gmail.com"];
 const isProduction = String(process.env.NODE_ENV || "").toLowerCase() === "production";
@@ -270,6 +271,10 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "GET" && pathname === "/api/links") {
       return await withAppAccess(req, res, async (user) => sendJson(res, 200, { links: await readLinksForUserAsync(user.id) }));
+    }
+
+    if (req.method === "GET" && pathname === "/api/qr-code") {
+      return await withAppAccess(req, res, () => handleQrCodeProxy(requestUrl, res));
     }
 
     if (req.method === "POST" && pathname === "/api/links/health-check") {
@@ -6239,6 +6244,76 @@ function getRequestProtocol(req, hostHeader = "") {
   return /^(localhost|127\.0\.0\.1)(:\d+)?$/i.test(hostHeader) ? "http" : "https";
 }
 
+async function handleQrCodeProxy(requestUrl, res) {
+  const targetUrl = String(requestUrl.searchParams.get("data") || "").trim();
+  const format = requestUrl.searchParams.get("format") === "svg" ? "svg" : "png";
+  const color = /^[0-9a-f]{6}$/i.test(requestUrl.searchParams.get("color") || "")
+    ? requestUrl.searchParams.get("color")
+    : "2046d9";
+  const background = /^[0-9a-f]{6}$/i.test(requestUrl.searchParams.get("bgcolor") || "")
+    ? requestUrl.searchParams.get("bgcolor")
+    : "ffffff";
+  const ecc = ["L", "M", "Q", "H"].includes(requestUrl.searchParams.get("ecc"))
+    ? requestUrl.searchParams.get("ecc")
+    : "H";
+  const requestedSize = Number(requestUrl.searchParams.get("size") || 520);
+  const size = Math.min(1024, Math.max(240, Number.isFinite(requestedSize) ? Math.round(requestedSize) : 520));
+
+  let parsedTarget;
+  try {
+    parsedTarget = new URL(targetUrl);
+  } catch {
+    return sendJson(res, 400, { error: "A valid QR link is required." });
+  }
+
+  if (!["http:", "https:"].includes(parsedTarget.protocol) || targetUrl.length > 2048) {
+    return sendJson(res, 400, { error: "Only valid HTTP or HTTPS links can be converted to QR codes." });
+  }
+
+  const upstreamUrl = new URL(qrCodeApiBase);
+  upstreamUrl.searchParams.set("size", `${size}x${size}`);
+  upstreamUrl.searchParams.set("format", format);
+  upstreamUrl.searchParams.set("ecc", ecc);
+  upstreamUrl.searchParams.set("qzone", "4");
+  upstreamUrl.searchParams.set("data", targetUrl);
+  upstreamUrl.searchParams.set("color", color);
+  upstreamUrl.searchParams.set("bgcolor", background);
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10000);
+
+  try {
+    const response = await fetch(upstreamUrl, {
+      signal: controller.signal,
+      headers: { Accept: format === "svg" ? "image/svg+xml" : "image/png" },
+    });
+
+    if (!response.ok) {
+      return sendJson(res, 502, { error: "QR service is temporarily unavailable." });
+    }
+
+    const content = Buffer.from(await response.arrayBuffer());
+    if (!content.length || content.length > 5_000_000) {
+      return sendJson(res, 502, { error: "QR service returned an invalid image." });
+    }
+
+    res.writeHead(200, {
+      "Content-Type": format === "svg" ? "image/svg+xml; charset=utf-8" : "image/png",
+      "Content-Length": String(content.length),
+      "Cache-Control": "private, max-age=300",
+      "Content-Disposition": `inline; filename="anylink-qr.${format}"`,
+    });
+    res.end(content);
+  } catch (error) {
+    const message = error?.name === "AbortError"
+      ? "QR generation timed out. Please try again."
+      : "Unable to generate the QR code right now.";
+    sendJson(res, 502, { error: message });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 function serveFile(filePath, res) {
   if (!fs.existsSync(filePath)) {
     sendJson(res, 404, { error: "File not found" });
@@ -6261,8 +6336,6 @@ function sendJson(res, statusCode, payload) {
   });
   res.end(JSON.stringify(payload));
 }
-
-
 
 
 
