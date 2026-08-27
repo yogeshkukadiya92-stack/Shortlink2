@@ -2,13 +2,15 @@ const http = require("http");
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
+const { safeFetch, assertSafeOutboundUrl } = require("./security/networkPolicy");
+const { decryptCredential, encryptCredential } = require("./security/secrets");
 const { prisma } = require("./lib/prisma");
 const { URL } = require("url");
 const { createUser: createDbUser, findUserByEmail, findUserById, updateUser: updateDbUser, listUsers: listDbUsers } = require("./repositories/usersRepository");
 const { createSession: createDbSession, deleteSessionByToken: deleteDbSessionByToken, deleteSessionsByUserId, findSessionByToken } = require("./repositories/sessionsRepository");
 const { getWorkspaceSettings: getDbWorkspaceSettings, upsertWorkspaceSettings } = require("./repositories/settingsRepository");
 const { listLinksByUser, createLink: createDbLink, updateLinkBySlug, deleteLinkBySlug, findLinkBySlug } = require("./repositories/linksRepository");
-const { listDomainsByUser, upsertDomain, removeDomainsNotIn } = require("./repositories/domainsRepository");
+const { assertDomainAvailable, listDomainsByUser, upsertDomain, removeDomainsNotIn } = require("./repositories/domainsRepository");
 const { listPagesByUser, findPageById, findPageBySlug, savePage: saveDbPage, deletePageById, createSubmission } = require("./repositories/pagesRepository");
 const { recordClickEvent: recordDbClickEvent, listAnalyticsByUser } = require("./repositories/analyticsRepository");
 
@@ -84,6 +86,7 @@ const webhookAllowedEvents = new Set([
   "subscription.updated",
 ]);
 const webhookDeliveryTimeoutMs = Math.max(3000, Number(process.env.WEBHOOK_DELIVERY_TIMEOUT_MS || 9000));
+const trustedProxyHops = Math.max(0, Number.parseInt(process.env.TRUST_PROXY_HOPS || "0", 10) || 0);
 
 const appRoutes = new Set([
   "/",
@@ -701,7 +704,24 @@ function writeGoDaddyTokens(tokens) {
 
 function getGoDaddyTokenForUser(userId) {
   const tokens = readGoDaddyTokens();
-  return tokens.find((item) => item.userId === userId) || null;
+  const token = tokens.find((item) => item.userId === userId) || null;
+  if (!token) return null;
+  if (token.encryptedApiKey && token.encryptedApiSecret) {
+    return {
+      ...token,
+      apiKey: decryptCredential(token.encryptedApiKey),
+      apiSecret: decryptCredential(token.encryptedApiSecret),
+    };
+  }
+  // Preserve existing connections, then migrate legacy plaintext on first use when the key is configured.
+  if (token.apiKey && token.apiSecret) {
+    try {
+      setGoDaddyTokenForUser(userId, token.apiKey, token.apiSecret);
+    } catch {
+      // A missing encryption key must not disconnect an already configured domain provider.
+    }
+  }
+  return token;
 }
 
 function setGoDaddyTokenForUser(userId, apiKey, apiSecret) {
@@ -709,8 +729,8 @@ function setGoDaddyTokenForUser(userId, apiKey, apiSecret) {
   const filtered = tokens.filter((item) => item.userId !== userId);
   filtered.push({
     userId,
-    apiKey,
-    apiSecret,
+    encryptedApiKey: encryptCredential(apiKey),
+    encryptedApiSecret: encryptCredential(apiSecret),
     updatedAt: Date.now(),
   });
   writeGoDaddyTokens(filtered);
@@ -1102,10 +1122,14 @@ function pruneRateLimitState(now = Date.now()) {
 }
 
 function getRateLimitClientIp(req) {
-  const forwarded = String(req.headers["x-forwarded-for"] || "").split(",")[0]?.trim();
-  const realIp = String(req.headers["x-real-ip"] || "").trim();
   const remoteIp = String(req.socket?.remoteAddress || "").trim();
-  return forwarded || realIp || remoteIp || "";
+  if (!trustedProxyHops) return remoteIp;
+  const forwarded = String(req.headers["x-forwarded-for"] || "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+  const index = Math.max(0, forwarded.length - trustedProxyHops);
+  return forwarded[index] || remoteIp;
 }
 
 function readRequestBody(req) {
@@ -1315,7 +1339,7 @@ async function handleSignup(body, req, res) {
     salt,
     passwordHash: combined,
     emailVerified: false,
-    isAdmin: users.length === 0,
+    isAdmin: false,
     subscriptionStatus: "trialing",
     trialStartedAt: Date.now(),
     trialEndsAt: Date.now() + trialLifetimeMs,
@@ -1342,7 +1366,7 @@ async function handleSignup(body, req, res) {
       email,
       passwordHash: combined,
       emailVerified: false,
-      isAdmin: users.length === 1,
+      isAdmin: false,
       subscriptionStatus: "TRIALING",
       trialStartedAt: new Date(user.trialStartedAt),
       trialEndsAt: new Date(user.trialEndsAt),
@@ -1613,9 +1637,8 @@ async function handleForgotPassword(body, req, res) {
 
   return sendJson(res, 200, {
     success: true,
-    delivery: emailSent ? "email" : "link",
-    message: emailSent ? "Password reset OTP sent to your email." : "Email is not configured yet. Use the reset link below.",
-    resetUrl: emailSent ? "" : resetUrl,
+    delivery: "email",
+    message: "If that email exists, password reset instructions have been sent.",
   });
 }
 
@@ -3149,7 +3172,10 @@ async function handleSavePage(body, req, res, user) {
       thanksMessage,
     }, serializeDbFormFields(fields));
     return sendJson(res, existingIndex >= 0 ? 200 : 201, { page: mapDbPageRecord(dbSaved, req, saved) });
-  } catch {
+  } catch (error) {
+    if (error?.code === "PAGE_NOT_OWNED") {
+      return sendJson(res, 404, { error: "Form not found." });
+    }
     if (dbOnlyMode) {
       return sendJson(res, 500, { error: "Unable to save this form right now. Please try again." });
     }
@@ -3491,16 +3517,14 @@ async function checkDestinationHealth(url) {
   };
 
   try {
-    let response = await fetch(url, {
+    let response = await safeFetch(url, {
       method: "HEAD",
-      redirect: "follow",
       signal: controller.signal,
     });
 
     if (response.status === 405 || response.status === 501) {
-      response = await fetch(url, {
+      response = await safeFetch(url, {
         method: "GET",
-        redirect: "follow",
         signal: controller.signal,
       });
     }
@@ -3960,6 +3984,19 @@ async function handleSaveSettings(body, req, res, user) {
     campaigns,
   }, req);
 
+  try {
+    for (const entry of nextSettings.domainEntries.filter((item) => item.host !== publicAppDomain)) {
+      await assertDomainAvailable(user.id, entry.host);
+    }
+  } catch (error) {
+    if (error?.code === "DOMAIN_OWNERSHIP_CONFLICT") {
+      return sendJson(res, 409, { error: error.message });
+    }
+    if (dbOnlyMode) {
+      return sendJson(res, 500, { error: "Unable to verify domain ownership right now." });
+    }
+  }
+
   if (!dbOnlyMode) {
     const store = readSettingsStore().filter((item) => item.userId !== user.id);
     store.push(nextSettings);
@@ -3986,7 +4023,10 @@ async function handleSaveSettings(body, req, res, user) {
           providerHostnameId: entry.providerHostnameId || null,
         });
       }
-  } catch {
+  } catch (error) {
+    if (error?.code === "DOMAIN_OWNERSHIP_CONFLICT") {
+      return sendJson(res, 409, { error: error.message });
+    }
     if (dbOnlyMode) {
       return sendJson(res, 500, { error: "Unable to save your settings right now. Please try again." });
     }
@@ -4147,13 +4187,10 @@ async function handleUpsertWebhook(body, req, res, user) {
 
   let parsedUrl = "";
   try {
-    const parsed = new URL(url);
-    if (!["http:", "https:"].includes(parsed.protocol)) {
-      return sendJson(res, 400, { error: "Webhook URL must use http or https." });
-    }
+    const parsed = await assertSafeOutboundUrl(url);
     parsedUrl = parsed.toString();
-  } catch {
-    return sendJson(res, 400, { error: "Enter a valid webhook URL." });
+  } catch (error) {
+    return sendJson(res, 400, { error: error?.message || "Enter a valid public webhook URL." });
   }
 
   const nowIso = new Date().toISOString();
@@ -4271,7 +4308,7 @@ async function deliverWebhookEvent(userId, endpoint, eventName, data, req) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), webhookDeliveryTimeoutMs);
   try {
-    const response = await fetch(endpoint.url, {
+    const response = await safeFetch(endpoint.url, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -6119,21 +6156,11 @@ function isAdminUser(user) {
     .filter(Boolean),
   ];
 
-  if (adminEmails.includes(String(user.email || "").toLowerCase())) {
+  if (user.emailVerified && adminEmails.includes(String(user.email || "").toLowerCase())) {
     return true;
   }
 
-  const users = readUsers();
-  const hasStoredAdmin = users.some((item) => item.isAdmin);
-
-  if (hasStoredAdmin || adminEmails.length) {
-    return false;
-  }
-
-  const oldestUser = [...users]
-    .sort((left, right) => new Date(left.createdAt || 0).getTime() - new Date(right.createdAt || 0).getTime())[0];
-
-  return Boolean(oldestUser && oldestUser.id === user.id);
+  return false;
 }
 
 function buildAuthUrl(req, mode, token) {
@@ -6336,11 +6363,6 @@ function sendJson(res, statusCode, payload) {
   });
   res.end(JSON.stringify(payload));
 }
-
-
-
-
-
 
 
 

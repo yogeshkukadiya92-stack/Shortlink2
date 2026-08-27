@@ -2078,7 +2078,7 @@ function renderAuthPage() {
         setInlineBanner(document.getElementById("authBanner"), payload.message || "Password reset OTP sent to your email.", false);
         return;
       }
-      setInlineBanner(authBanner, payload.delivery === "link" && payload.resetUrl ? `Email is not configured yet. Use this reset link: ${payload.resetUrl}` : (payload.message || "Password reset OTP sent to your email."), false);
+      setInlineBanner(authBanner, payload.message || "If that email exists, password reset instructions have been sent.", false);
     } catch (error) {
       setInlineBanner(authBanner, error.message, true);
     }
@@ -5251,7 +5251,6 @@ function showGlobalMessage(message, isError) {
   window.clearTimeout(showGlobalMessage.timeoutId);
   showGlobalMessage.timeoutId = window.setTimeout(() => banner.classList.remove("visible"), 2200);
 }
-
 
 
 

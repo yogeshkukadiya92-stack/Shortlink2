@@ -11,6 +11,7 @@
   },
   "scripts": {
     "start": "node server.js",
+    "test": "node --test",
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
     "db:deploy": "prisma migrate deploy",

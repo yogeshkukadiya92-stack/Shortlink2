@@ -64,6 +64,12 @@ async function savePage(userId, pageId, data, fields) {
 
   if (pageId) {
     return prisma.$transaction(async (tx) => {
+      const ownedPage = await tx.page.findFirst({ where: { id: pageId, userId } });
+      if (!ownedPage) {
+        const error = new Error("Form not found.");
+        error.code = "PAGE_NOT_OWNED";
+        throw error;
+      }
       const page = await tx.page.update({
         where: { id: pageId },
         data: pageData,
