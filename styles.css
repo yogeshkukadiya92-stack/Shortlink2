@@ -2816,6 +2816,10 @@ body.compact-ui .admin-row {
     grid-template-columns: 1fr;
   }
 
+  .auth-form-card {
+    order: -1;
+  }
+
   .topbar-copy,
   .searchbar {
     width: 100%;

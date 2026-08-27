@@ -1986,9 +1986,9 @@ function renderAuthPage() {
         </div>
       </div>
       <div class="auth-card auth-form-card">
-        ${isReset || isVerify || isForgot ? "" : `<div class="auth-tabs">
-          <button class="auth-tab ${isSignin ? "active" : ""}" data-auth-tab="signin">Sign in</button>
-          <button class="auth-tab ${isSignup ? "active" : ""}" data-auth-tab="signup">Sign up</button>
+        ${isReset || isVerify || isForgot ? "" : `<div class="auth-tabs" role="tablist" aria-label="Authentication mode">
+          <button class="auth-tab ${isSignin ? "active" : ""}" type="button" role="tab" aria-selected="${isSignin}" data-auth-tab="signin">Sign in</button>
+          <button class="auth-tab ${isSignup ? "active" : ""}" type="button" role="tab" aria-selected="${isSignup}" data-auth-tab="signup">Sign up</button>
         </div>`}
         ${authPanelMarkup}
         <div class="result-banner hidden" id="authBanner" aria-live="polite"></div>
@@ -5251,7 +5251,6 @@ function showGlobalMessage(message, isError) {
   window.clearTimeout(showGlobalMessage.timeoutId);
   showGlobalMessage.timeoutId = window.setTimeout(() => banner.classList.remove("visible"), 2200);
 }
-
 
 
 
